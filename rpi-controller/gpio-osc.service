@@ -1,0 +1,16 @@
+[Unit]
+Description=GPIO OSC Controller for Ventilation HUYGHE
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/gpio-osc
+ExecStart=/opt/gpio-osc/venv/bin/python /opt/gpio-osc/gpio_osc.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

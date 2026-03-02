@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+admin/frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (keep dirs, ignore content)
+admin/backend/data/timelines/*.json
+admin/backend/data/devices/*.json
+admin/backend/data/orchestrations/*.json
+admin/backend/data/settings.json
+
+# PyInstaller
+admin/backend/build/
+admin/backend/dist/
+*.spec
+
+
+# Env
+.env
+.env.local
