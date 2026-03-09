@@ -125,16 +125,17 @@ def handle_b(address, *args):
 
 def cleanup(*_):
     """Zero all outputs and clean up GPIO."""
+    if shutdown_event.is_set():
+        return
+    shutdown_event.set()
     logger.info("Shutting down — zeroing outputs")
     fire_webhook("stop")
-    shutdown_event.set()
     if pwm_a:
         pwm_a.ChangeDutyCycle(0)
         pwm_a.stop()
     if pwm_b:
         pwm_b.ChangeDutyCycle(0)
         pwm_b.stop()
-    # Set all direction pins LOW
     for pin in (PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4):
         GPIO.output(pin, GPIO.LOW)
     GPIO.cleanup()
