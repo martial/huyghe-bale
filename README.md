@@ -57,11 +57,36 @@ cd admin/backend
 ### Build & Deploy
 
 ```bash
-# Build frontend
+# Build frontend only
 cd admin/frontend && npm run build
 
-# Build Mac .app (PyInstaller)
+# Build Mac .app (includes frontend build)
 bash admin/build_mac_app.sh
+```
+
+### Mac App
+
+The standalone Mac app bundles Flask + Vue into a native macOS window using **PyInstaller** and **pywebview**. Flask runs on `127.0.0.1:5001` in a background thread; pywebview opens a native WebKit window pointing at it.
+
+**Prerequisites:** Python venv with `requirements.txt` installed, Node.js 18+.
+
+The build script (`admin/build_mac_app.sh`) builds the Vue frontend, installs `pywebview` and `pyinstaller` into the venv, then runs PyInstaller to produce:
+
+```
+admin/backend/dist/PIERRE HUYGHE BALE.app
+```
+
+**Data storage (bundled mode):** When running as a `.app`, timeline/device/orchestration data is stored in:
+
+```
+~/Library/Application Support/PierreHuygheBale/data/
+```
+
+**Distribution:** Zip the `.app` and send it. Recipients must right-click → Open on first launch since the app is unsigned.
+
+```bash
+cd admin/backend
+zip -r "PIERRE HUYGHE BALE.zip" "dist/PIERRE HUYGHE BALE.app"
 ```
 
 ## RPi Setup
