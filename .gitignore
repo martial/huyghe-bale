@@ -39,3 +39,6 @@ admin/backend/dist/
 # Env
 .env
 .env.local
+
+# Firebase
+firebase-debug.log

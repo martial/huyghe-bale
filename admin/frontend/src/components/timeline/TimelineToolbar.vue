@@ -60,7 +60,7 @@ const curveTypes: CurveType[] = [
         @change="emit('update:curve-type', ($event.target as HTMLSelectElement).value as CurveType)"
         class="bg-zinc-800 rounded px-2 py-0.5 text-xs text-zinc-200"
       >
-        <option v-for="ct in curveTypes" :key="ct" :value="ct">{{ ct }}</option>
+        <option v-for="ct in curveTypes" :key="ct" :value="ct">{{ ct === 'bezier' ? 'custom' : ct }}</option>
       </select>
       <span class="text-xs text-zinc-600 font-mono">
         t={{ selectedPoint.time.toFixed(1) }}s v={{ selectedPoint.value.toFixed(3) }}
