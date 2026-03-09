@@ -6,11 +6,14 @@ to PWM duty cycle on GPIO12 (EnA) and GPIO13 (EnB).
 Direction pins are set once at startup for fixed forward rotation.
 """
 
+import json
+import os
 import signal
 import sys
 import logging
-from threading import Event
+from threading import Event, Thread
 
+import requests
 import RPi.GPIO as GPIO
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
@@ -31,6 +34,39 @@ logger = logging.getLogger(__name__)
 pwm_a = None
 pwm_b = None
 shutdown_event = Event()
+
+WEBHOOKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webhooks.json")
+webhook_config = []
+
+
+def load_webhooks():
+    global webhook_config
+    try:
+        with open(WEBHOOKS_PATH) as f:
+            webhook_config = json.load(f).get("webhooks", [])
+    except Exception:
+        webhook_config = []
+
+
+def fire_webhook(event, data=None):
+    """Fire webhook for matching event in a background thread. Never raises."""
+    payload = {"event": event}
+    if data:
+        payload.update(data)
+    for hook in webhook_config:
+        if event in hook.get("events", []):
+            Thread(target=_post_webhook, args=(hook, payload), daemon=True).start()
+
+
+def _post_webhook(hook, payload):
+    try:
+        headers = {}
+        token = hook.get("token")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        requests.post(hook["url"], json=payload, headers=headers, timeout=5)
+    except Exception:
+        pass
 
 
 def setup_gpio():
@@ -72,6 +108,7 @@ def handle_a(address, *args):
     value = clamp(float(args[0]))
     duty = value * 100.0
     pwm_a.ChangeDutyCycle(duty)
+    fire_webhook("change", {"channel": "a", "value": value})
     logger.debug("A = %.3f (duty %.1f%%)", value, duty)
 
 
@@ -82,12 +119,14 @@ def handle_b(address, *args):
     value = clamp(float(args[0]))
     duty = value * 100.0
     pwm_b.ChangeDutyCycle(duty)
+    fire_webhook("change", {"channel": "b", "value": value})
     logger.debug("B = %.3f (duty %.1f%%)", value, duty)
 
 
 def cleanup(*_):
     """Zero all outputs and clean up GPIO."""
     logger.info("Shutting down — zeroing outputs")
+    fire_webhook("stop")
     shutdown_event.set()
     if pwm_a:
         pwm_a.ChangeDutyCycle(0)
@@ -104,7 +143,9 @@ def cleanup(*_):
 
 
 def main():
+    load_webhooks()
     setup_gpio()
+    fire_webhook("start")
 
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
