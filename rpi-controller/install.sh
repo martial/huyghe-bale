@@ -18,6 +18,8 @@ python3 -m venv "$INSTALL_DIR/venv"
 # Copy application files
 cp "$SCRIPT_DIR/gpio_osc.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/config.py" "$INSTALL_DIR/"
+# Only copy webhooks.json if not already present (preserve local edits)
+[ -f "$INSTALL_DIR/webhooks.json" ] || cp "$SCRIPT_DIR/webhooks.json" "$INSTALL_DIR/"
 
 # Install systemd service
 cp "$SCRIPT_DIR/gpio-osc.service" "/etc/systemd/system/${SERVICE_NAME}.service"
