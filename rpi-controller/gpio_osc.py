@@ -108,7 +108,6 @@ def handle_a(address, *args):
     value = clamp(float(args[0]))
     duty = value * 100.0
     pwm_a.ChangeDutyCycle(duty)
-    fire_webhook("change", {"channel": "a", "value": value})
     logger.debug("A = %.3f (duty %.1f%%)", value, duty)
 
 
@@ -119,7 +118,6 @@ def handle_b(address, *args):
     value = clamp(float(args[0]))
     duty = value * 100.0
     pwm_b.ChangeDutyCycle(duty)
-    fire_webhook("change", {"channel": "b", "value": value})
     logger.debug("B = %.3f (duty %.1f%%)", value, duty)
 
 
