@@ -18,7 +18,7 @@ GPIO timeline controller for art installation. A web interface to design automat
 
 ## Raspberry Pi Setup
 
-👉 **[See detailed RPi documentation (OSC, Wiring, Webhooks)](docs/RPI_OSC.md)**
+👉 **[See detailed RPi documentation (OSC protocol and installation guide)](docs/RPI_OSC.md)**
 
 ```bash
 # Push to Pi and run installer
