@@ -49,7 +49,7 @@ Bundles Flask and Vue into a native macOS app using `PyInstaller` and `pywebview
 bash admin/build_mac_app.sh
 ```
 - **Output:** `admin/backend/dist/PIERRE HUYGHE BALE.app`
-- **Storage:** Saved locally to `~/Library/Application Support/PierreHuygheBale/data/`
+- **Storage:** Saved locally to `~/Library/Application Support/com.screenclub.huyghe-bale/data/`
 - *Note: App is unsigned. Users must Right-click → Open on first launch.*
 
 ## Core Concepts
