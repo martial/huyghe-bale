@@ -14,9 +14,9 @@ GPIO timeline controller for art installation. A web interface to design automat
 
 - **Backend:** Flask API, JSON storage, interpolation & OSC playback engine.
 - **Frontend:** Vue 3, TypeScript, Tailwind CSS v4, Pinia.
-- **Node (RPi):** Python OSC listener to Hardware PWM (GPIO 12/13).
+- **RPi Controller:** Python OSC listener to Hardware PWM (GPIO 12/13).
 
-## Hardware Node Setup (Raspberry Pi)
+## Raspberry Pi Setup
 
 👉 **[See detailed RPi documentation (OSC, Wiring, Webhooks)](docs/RPI_OSC.md)**
 
