@@ -91,6 +91,8 @@ zip -r "PIERRE HUYGHE BALE.zip" "dist/PIERRE HUYGHE BALE.app"
 
 ## RPi Setup
 
+👉 **[Voir la Documentation détaillée du Raspberry Pi (OSC, Câblage, Webhooks)](docs/RPI_OSC.md)**
+
 ```bash
 # Copy controller to RPi
 scp -r rpi-controller/ pi@<RPI_IP>:~
