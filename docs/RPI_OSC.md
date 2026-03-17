@@ -1,46 +1,46 @@
 # Raspberry Pi Controller (OSC to GPIO)
 
-Le contrôleur Raspberry Pi (`rpi-controller`) écoute en permanence les messages réseau OSC envoyés par l'interface d'administration et les traduit en signaux électriques (PWM).
+The Raspberry Pi controller (`rpi-controller`) continuously listens for OSC network messages sent by the admin interface and translates them into electrical signals (PWM).
 
-## 1. Protocole OSC
+## 1. OSC Protocol
 
-Le script Python embarqué démarre un serveur UDP OSC avec les caractéristiques suivantes :
+The embedded Python script runs an OSC UDP server with the following specifications:
 
-- **Port d'écoute :** `9000` (configurable dans `config.py`)
-- **Adresses supportées :**
-  - `/gpio/a` : Contrôle le canal A
-  - `/gpio/b` : Contrôle le canal B
-- **Valeurs attendues :** Un nombre flottant (`float`) compris entre `0.0` et `1.0`. 
-  - `0.0` = Arrêt complet (0%)
-  - `1.0` = Vitesse maximale (100%)
+- **Listening Port:** `9000` (configurable in `config.py`)
+- **Supported Addresses:**
+  - `/gpio/a` : Controls Channel A
+  - `/gpio/b` : Controls Channel B
+- **Expected Values:** A floating point number (`float`) between `0.0` and `1.0`.
+  - `0.0` = Full stop (0% speed)
+  - `1.0` = Maximum speed (100%)
 
-*(Toute valeur en dehors de la plage 0.0 - 1.0 est automatiquement bridée par le script).*
+*(Note: Any value outside the 0.0 - 1.0 range is automatically clamped by the script).*
 
-## 2. Installation et Lancement
+## 2. Installation and Startup
 
-Le déploiement sur le Raspberry Pi est entièrement automatisé par le script `install.sh`. 
+Deployment on the Raspberry Pi is fully automated using the `install.sh` script.
 
-### Pré-requis sur le Raspberry Pi :
-- Raspberry Pi OS installé
-- Un accès SSH ou terminal
-- Connexion réseau fonctionnelle
+### Prerequisites on the Raspberry Pi:
+- Raspberry Pi OS installed
+- SSH or terminal access
+- Working network connection
 
-### Procédure :
-1. Copiez le dossier `rpi-controller` sur le Raspberry Pi.
-2. Connectez-vous en SSH et exécutez le script d'installation :
+### Procedure:
+1. Copy the `rpi-controller` folder to your Raspberry Pi.
+2. Connect via SSH and run the installer:
    ```bash
    sudo bash install.sh
    ```
 
-### Que fait le script d'installation ?
-1. Il crée un dossier dédié dans `/opt/gpio-osc/`.
-2. Il initialise un environnement virtuel Python (`venv`) et installe les dépendances.
-3. Il crée et active un service **systemd** nommé `gpio-osc.service`.
+### What does the installation script do?
+1. Creates a dedicated folder at `/opt/gpio-osc/`.
+2. Initializes a Python virtual environment (`venv`) and installs dependencies.
+3. Creates and activates a **systemd** service named `gpio-osc.service`.
 
-Grâce à `systemd`, le contrôleur OSC démarre automatiquement dès l'allumage du Raspberry Pi, et redémarre tout seul en cas de problème.
+Thanks to `systemd`, the OSC controller automatically starts as soon as the Raspberry Pi boots up and automatically restarts if it crashes.
 
-### Commandes utiles (sur le Raspberry Pi)
-- Vérifier l'état du service : `systemctl status gpio-osc`
-- Lire les logs en temps réel : `journalctl -u gpio-osc -f`
-- Relancer manuellement : `sudo systemctl restart gpio-osc`
-- Stopper le service : `sudo systemctl stop gpio-osc`
+### Useful Commands (on the Raspberry Pi)
+- Check service status: `systemctl status gpio-osc`
+- Read real-time logs: `journalctl -u gpio-osc -f`
+- Restart the service manually: `sudo systemctl restart gpio-osc`
+- Stop the service: `sudo systemctl stop gpio-osc`
