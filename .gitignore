@@ -29,7 +29,9 @@ admin/backend/data/devices/*.json
 admin/backend/data/orchestrations/*.json
 admin/backend/data/settings.json
 
-# PyInstaller
+# PyInstaller / build artifacts
+apps/
+admin/build/
 admin/backend/build/
 admin/backend/dist/
 *.spec
