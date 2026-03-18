@@ -3,6 +3,7 @@ import NavLink from "./NavLink";
 import DeviceHeartbeat from "./DeviceHeartbeat";
 import PlaybackControls from "../playback/PlaybackControls";
 import ToastContainer from "./ToastContainer";
+import SystemWarnings from "./SystemWarnings";
 
 export default function AppLayout() {
   return (
@@ -78,10 +79,13 @@ export default function AppLayout() {
       </nav>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto relative z-0">
-        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 mix-blend-overlay pointer-events-none"></div>
-        <div className="relative z-10 h-full">
-          <Outlet />
+      <main className="flex-1 overflow-auto relative z-0 flex flex-col">
+        <SystemWarnings />
+        <div className="flex-1 relative">
+          <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 mix-blend-overlay pointer-events-none"></div>
+          <div className="relative z-10 h-full">
+            <Outlet />
+          </div>
         </div>
       </main>
       

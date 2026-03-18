@@ -5,13 +5,13 @@ from flask import Flask, send_from_directory
 from flask_cors import CORS
 
 
-def create_app(dist_dir=None, data_dir=None):
+def create_app(dist_dir=None, data_dir=None, start_osc=True):
     # Override data directory before API modules read config.DATA_DIR
     if data_dir is not None:
         import config
         config.DATA_DIR = data_dir
 
-    from api import timelines, devices, orchestrations, playback, export, settings
+    from api import timelines, devices, orchestrations, playback, export, settings, health
     from api.playback import set_engine
     from engine.playback import PlaybackEngine
     from engine.osc_receiver import OscReceiver
@@ -26,6 +26,7 @@ def create_app(dist_dir=None, data_dir=None):
     app.register_blueprint(playback.bp, url_prefix="/api/v1/playback")
     app.register_blueprint(export.bp, url_prefix="/api/v1/export")
     app.register_blueprint(settings.bp, url_prefix="/api/v1/settings")
+    app.register_blueprint(health.bp, url_prefix="/api/v1/health")
 
     # Import endpoint is under /api/v1/import
     @app.route("/api/v1/import/timeline", methods=["POST"])
@@ -38,7 +39,8 @@ def create_app(dist_dir=None, data_dir=None):
 
     # Initialize and start OSC Receiver
     receiver = OscReceiver(port=9001)
-    receiver.start()
+    if start_osc:
+        receiver.start()
 
     # SPA fallback — serve frontend dist if it exists
     if dist_dir is None:
@@ -57,5 +59,8 @@ def create_app(dist_dir=None, data_dir=None):
 
 if __name__ == "__main__":
     port = int(os.environ.get("FLASK_PORT", 5001))
-    app = create_app()
+    # Flask debug reloader runs parent (file watcher) + child (server).
+    # Only start OSC receiver in the child to avoid double port binding.
+    start_osc = os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+    app = create_app(start_osc=start_osc)
     app.run(debug=True, host="0.0.0.0", port=port)

@@ -14,10 +14,7 @@ class OscReceiver:
 
     def __new__(cls, port=9001):
         with cls._lock:
-            if cls._instance is not None:
-                # Stop old server before reuse (Flask debug reloader)
-                cls._instance.stop()
-            else:
+            if cls._instance is None:
                 cls._instance = super(OscReceiver, cls).__new__(cls)
                 cls._instance._init(port)
             return cls._instance
@@ -27,7 +24,9 @@ class OscReceiver:
         self.last_seen = {}  # ip_address -> timestamp
         self.server = None
         self.thread = None
-        
+        self.running = False
+        self.error = None
+
         self.dispatcher = Dispatcher()
         self.dispatcher.map("/sys/pong", self._handle_pong, needs_reply_address=True)
 
@@ -52,14 +51,19 @@ class OscReceiver:
             self.server = BlockingOSCUDPServer(("0.0.0.0", self.port), self.dispatcher)
             self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
             self.thread.start()
+            self.running = True
+            self.error = None
             logger.info("OSC Receiver started on port %d", self.port)
         except OSError as e:
+            self.running = False
             if e.errno == 48:  # Address already in use
+                self.error = f"Port {self.port} already in use"
                 logger.error(
                     "Port %d already in use — is the PIERRE HUYGHE BALE app running? "
                     "Quit it or run: kill $(lsof -ti:%d)", self.port, self.port
                 )
             else:
+                self.error = str(e)
                 logger.error("Failed to start OSC receiver on port %d: %s", self.port, e)
 
     def stop(self):
