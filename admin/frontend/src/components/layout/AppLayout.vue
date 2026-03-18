@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { RouterLink, RouterView } from "vue-router";
+import { RouterLink, RouterView } from "vue-router";
 import PlaybackControls from "../playback/PlaybackControls.vue";
+import DeviceHeartbeat from "./DeviceHeartbeat.vue";
 </script>
 
 <template>
@@ -47,6 +49,11 @@ import PlaybackControls from "../playback/PlaybackControls.vue";
           </svg>
           Orchestrations
         </RouterLink>
+      </div>
+
+      <!-- Settings link -->
+      <div class="p-3 pt-0">
+        <DeviceHeartbeat />
       </div>
 
       <!-- Settings link -->

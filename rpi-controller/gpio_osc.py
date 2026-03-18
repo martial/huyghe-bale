@@ -11,6 +11,8 @@ import os
 import signal
 import sys
 import logging
+import time
+import http.server
 from threading import Event, Thread
 
 import requests
@@ -34,6 +36,32 @@ logger = logging.getLogger(__name__)
 pwm_a = None
 pwm_b = None
 shutdown_event = Event()
+
+# --- Heartbeat State ---
+start_time = time.time()
+last_osc_time = 0.0
+
+class StatusHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/status':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            data = {"uptime": time.time() - start_time, "last_osc": last_osc_time}
+            self.wfile.write(json.dumps(data).encode('utf-8'))
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass # Silence HTTP logs
+
+def run_http_server():
+    server = http.server.HTTPServer(('0.0.0.0', 9001), StatusHandler)
+    while not shutdown_event.is_set():
+        server.handle_request()
+
 
 WEBHOOKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webhooks.json")
 webhook_config = []
@@ -103,6 +131,8 @@ def clamp(value, min_val=0.0, max_val=1.0):
 
 def handle_a(address, *args):
     """Handle /gpio/a OSC message."""
+    global last_osc_time
+    last_osc_time = time.time()
     if not args:
         return
     value = clamp(float(args[0]))
@@ -113,6 +143,8 @@ def handle_a(address, *args):
 
 def handle_b(address, *args):
     """Handle /gpio/b OSC message."""
+    global last_osc_time
+    last_osc_time = time.time()
     if not args:
         return
     value = clamp(float(args[0]))
@@ -145,6 +177,10 @@ def main():
     load_webhooks()
     setup_gpio()
     fire_webhook("start")
+
+    # Start HTTP status server
+    Thread(target=run_http_server, daemon=True).start()
+    logger.info("HTTP Status server listening on 0.0.0.0:9001")
 
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
