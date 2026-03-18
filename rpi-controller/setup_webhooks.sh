@@ -5,7 +5,7 @@ set -euo pipefail
 # Creates webhooks via the admin API and writes a webhooks.json config file.
 
 DEFAULT_BASE_URL="https://monitory.club"
-DEFAULT_EVENTS="start,stop,change"
+DEFAULT_EVENTS="start,stop,crash,error"
 DEFAULT_OUTPUT="./webhooks.json"
 
 # ─── Helpers ──────────────────────────────────
@@ -77,7 +77,7 @@ for evt in "${EVENTS[@]}"; do
         -X POST "${BASE_URL}/api/v1/admin/webhooks" \
         -H "Content-Type: application/json" \
         -H "X-Admin-Key: ${API_KEY}" \
-        -d "{\"deviceId\": ${DEVICE_ID}, \"eventType\": \"${evt}\"}" \
+        -d "{\"deviceId\": \"${DEVICE_ID}\", \"eventType\": \"${evt}\"}" \
     ) || die "curl failed — check your network connection."
 
     HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
@@ -95,7 +95,21 @@ print(data['data']['webhookUrl'])
             ;;
         409)
             echo
-            warn "Event '$evt' already has a webhook on device $DEVICE_ID — skipping."
+            # Try to extract existing webhook URL from 409 response
+            EXISTING_URL=$(python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    print(data['data']['webhookUrl'])
+except Exception:
+    pass
+" <<< "$HTTP_BODY" 2>/dev/null)
+            if [ -n "$EXISTING_URL" ]; then
+                warn "Event '$evt' already has a webhook on device $DEVICE_ID — reusing existing URL."
+                WEBHOOK_ENTRIES+=("{\"url\": \"${EXISTING_URL}\", \"events\": [\"${evt}\"]}")
+            else
+                warn "Event '$evt' already has a webhook on device $DEVICE_ID — skipping (could not extract URL)."
+            fi
             ;;
         401)
             echo

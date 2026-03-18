@@ -1,8 +1,20 @@
 {
   "webhooks": [
     {
-      "url": "https://example.com/api/v1/webhooks/your-id-here",
-      "events": ["start", "stop", "change"]
+      "url": "https://example.com/api/v1/webhooks/start-id",
+      "events": ["start"]
+    },
+    {
+      "url": "https://example.com/api/v1/webhooks/stop-id",
+      "events": ["stop"]
+    },
+    {
+      "url": "https://example.com/api/v1/webhooks/crash-id",
+      "events": ["crash"]
+    },
+    {
+      "url": "https://example.com/api/v1/webhooks/error-id",
+      "events": ["error"]
     }
   ]
 }

@@ -7,7 +7,6 @@ Direction pins are set once at startup for fixed forward rotation.
 """
 
 import json
-import os
 import signal
 import sys
 import logging
@@ -15,7 +14,6 @@ import time
 import http.server
 from threading import Event, Thread
 
-import requests
 import RPi.GPIO as GPIO
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
@@ -27,6 +25,7 @@ from config import (
     PIN_ENA, PIN_ENB,
     PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4,
 )
+from webhooks import WebhookNotifier
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 pwm_a = None
 pwm_b = None
+webhooks = None
 shutdown_event = Event()
 
 # --- Heartbeat State ---
@@ -62,40 +62,6 @@ def run_http_server():
     server = http.server.HTTPServer(('0.0.0.0', 9001), StatusHandler)
     while not shutdown_event.is_set():
         server.handle_request()
-
-
-WEBHOOKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webhooks.json")
-webhook_config = []
-
-
-def load_webhooks():
-    global webhook_config
-    try:
-        with open(WEBHOOKS_PATH) as f:
-            webhook_config = json.load(f).get("webhooks", [])
-    except Exception:
-        webhook_config = []
-
-
-def fire_webhook(event, data=None):
-    """Fire webhook for matching event in a background thread. Never raises."""
-    payload = {"event": event}
-    if data:
-        payload.update(data)
-    for hook in webhook_config:
-        if event in hook.get("events", []):
-            Thread(target=_post_webhook, args=(hook, payload), daemon=True).start()
-
-
-def _post_webhook(hook, payload):
-    try:
-        headers = {}
-        token = hook.get("token")
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        requests.post(hook["url"], json=payload, headers=headers, timeout=5)
-    except Exception:
-        pass
 
 
 def setup_gpio():
@@ -133,43 +99,48 @@ def clamp(value, min_val=0.0, max_val=1.0):
 def handle_a(address, *args):
     """Handle /gpio/a OSC message."""
     global last_osc_time
-    last_osc_time = time.time()
-    if not args:
-        return
-    value = clamp(float(args[0]))
-    duty = value * 100.0
-    pwm_a.ChangeDutyCycle(duty)
-    logger.debug("A = %.3f (duty %.1f%%)", value, duty)
+    try:
+        last_osc_time = time.time()
+        if not args:
+            return
+        value = clamp(float(args[0]))
+        duty = value * 100.0
+        pwm_a.ChangeDutyCycle(duty)
+        logger.debug("A = %.3f (duty %.1f%%)", value, duty)
+    except Exception as e:
+        logger.error("Handler error on /gpio/a: %s", e)
+        webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
 
 
 def handle_b(address, *args):
     """Handle /gpio/b OSC message."""
     global last_osc_time
-    last_osc_time = time.time()
-    if not args:
-        return
-    value = clamp(float(args[0]))
-    duty = value * 100.0
-    pwm_b.ChangeDutyCycle(duty)
-    logger.debug("B = %.3f (duty %.1f%%)", value, duty)
+    try:
+        last_osc_time = time.time()
+        if not args:
+            return
+        value = clamp(float(args[0]))
+        duty = value * 100.0
+        pwm_b.ChangeDutyCycle(duty)
+        logger.debug("B = %.3f (duty %.1f%%)", value, duty)
+    except Exception as e:
+        logger.error("Handler error on /gpio/b: %s", e)
+        webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
 
 
 def handle_ping(client_address, address, *args):
     """Handle /sys/ping OSC message. args[0] should be the return port."""
     if not args:
         return
-    
     try:
         return_port = int(args[0])
-        # client_address tuple is (ip, port)
         origin_ip = client_address[0]
         logger.debug(f"Ping received from {origin_ip}. Replying to port {return_port}")
-        
         client = SimpleUDPClient(origin_ip, return_port)
-        # Reply with the IP address of the sender so they can verify who it came from relative to them
         client.send_message("/sys/pong", origin_ip)
     except Exception as e:
-        logger.error(f"Failed to handle ping: {e}")
+        logger.error("Handler error on /sys/ping: %s", e)
+        webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
 
 
 def cleanup(*_):
@@ -178,7 +149,7 @@ def cleanup(*_):
         return
     shutdown_event.set()
     logger.info("Shutting down — zeroing outputs")
-    fire_webhook("stop")
+    webhooks.fire("stop")
     if pwm_a:
         pwm_a.ChangeDutyCycle(0)
         pwm_a.stop()
@@ -193,13 +164,33 @@ def cleanup(*_):
 
 
 def main():
-    load_webhooks()
-    setup_gpio()
-    fire_webhook("start")
+    global webhooks
+    webhooks = WebhookNotifier()
+
+    # Global crash handler — catches any unhandled exception before process dies
+    def _crash_hook(exc_type, exc_value, exc_tb):
+        logger.critical("Unhandled exception — %s: %s", exc_type.__name__, exc_value)
+        webhooks.fire("crash", {"error": f"{exc_type.__name__}: {exc_value}"})
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+    sys.excepthook = _crash_hook
+
+    try:
+        setup_gpio()
+    except Exception as e:
+        logger.critical("GPIO initialization failed: %s", e)
+        webhooks.fire("error", {"source": "gpio", "error": str(e)})
+        raise
+
+    webhooks.fire("start")
+    logger.info("Service started")
 
     # Start HTTP status server
-    Thread(target=run_http_server, daemon=True).start()
-    logger.info("HTTP Status server listening on 0.0.0.0:9001")
+    try:
+        Thread(target=run_http_server, daemon=True).start()
+        logger.info("HTTP Status server listening on 0.0.0.0:9001")
+    except Exception as e:
+        webhooks.fire("error", {"source": "http_server", "error": str(e)})
+        logger.error("Failed to start HTTP status server: %s", e)
 
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
@@ -209,13 +200,23 @@ def main():
     dispatcher.map(OSC_ADDRESS_B, handle_b)
     dispatcher.map("/sys/ping", handle_ping, needs_reply_address=True)
 
-    server = BlockingOSCUDPServer(("0.0.0.0", OSC_PORT), dispatcher)
+    try:
+        server = BlockingOSCUDPServer(("0.0.0.0", OSC_PORT), dispatcher)
+    except OSError as e:
+        logger.critical("OSC server failed to bind on port %d: %s", OSC_PORT, e)
+        webhooks.fire("error", {"source": "osc_bind", "error": str(e)})
+        raise
+
     logger.info("OSC server listening on 0.0.0.0:%d", OSC_PORT)
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        logger.critical("OSC server crashed: %s", e)
+        webhooks.fire("error", {"source": "osc_server", "error": str(e)})
+        raise
     finally:
         cleanup()
 
