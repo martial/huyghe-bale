@@ -6,6 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/gpio-osc
+ExecStartPre=/opt/gpio-osc/auto_update.sh
 ExecStart=/opt/gpio-osc/venv/bin/python /opt/gpio-osc/gpio_osc.py
 Restart=always
 RestartSec=5
