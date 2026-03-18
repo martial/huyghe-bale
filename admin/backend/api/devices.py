@@ -2,6 +2,7 @@
 
 import json
 import time
+import logging
 
 from flask import Blueprint, request, jsonify, Response
 from storage.json_store import JsonStore
@@ -9,6 +10,8 @@ from engine.osc_sender import OscSender
 from engine.osc_receiver import OscReceiver
 from engine.network_scanner import scan_subnet_stream
 from config import DATA_DIR
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint("devices", __name__)
 store = JsonStore(DATA_DIR, "devices", "dev")
@@ -57,24 +60,30 @@ def device_status_stream():
     """SSE endpoint streaming 'online' status for all devices every 5 seconds."""
     def generate():
         last_ping_time = 0
+        logger.info("SSE status stream started")
         while True:
             # 1. Periodically broadcast ping to all devices
             now = time.time()
             if now - last_ping_time > 5.0:
                 last_ping_time = now
-                for device in store.list_all():
+                devices = store.list_all()
+                logger.info("Sending /sys/ping to %d device(s)", len(devices))
+                for device in devices:
                     if ip := device.get("ip_address"):
                         try:
-                            osc.send(ip, device.get("osc_port", 9000), "/sys/ping", 9001)
-                        except Exception:
-                            pass
-            
+                            port = device.get("osc_port", 9000)
+                            osc.send(ip, port, "/sys/ping", 9001)
+                            logger.debug("  Pinged %s:%d", ip, port)
+                        except Exception as e:
+                            logger.warning("  Ping failed for %s: %s", ip, e)
+
             # 2. Yield current status for all devices (based on pongs received within last 6 seconds)
             statuses = {}
             for device in store.list_all():
                 if ip := device.get("ip_address"):
                     statuses[device["id"]] = receiver.get_status(ip, timeout=6.0)
-            
+
+            logger.debug("Device statuses: %s (last_seen: %s)", statuses, receiver.last_seen)
             yield f"data: {json.dumps(statuses)}\n\n"
             time.sleep(1.0)  # Stream updates once a second
 

@@ -1,7 +1,7 @@
 import { Outlet } from "react-router";
 import NavLink from "./NavLink";
+import DeviceHeartbeat from "./DeviceHeartbeat";
 import PlaybackControls from "../playback/PlaybackControls";
-
 import ToastContainer from "./ToastContainer";
 
 export default function AppLayout() {
@@ -64,6 +64,11 @@ export default function AppLayout() {
           >
             Settings
           </NavLink>
+        </div>
+
+        {/* Device heartbeat */}
+        <div className="px-3 pb-2">
+          <DeviceHeartbeat />
         </div>
 
         {/* Playback controls at bottom */}

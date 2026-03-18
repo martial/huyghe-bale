@@ -90,6 +90,19 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
 }));
 
 // Initialize status stream automatically
-api.monitorDeviceStatus((statuses) => {
-  useDeviceStore.setState({ deviceStatuses: statuses });
-});
+let cleanupStatusStream: (() => void) | null = null;
+
+function startStatusStream() {
+  cleanupStatusStream?.();
+  cleanupStatusStream = api.monitorDeviceStatus((statuses) => {
+    const prev = useDeviceStore.getState().deviceStatuses;
+    // Skip update if nothing changed
+    const changed = Object.keys(statuses).length !== Object.keys(prev).length ||
+      Object.entries(statuses).some(([id, val]) => prev[id] !== val);
+    if (changed) {
+      useDeviceStore.setState({ deviceStatuses: statuses });
+    }
+  });
+}
+
+startStatusStream();

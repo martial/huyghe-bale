@@ -85,13 +85,22 @@ export function monitorDeviceStatus(
 ) {
   const eventSource = new EventSource("/api/v1/devices/status");
   
+  eventSource.onopen = () => {
+    console.log("[HeartbeatSSE] Connected to /api/v1/devices/status");
+  };
+
   eventSource.onmessage = (event) => {
     try {
       const statuses = JSON.parse(event.data);
+      console.log("[HeartbeatSSE] Received:", statuses);
       onStatusUpdate(statuses);
-    } catch {
-      // Ignore parse errors from SSE
+    } catch (e) {
+      console.error("[HeartbeatSSE] Parse error:", e);
     }
+  };
+
+  eventSource.onerror = (e) => {
+    console.error("[HeartbeatSSE] Connection error:", e);
   };
 
   return () => {
