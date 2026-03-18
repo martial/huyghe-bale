@@ -44,3 +44,22 @@ Thanks to `systemd`, the OSC controller automatically starts as soon as the Rasp
 - Read real-time logs: `journalctl -u gpio-osc -f`
 - Restart the service manually: `sudo systemctl restart gpio-osc`
 - Stop the service: `sudo systemctl stop gpio-osc`
+## Auto-Update System
+
+The `gpio-osc.service` includes an automatic update mechanism (`auto_update.sh`) that runs on every boot or service restart.
+
+**Important:** For the auto-update to work, the Raspberry Pi must be able to authenticate with GitHub silently. If the repository is private or requires authentication, you must:
+
+1. Generate an SSH key on the Pi:
+   ```bash
+   ssh-keygen -t ed25519 -C "rpi-huyghe-bale"
+   cat ~/.ssh/id_ed25519.pub
+   ```
+2. Add this public key to your GitHub repository as a **Deploy Key** (Settings > Deploy Keys) with *Read access*.
+3. Change the git remote to use SSH instead of HTTPS:
+   ```bash
+   cd ~/rpi-controller
+   git remote set-url origin git@github.com:martial/huyghe-bale.git
+   ```
+
+If the Pi cannot connect to GitHub (no Wi-Fi or no SSH keys), it will simply log an offline warning and start normally with the current local code.
