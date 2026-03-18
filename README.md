@@ -1,37 +1,31 @@
 # PIERRE HUYGHE BALE
 
-GPIO timeline controller for art installation. A web admin interface to design automation timelines (PWM curves over time) for two output channels (A/B), played back via OSC to Raspberry Pis driving L298N motor controllers and fans.
+GPIO timeline controller for art installation. Web admin to design PWM automation curves (two channels A/B), played back via OSC to Raspberry Pis driving L298N motor controllers + fans.
 
 ## Architecture
 
 ```
 ┌─────────────────────┐    OSC/UDP     ┌──────────────────┐
 │   Admin Interface   │ ──────────────▶│  Raspberry Pi(s) │
-│  (Flask + Vue 3)    │   /gpio/a 0–1  │  GPIO PWM → L298N│
+│  (Flask + React)    │   /gpio/a 0–1  │  GPIO PWM → L298N│
 │  localhost:5001     │   /gpio/b 0–1  │  → fans/motors   │
 └─────────────────────┘                └──────────────────┘
 ```
 
-- **Backend** — Flask API, JSON file storage, interpolation engine, playback engine (OSC sender)
-- **Frontend** — Vue 3 + TypeScript + Tailwind CSS v4 + Pinia
+- **Backend** — Flask API, JSON storage, interpolation engine, OSC playback
+- **Frontend** — React + TypeScript + Tailwind CSS v4 + Zustand
 - **RPi Controller** — Python OSC listener → hardware PWM on GPIO 12/13
 
-## Quick Start
+## Dev Setup
 
-### Prerequisites
-
-- Python 3.10+
-- Node.js 18+
-- macOS (dev scripts use iTerm2)
-
-### Development
+Requires Python 3.10+ and Node.js 18+.
 
 ```bash
 # Backend
 cd admin/backend
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m flask --app app run --port 5001 --debug
+.venv/bin/python app.py
 
 # Frontend (separate terminal)
 cd admin/frontend
@@ -39,13 +33,9 @@ npm install
 npm run dev
 ```
 
-Or use the helper script (opens iTerm2 with both):
-
-```bash
-./start_dev.sh
-```
-
 Backend runs on `:5001`, Vite dev server on `:5173` with proxy to Flask.
+
+There's also `./start_dev.sh` which opens both in iTerm2 tabs.
 
 ### Tests
 
@@ -54,53 +44,43 @@ cd admin/backend
 .venv/bin/pytest tests/ -v
 ```
 
-### Build & Deploy
+### Build
 
 ```bash
-# Build frontend only
+# Frontend only
 cd admin/frontend && npm run build
 
-# Build Mac .app (includes frontend build)
-bash admin/build_mac_app.sh
-```
-
-### Mac App
-
-The standalone Mac app bundles Flask + Vue into a native macOS window using **PyInstaller** and **pywebview**. Flask runs on `127.0.0.1:5001` in a background thread; pywebview opens a native WebKit window pointing at it.
-
-**Prerequisites:** Python venv with `requirements.txt` installed, Node.js 18+.
-
-The build script (`admin/build_mac_app.sh`) builds the Vue frontend, installs `pywebview` and `pyinstaller` into the venv, then runs PyInstaller to produce:
-
-```
-admin/backend/dist/PIERRE HUYGHE BALE.app
-```
-
-**Data storage (bundled mode):** When running as a `.app`, timeline/device/orchestration data is stored in:
-
-```
-~/Library/Application Support/PierreHuygheBale/data/
-```
-
-**Distribution:** Zip the `.app` and send it. Recipients must right-click → Open on first launch since the app is unsigned.
-
-```bash
+# Mac .app (PyInstaller — bundles Flask + React into native macOS window)
 cd admin/backend
-zip -r "PIERRE HUYGHE BALE.zip" "dist/PIERRE HUYGHE BALE.app"
+../.venv/bin/pyinstaller "PIERRE HUYGHE BALE.spec"
+# Output: admin/backend/dist/PIERRE HUYGHE BALE.app
 ```
+
+When running as `.app`, data is stored in `~/Library/Application Support/PierreHuygheBale/data/`.
+
+The app is unsigned — recipients must right-click → Open on first launch.
 
 ## RPi Setup
 
 ```bash
-# Copy controller to RPi
-scp -r rpi-controller/ pi@<RPI_IP>:~
-
-# SSH in and install
-ssh pi@<RPI_IP>
-sudo bash ~/rpi-controller/install.sh
+git clone https://github.com/martial/huyghe-bale.git
+cd huyghe-bale
+sudo bash rpi-controller/install.sh
 ```
 
-Installs as systemd service `gpio-osc` at `/opt/gpio-osc/`, auto-starts on boot.
+Installs as systemd service `gpio-osc` at `/opt/gpio-osc/`. Auto-starts on boot. Includes auto-update via git pull on service restart.
+
+```bash
+# Check status
+sudo systemctl status gpio-osc
+
+# Live logs
+sudo journalctl -u gpio-osc -f
+
+# Restart / stop
+sudo systemctl restart gpio-osc
+sudo systemctl stop gpio-osc
+```
 
 ### Hardware Pins (BCM)
 
@@ -120,67 +100,34 @@ All endpoints under `/api/v1/`:
 | Resource | Endpoints |
 |----------|-----------|
 | Timelines | `GET/POST /timelines`, `GET/PUT/DELETE /timelines/:id`, `POST /timelines/:id/duplicate` |
-| Devices | `GET/POST /devices`, `GET/PUT/DELETE /devices/:id`, `POST /devices/:id/ping`, `POST /devices/scan` |
+| Devices | `GET/POST /devices`, `GET/PUT/DELETE /devices/:id`, `POST /devices/:id/ping`, `POST /devices/scan`, `GET /devices/status` (SSE) |
 | Orchestrations | `GET/POST /orchestrations`, `GET/PUT/DELETE /orchestrations/:id` |
 | Playback | `POST /playback/start`, `POST /playback/stop`, `GET /playback/status` |
 | Export | `GET /export/timeline/:id`, `GET /export/orchestration/:id`, `POST /import/timeline` |
 | Settings | `GET/PUT /settings` |
 
-## Key Concepts
+## Concepts
 
-**Timelines** have two lanes (A/B), each with control points. Points define value (0–1) at a time, with 8 interpolation curve types: linear, step, ease-in, ease-out, ease-in-out, sine, exponential, bezier.
+**Timelines** — Two lanes (A/B) with control points. Each point has a value (0–1), a time, and a curve type for interpolation arriving at it. 8 types: linear, step, ease-in, ease-out, ease-in-out, sine, exponential, bezier.
 
-**Orchestrations** sequence multiple timelines with per-step device targeting and delays. Optional looping.
+**Orchestrations** — Sequence of timelines with per-step device targeting and delays. Optional looping.
 
-**Playback** evaluates curves at configurable frequency (default 30 Hz) and sends OSC messages to all targeted devices.
+**Playback** — Evaluates curves at configurable rate (default 30 Hz), sends OSC to targeted devices.
 
-**Settings** configure the OSC send frequency (1–120 Hz).
-
-## Data Storage
+## Data
 
 JSON files in `admin/backend/data/`:
 
 ```
 data/
-├── timelines/     # tl_*.json
-├── devices/       # dev_*.json
+├── timelines/      # tl_*.json
+├── devices/        # dev_*.json
 ├── orchestrations/ # orch_*.json
 └── settings.json
 ```
 
 ## Stack
 
-- Flask 3, Python-OSC, Pytest
-- Vue 3.5, Vue Router 5, Pinia 3, Tailwind CSS 4, TypeScript 5.9, Vite 7
-- RPi.GPIO, systemd
-
-
-  git clone https://github.com/martial/huyghe-bale.git                                                                                                          
-  cd huyghe-bale                                                                                                                                                
-                                                                                                                                                                
-  2. Run the installer                                                                                                                                          
-                                                                                                                                                                
-  sudo bash rpi-controller/install.sh                                                                                                                           
-                                                                                                                                                                
-  This will:                                                                                                                                                    
-  - Create /opt/gpio-osc/ with a Python venv                                                                                                                    
-  - Install python-osc and RPi.GPIO                                                                                                                             
-  - Copy gpio_osc.py and config.py
-  - Install and start the gpio-osc systemd service
-
-  3. Verify
-
-  sudo systemctl status gpio-osc
-
-  You should see the service active and OSC server listening on 0.0.0.0:9000 in the logs.
-
-  Useful commands after install
-
-  # View live logs
-  sudo journalctl -u gpio-osc -f
-
-  # Restart after config change
-  sudo systemctl restart gpio-osc
-
-  # Stop the service
-  sudo systemctl stop gpio-osc
+- Flask 3, python-osc, pytest
+- React 19, Zustand, Tailwind CSS 4, TypeScript 5.9, Vite 7
+- rpi-lgpio (drop-in RPi.GPIO replacement for Pi 3/4/5), systemd
