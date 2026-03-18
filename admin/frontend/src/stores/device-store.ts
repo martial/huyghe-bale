@@ -130,6 +130,9 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
       const after = new Set(get().updatingDevices);
       after.delete(id);
       set({ updatingDevices: after });
+      // Clear cached versions and re-fetch latest after update
+      set({ deviceVersions: {} });
+      await get().fetchLatestVersion();
     }
   },
 
