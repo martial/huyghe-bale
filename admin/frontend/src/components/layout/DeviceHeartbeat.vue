@@ -22,7 +22,11 @@ async function pollHeartbeats() {
         const data = await res.json();
         const prevOsc = lastOscMap[device.id] || 0;
         const currentOsc = data.last_osc || 0;
-        const receivedRecent = currentOsc > prevOsc && (Date.now() / 1000 - currentOsc) < 2.0;
+        let receivedRecent = heartbeats.value[device.id]?.rx || false;
+        if (currentOsc > prevOsc) {
+          receivedRecent = true;
+          setTimeout(() => { if (heartbeats.value[device.id]) heartbeats.value[device.id].rx = false; }, 800);
+        }
         
         heartbeats.value[device.id] = { ok: true, rx: receivedRecent };
         lastOscMap[device.id] = currentOsc;
