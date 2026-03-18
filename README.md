@@ -25,7 +25,7 @@ GPIO timeline controller for art installation. A web interface to design automat
 scp -r rpi-controller/ pi@<RPI_IP>:~
 ssh pi@<RPI_IP> "sudo bash ~/rpi-controller/install.sh"
 ```
-*Installs and auto-starts the `gpio-osc` systemd service.*
+*Installs and auto-starts the `gpio-osc` systemd service (auto-updates on boot via git).* 
 
 ## Local Development
 
