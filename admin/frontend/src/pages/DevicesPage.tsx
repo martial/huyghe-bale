@@ -7,12 +7,29 @@ import NetworkScanDialog from "../components/device/NetworkScanDialog";
 export default function DevicesPage() {
   const list = useDeviceStore((s) => s.list);
   const fetchList = useDeviceStore((s) => s.fetchList);
+  const latestVersion = useDeviceStore((s) => s.latestVersion);
+  const fetchLatestVersion = useDeviceStore((s) => s.fetchLatestVersion);
+  const deviceVersions = useDeviceStore((s) => s.deviceVersions);
+  const deviceStatuses = useDeviceStore((s) => s.deviceStatuses);
+  const updateAllOutdated = useDeviceStore((s) => s.updateAllOutdated);
+  const updatingDevices = useDeviceStore((s) => s.updatingDevices);
   const [showForm, setShowForm] = useState(false);
   const [showScan, setShowScan] = useState(false);
 
   useEffect(() => {
     fetchList();
-  }, [fetchList]);
+    fetchLatestVersion();
+    const interval = setInterval(fetchLatestVersion, 60_000);
+    return () => clearInterval(interval);
+  }, [fetchList, fetchLatestVersion]);
+
+  const outdatedCount = latestVersion
+    ? Object.entries(deviceVersions).filter(
+        ([id, v]) => deviceStatuses[id] === "online" && v.version !== latestVersion.hash,
+      ).length
+    : 0;
+
+  const isUpdatingAny = updatingDevices.size > 0;
 
   return (
     <div className="p-10 max-w-6xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700">
@@ -20,8 +37,24 @@ export default function DevicesPage() {
         <div>
           <h2 className="text-3xl font-light tracking-tight text-white mb-1">Devices</h2>
           <p className="text-zinc-400 text-sm">Manage network devices and controllers</p>
+          {latestVersion && latestVersion.hash !== "unknown" && (
+            <p className="text-zinc-500 text-xs mt-1.5">
+              Latest: <span className="font-mono text-zinc-400">{latestVersion.hash}</span>
+              <span className="mx-1.5 text-zinc-600">·</span>
+              <span className="text-zinc-500">{latestVersion.message}</span>
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-3">
+          {outdatedCount > 0 && (
+            <button
+              onClick={updateAllOutdated}
+              disabled={isUpdatingAny}
+              className="px-5 py-2.5 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/20 hover:border-orange-500/30 rounded-xl text-sm font-semibold text-orange-400 transition-all duration-300 shadow-sm hover:shadow-md disabled:opacity-50"
+            >
+              {isUpdatingAny ? "Updating..." : `Update All (${outdatedCount})`}
+            </button>
+          )}
           <button
             onClick={() => setShowScan(true)}
             className="px-5 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-sm font-semibold text-white transition-all duration-300 shadow-sm hover:shadow-md"

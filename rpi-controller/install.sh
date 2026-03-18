@@ -62,6 +62,11 @@ StandardError=journal
 WantedBy=multi-user.target
 SYSTEMD_EOF
 
+# Sudoers: allow service user to restart gpio-osc without password
+echo "Configuration sudoers pour restart sans mot de passe..."
+echo "$APP_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart gpio-osc" | sudo tee /etc/sudoers.d/gpio-osc > /dev/null
+sudo chmod 0440 /etc/sudoers.d/gpio-osc
+
 # Activer et demarrer le service
 echo "Activation du service..."
 sudo systemctl daemon-reload

@@ -3,12 +3,14 @@
 import json
 import time
 import logging
+import urllib.request
 
 from flask import Blueprint, request, jsonify, Response
 from storage.json_store import JsonStore
 from engine.osc_sender import OscSender
 from engine.osc_receiver import OscReceiver
 from engine.network_scanner import scan_subnet_stream
+from engine.version_checker import get_latest_version
 from config import DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -57,9 +59,11 @@ def scan_network():
 
 @bp.route("/status", methods=["GET"])
 def device_status_stream():
-    """SSE endpoint streaming online/offline status for all devices."""
+    """SSE endpoint streaming online/offline status + versions for all devices."""
     def generate():
         last_ping_time = 0
+        last_version_check = 0
+        cached_versions = {}
         logger.info("SSE status stream started")
         while True:
             now = time.time()
@@ -85,11 +89,38 @@ def device_status_stream():
                     pong = receiver.get_status(ip, timeout=6.0)
                     statuses[device["id"]] = "online" if pong else "offline"
 
+            # Periodically fetch version from online devices via HTTP
+            if now - last_version_check > 30.0:
+                last_version_check = now
+                for device in devices:
+                    if statuses.get(device["id"]) != "online":
+                        continue
+                    ip = device.get("ip_address")
+                    if not ip:
+                        continue
+                    try:
+                        req = urllib.request.urlopen(
+                            f"http://{ip}:9001/status", timeout=2
+                        )
+                        data = json.loads(req.read())
+                        cached_versions[device["id"]] = {
+                            "version": data.get("version", "unknown"),
+                            "version_date": data.get("version_date", "unknown"),
+                        }
+                    except Exception:
+                        pass
+
             logger.debug("Device statuses: %s (last_seen: %s)", statuses, receiver.last_seen)
-            yield f"data: {json.dumps(statuses)}\n\n"
+            yield f"data: {json.dumps({'statuses': statuses, 'versions': cached_versions})}\n\n"
             time.sleep(1.0)
 
     return Response(generate(), mimetype="text/event-stream")
+
+
+@bp.route("/version/latest", methods=["GET"])
+def latest_version():
+    """Return latest commit info from GitHub."""
+    return jsonify(get_latest_version())
 
 
 @bp.route("/<device_id>", methods=["GET"])
@@ -127,3 +158,24 @@ def ping_device(device_id):
         return jsonify({"ok": True, "message": "Ping sent"})
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@bp.route("/<device_id>/update", methods=["POST"])
+def update_device_software(device_id):
+    """Proxy update request to device's HTTP server."""
+    device = store.get(device_id)
+    if not device:
+        return jsonify({"error": "Not found"}), 404
+    ip = device.get("ip_address")
+    if not ip:
+        return jsonify({"error": "No IP address configured"}), 400
+    try:
+        req = urllib.request.Request(
+            f"http://{ip}:9001/update", method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read())
+            return jsonify(data)
+    except Exception as e:
+        return jsonify({"success": False, "logs": str(e), "new_version": "unknown"}), 502

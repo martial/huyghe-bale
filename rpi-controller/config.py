@@ -2,6 +2,7 @@
 
 # OSC settings
 OSC_PORT = 9000
+HTTP_PORT = 9001
 OSC_ADDRESS_A = "/gpio/a"
 OSC_ADDRESS_B = "/gpio/b"
 

@@ -7,7 +7,9 @@ Direction pins are set once at startup for fixed forward rotation.
 """
 
 import json
+import os
 import signal
+import subprocess
 import sys
 import logging
 import time
@@ -24,6 +26,7 @@ from config import (
     PWM_FREQUENCY,
     PIN_ENA, PIN_ENB,
     PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4,
+    HTTP_PORT,
 )
 from webhooks import WebhookNotifier
 
@@ -38,28 +41,97 @@ pwm_b = None
 webhooks = None
 shutdown_event = Event()
 
+# --- Version Info (read once at startup) ---
+def _read_git_version():
+    cwd = os.path.dirname(os.path.abspath(__file__))
+    try:
+        h = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=cwd, text=True).strip()
+        d = subprocess.check_output(["git", "log", "-1", "--format=%ci", "HEAD"], cwd=cwd, text=True).strip()
+        return {"hash": h, "date": d}
+    except Exception:
+        return {"hash": "unknown", "date": "unknown"}
+
+VERSION_INFO = _read_git_version()
+
 # --- Heartbeat State ---
 start_time = time.time()
 last_osc_time = 0.0
 
 class StatusHandler(http.server.BaseHTTPRequestHandler):
+    def _send_json(self, data, status=200):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode('utf-8'))
+
     def do_GET(self):
         if self.path == '/status':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            data = {"uptime": time.time() - start_time, "last_osc": last_osc_time}
-            self.wfile.write(json.dumps(data).encode('utf-8'))
+            self._send_json({
+                "uptime": time.time() - start_time,
+                "last_osc": last_osc_time,
+                "version": VERSION_INFO["hash"],
+                "version_date": VERSION_INFO["date"],
+            })
         else:
             self.send_response(404)
             self.end_headers()
 
+    def do_POST(self):
+        if self.path == '/update':
+            self._handle_update()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+
+    def _handle_update(self):
+        global VERSION_INFO
+        cwd = os.path.dirname(os.path.abspath(__file__))
+        script = os.path.join(cwd, "auto_update.sh")
+        try:
+            result = subprocess.run(
+                ["bash", script],
+                capture_output=True, text=True, timeout=120, cwd=cwd,
+            )
+            # Read detailed log
+            log_file = "/tmp/gpio-osc-updater.log"
+            try:
+                with open(log_file) as f:
+                    logs = f.read()
+            except FileNotFoundError:
+                logs = result.stdout + result.stderr
+            # Read new version after update
+            new_version = _read_git_version()
+            VERSION_INFO = new_version
+            success = result.returncode == 0
+            self._send_json({
+                "success": success,
+                "logs": logs,
+                "new_version": new_version["hash"],
+            })
+            if success:
+                # Schedule delayed restart so the response gets sent first
+                subprocess.Popen(
+                    ["sh", "-c", "sleep 2 && sudo systemctl restart gpio-osc"],
+                    start_new_session=True,
+                )
+        except subprocess.TimeoutExpired:
+            self._send_json({"success": False, "logs": "Update timed out after 120s", "new_version": VERSION_INFO["hash"]}, 500)
+        except Exception as e:
+            self._send_json({"success": False, "logs": str(e), "new_version": VERSION_INFO["hash"]}, 500)
+
     def log_message(self, format, *args):
-        pass # Silence HTTP logs
+        pass  # Silence HTTP logs
 
 def run_http_server():
-    server = http.server.HTTPServer(('0.0.0.0', 9001), StatusHandler)
+    server = http.server.HTTPServer(('0.0.0.0', HTTP_PORT), StatusHandler)
     while not shutdown_event.is_set():
         server.handle_request()
 
@@ -187,7 +259,7 @@ def main():
     # Start HTTP status server
     try:
         Thread(target=run_http_server, daemon=True).start()
-        logger.info("HTTP Status server listening on 0.0.0.0:9001")
+        logger.info("HTTP Status server listening on 0.0.0.0:%d", HTTP_PORT)
     except Exception as e:
         webhooks.fire("error", {"source": "http_server", "error": str(e)})
         logger.error("Failed to start HTTP status server: %s", e)

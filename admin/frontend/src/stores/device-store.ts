@@ -1,10 +1,14 @@
 import { create } from "zustand";
-import type { Device, DeviceStatus, DiscoveredHost } from "../types/device";
+import type { Device, DeviceStatus, DeviceVersion, LatestVersion, DiscoveredHost } from "../types/device";
 import * as api from "../api/devices";
 
 interface DeviceState {
   list: Device[];
   deviceStatuses: Record<string, DeviceStatus>;
+  deviceVersions: Record<string, DeviceVersion>;
+  latestVersion: LatestVersion | null;
+  updatingDevices: Set<string>;
+  updateLogs: Record<string, string>;
   loading: boolean;
   scanning: boolean;
   scanResults: DiscoveredHost[];
@@ -17,11 +21,18 @@ interface DeviceState {
   scan: (subnet?: string) => void;
   clearScanResults: () => void;
   addDiscovered: (hosts: { ip: string; osc_port: number; name: string }[]) => Promise<void>;
+  fetchLatestVersion: () => Promise<void>;
+  updateSoftware: (id: string) => Promise<void>;
+  updateAllOutdated: () => Promise<void>;
 }
 
 export const useDeviceStore = create<DeviceState>((set, get) => ({
   list: [],
   deviceStatuses: {},
+  deviceVersions: {},
+  latestVersion: null,
+  updatingDevices: new Set(),
+  updateLogs: {},
   loading: false,
   scanning: false,
   scanResults: [],
@@ -87,6 +98,49 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     }
     await get().fetchList();
   },
+
+  async fetchLatestVersion() {
+    try {
+      const latest = await api.getLatestVersion();
+      set({ latestVersion: latest });
+    } catch (e) {
+      console.error("Failed to fetch latest version:", e);
+    }
+  },
+
+  async updateSoftware(id: string) {
+    const updating = new Set(get().updatingDevices);
+    updating.add(id);
+    set({ updatingDevices: updating });
+    try {
+      const result = await api.updateDeviceSoftware(id);
+      const logs = { ...get().updateLogs, [id]: result.logs };
+      // Update cached version if successful
+      if (result.success && result.new_version) {
+        const versions = { ...get().deviceVersions };
+        versions[id] = { version: result.new_version, version_date: "" };
+        set({ updateLogs: logs, deviceVersions: versions });
+      } else {
+        set({ updateLogs: logs });
+      }
+    } catch (e) {
+      const logs = { ...get().updateLogs, [id]: String(e) };
+      set({ updateLogs: logs });
+    } finally {
+      const after = new Set(get().updatingDevices);
+      after.delete(id);
+      set({ updatingDevices: after });
+    }
+  },
+
+  async updateAllOutdated() {
+    const { deviceVersions, latestVersion, deviceStatuses } = get();
+    if (!latestVersion) return;
+    const outdated = Object.entries(deviceVersions)
+      .filter(([id, v]) => deviceStatuses[id] === "online" && v.version !== latestVersion.hash)
+      .map(([id]) => id);
+    await Promise.all(outdated.map((id) => get().updateSoftware(id)));
+  },
 }));
 
 // Initialize status stream automatically
@@ -94,24 +148,34 @@ let cleanupStatusStream: (() => void) | null = null;
 
 function startStatusStream() {
   cleanupStatusStream?.();
-  cleanupStatusStream = api.monitorDeviceStatus((statuses) => {
-    const prev = useDeviceStore.getState().deviceStatuses;
-    let changed = false;
+  cleanupStatusStream = api.monitorDeviceStatus((statuses, versions) => {
+    const state = useDeviceStore.getState();
+    const prevStatuses = state.deviceStatuses;
+    const prevVersions = state.deviceVersions;
+
+    let statusChanged = false;
     for (const id in statuses) {
-      if (prev[id] !== statuses[id]) { changed = true; break; }
+      if (prevStatuses[id] !== statuses[id]) { statusChanged = true; break; }
     }
-    if (!changed) {
-      for (const id in prev) {
-        if (!(id in statuses)) { changed = true; break; }
+    if (!statusChanged) {
+      for (const id in prevStatuses) {
+        if (!(id in statuses)) { statusChanged = true; break; }
       }
     }
-    if (changed) {
-      useDeviceStore.setState({ deviceStatuses: statuses });
+
+    const versionChanged = JSON.stringify(versions) !== JSON.stringify(prevVersions);
+
+    if (statusChanged || versionChanged) {
+      const update: Record<string, unknown> = {};
+      if (statusChanged) update.deviceStatuses = statuses;
+      if (versionChanged) update.deviceVersions = versions;
+      useDeviceStore.setState(update);
     }
   });
 }
 
 startStatusStream();
+useDeviceStore.getState().fetchList();
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => cleanupStatusStream?.());

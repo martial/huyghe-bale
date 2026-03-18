@@ -1,5 +1,5 @@
 import { get, post, put, del } from "./client";
-import type { Device, DeviceStatus, DiscoveredHost } from "../types/device";
+import type { Device, DeviceStatus, DeviceVersion, LatestVersion, UpdateResult, DiscoveredHost } from "../types/device";
 
 export function listDevices() {
   return get<Device[]>("/devices");
@@ -23,6 +23,14 @@ export function deleteDevice(id: string) {
 
 export function pingDevice(id: string) {
   return post<{ ok: boolean; message: string }>(`/devices/${id}/ping`);
+}
+
+export function getLatestVersion() {
+  return get<LatestVersion>("/devices/version/latest");
+}
+
+export function updateDeviceSoftware(id: string) {
+  return post<UpdateResult>(`/devices/${id}/update`);
 }
 
 export function scanNetworkStream(
@@ -81,19 +89,26 @@ export function scanNetworkStream(
 }
 
 export function monitorDeviceStatus(
-  onStatusUpdate: (statuses: Record<string, DeviceStatus>) => void,
+  onStatusUpdate: (
+    statuses: Record<string, DeviceStatus>,
+    versions: Record<string, DeviceVersion>,
+  ) => void,
 ) {
   const eventSource = new EventSource("/api/v1/devices/status");
-  
+
   eventSource.onopen = () => {
     console.log("[HeartbeatSSE] Connected to /api/v1/devices/status");
   };
 
   eventSource.onmessage = (event) => {
     try {
-      const statuses = JSON.parse(event.data);
-      console.log("[HeartbeatSSE] Received:", statuses);
-      onStatusUpdate(statuses);
+      const data = JSON.parse(event.data);
+      // New shape: {statuses, versions} — fallback for old flat shape
+      if (data.statuses) {
+        onStatusUpdate(data.statuses, data.versions || {});
+      } else {
+        onStatusUpdate(data as Record<string, DeviceStatus>, {});
+      }
     } catch (e) {
       console.error("[HeartbeatSSE] Parse error:", e);
     }

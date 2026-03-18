@@ -7,12 +7,20 @@ export default function DeviceCard({ device }: { device: Device }) {
   const update = useDeviceStore((s) => s.update);
   const remove = useDeviceStore((s) => s.remove);
   const ping = useDeviceStore((s) => s.ping);
+  const updateSoftware = useDeviceStore((s) => s.updateSoftware);
   const notify = useNotificationStore((s) => s.notify);
   const isOnline = useDeviceStore((s) => s.deviceStatuses[device.id] === "online");
+  const deviceVersion = useDeviceStore((s) => s.deviceVersions[device.id]);
+  const latestVersion = useDeviceStore((s) => s.latestVersion);
+  const isUpdating = useDeviceStore((s) => s.updatingDevices.has(device.id));
+  const updateLog = useDeviceStore((s) => s.updateLogs[device.id]);
+
+  const isOutdated = isOnline && deviceVersion && latestVersion && deviceVersion.version !== latestVersion.hash;
 
   const [pingStatus, setPingStatus] = useState<"idle" | "pinging" | "ok" | "error">("idle");
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ ...device });
+  const [showLogs, setShowLogs] = useState(false);
 
   async function handlePing() {
     try {
@@ -30,6 +38,11 @@ export default function DeviceCard({ device }: { device: Device }) {
       notify("error", `Ping error: ${device.name}`);
     }
     setTimeout(() => setPingStatus("idle"), 3000);
+  }
+
+  async function handleUpdate() {
+    await updateSoftware(device.id);
+    setShowLogs(true);
   }
 
   async function handleSave() {
@@ -64,10 +77,34 @@ export default function DeviceCard({ device }: { device: Device }) {
               />
             </div>
           </div>
+
+          {/* Version info */}
+          {isOnline && deviceVersion && (
+            <div className="flex items-center gap-2 mt-2">
+              <span className="inline-flex items-center px-2 py-0.5 rounded bg-zinc-800 text-[10px] font-mono text-zinc-400 border border-zinc-700/50">
+                {deviceVersion.version}
+              </span>
+              {isOutdated && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-orange-500/10 text-[10px] font-medium text-orange-400 border border-orange-500/20">
+                  Update available
+                </span>
+              )}
+            </div>
+          )}
+
           <div className="flex gap-3 mt-3">
             <button onClick={handlePing} className="text-xs text-zinc-400 hover:text-white transition-colors">
               Ping
             </button>
+            {isOutdated && (
+              <button
+                onClick={handleUpdate}
+                disabled={isUpdating}
+                className="text-xs text-orange-400 hover:text-orange-300 transition-colors disabled:opacity-50"
+              >
+                {isUpdating ? "Updating..." : "Update"}
+              </button>
+            )}
             <button
               onClick={() => {
                 setForm({ ...device });
@@ -84,6 +121,23 @@ export default function DeviceCard({ device }: { device: Device }) {
               Delete
             </button>
           </div>
+
+          {/* Update logs */}
+          {updateLog && (
+            <div className="mt-3">
+              <button
+                onClick={() => setShowLogs(!showLogs)}
+                className="text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+              >
+                {showLogs ? "Hide logs" : "Show logs"}
+              </button>
+              {showLogs && (
+                <pre className="mt-1 p-2 rounded bg-zinc-950 border border-zinc-800/50 text-[10px] text-zinc-500 font-mono overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap">
+                  {updateLog}
+                </pre>
+              )}
+            </div>
+          )}
         </>
       ) : (
         <div className="space-y-2">
