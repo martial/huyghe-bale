@@ -8,6 +8,7 @@ interface DeviceState {
   deviceVersions: Record<string, DeviceVersion>;
   latestVersion: LatestVersion | null;
   updatingDevices: Set<string>;
+  restartingDevices: Set<string>;
   updateLogs: Record<string, string>;
   loading: boolean;
   scanning: boolean;
@@ -32,6 +33,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   deviceVersions: {},
   latestVersion: null,
   updatingDevices: new Set(),
+  restartingDevices: new Set(),
   updateLogs: {},
   loading: false,
   scanning: false,
@@ -127,11 +129,15 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
       const logs = { ...get().updateLogs, [id]: String(e) };
       set({ updateLogs: logs });
     } finally {
-      const after = new Set(get().updatingDevices);
-      after.delete(id);
-      set({ updatingDevices: after });
-      // Clear cached versions and re-fetch latest after update
-      set({ deviceVersions: {} });
+      const afterUpdating = new Set(get().updatingDevices);
+      afterUpdating.delete(id);
+      // Mark device as restarting, clear its cached version
+      const restarting = new Set(get().restartingDevices);
+      restarting.add(id);
+      const versions = { ...get().deviceVersions };
+      delete versions[id];
+      set({ updatingDevices: afterUpdating, restartingDevices: restarting, deviceVersions: versions });
+      // Fetch fresh latest version from backend
       await get().fetchLatestVersion();
     }
   },
@@ -167,6 +173,22 @@ function startStatusStream() {
     }
 
     const versionChanged = JSON.stringify(versions) !== JSON.stringify(prevVersions);
+
+    // Clear restarting flag once we get a fresh version for that device
+    const restarting = state.restartingDevices;
+    let restartingChanged = false;
+    if (restarting.size > 0 && versionChanged) {
+      const newRestarting = new Set(restarting);
+      for (const id of restarting) {
+        if (versions[id]) {
+          newRestarting.delete(id);
+          restartingChanged = true;
+        }
+      }
+      if (restartingChanged) {
+        useDeviceStore.setState({ restartingDevices: newRestarting });
+      }
+    }
 
     if (statusChanged || versionChanged) {
       const update: Record<string, unknown> = {};

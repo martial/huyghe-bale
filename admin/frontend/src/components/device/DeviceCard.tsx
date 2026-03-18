@@ -13,6 +13,7 @@ export default function DeviceCard({ device }: { device: Device }) {
   const deviceVersion = useDeviceStore((s) => s.deviceVersions[device.id]);
   const latestVersion = useDeviceStore((s) => s.latestVersion);
   const isUpdating = useDeviceStore((s) => s.updatingDevices.has(device.id));
+  const isRestarting = useDeviceStore((s) => s.restartingDevices.has(device.id));
   const updateLog = useDeviceStore((s) => s.updateLogs[device.id]);
 
   const isOutdated = isOnline && deviceVersion && latestVersion && deviceVersion.version !== latestVersion.hash;
@@ -79,15 +80,15 @@ export default function DeviceCard({ device }: { device: Device }) {
           </div>
 
           {/* Version info */}
-          {isOnline && !deviceVersion && (
+          {(isRestarting || (isOnline && !deviceVersion)) && (
             <div className="flex items-center gap-2 mt-2">
               <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-zinc-800 text-[10px] font-mono text-zinc-500 border border-zinc-700/50">
                 <span className="inline-block w-2.5 h-2.5 border border-zinc-500 border-t-transparent rounded-full animate-spin" />
-                Fetching version...
+                {isRestarting ? "Restarting service..." : "Fetching version..."}
               </span>
             </div>
           )}
-          {isOnline && deviceVersion && (
+          {!isRestarting && isOnline && deviceVersion && (
             <div className="flex items-center gap-2 mt-2">
               <span className="inline-flex items-center px-2 py-0.5 rounded bg-zinc-800 text-[10px] font-mono text-zinc-400 border border-zinc-700/50">
                 {deviceVersion.version}
