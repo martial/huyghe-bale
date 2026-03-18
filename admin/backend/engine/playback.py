@@ -132,7 +132,17 @@ class PlaybackEngine:
                     self.elapsed = self.total_duration
                     break
                 self.elapsed = elapsed
-                self._evaluate_and_send(self._timeline, elapsed)
+                # Calculate values inside lock
+                lanes = self._timeline.get("lanes", {})
+                for lane_key in ("a", "b"):
+                    lane = lanes.get(lane_key, {})
+                    points = lane.get("points", [])
+                    self.current_values[lane_key] = evaluate_lane(points, elapsed)
+                devices_snapshot = list(self._devices)
+                vals_snapshot = dict(self.current_values)
+                
+            # Send OSC OUTSIDE the lock
+            self._send_osc_snapshot(devices_snapshot, vals_snapshot)
 
             # Sleep for next tick
             next_tick = start_time + (int(elapsed / interval) + 1) * interval
@@ -143,17 +153,31 @@ class PlaybackEngine:
         with self._lock:
             # Send final values
             if self._timeline and not self._stop_event.is_set():
-                self._evaluate_and_send(self._timeline, self.total_duration)
+                lanes = self._timeline.get("lanes", {})
+                for lane_key in ("a", "b"):
+                    lane = lanes.get(lane_key, {})
+                    points = lane.get("points", [])
+                    self.current_values[lane_key] = evaluate_lane(points, self.total_duration)
+                devices_snapshot = list(self._devices)
+                vals_snapshot = dict(self.current_values)
+            else:
+                devices_snapshot = []
+                vals_snapshot = {}
             self.playing = False
+            
+        if devices_snapshot:
+            self._send_osc_snapshot(devices_snapshot, vals_snapshot)
 
     def _run_orchestration(self):
         """Main orchestration playback loop."""
         interval = 1.0 / self.tick_rate
-        global_start = time.monotonic()
         steps = self._orchestration.get("steps", [])
         loop = self._orchestration.get("loop", False)
 
         while not self._stop_event.is_set():
+            # Fix 3: Reset global start time at the beginning of each loop iteration
+            global_start = time.monotonic()
+            
             for step_idx, step in enumerate(steps):
                 if self._stop_event.is_set():
                     return
@@ -194,7 +218,17 @@ class PlaybackEngine:
 
                     with self._lock:
                         self.elapsed = time.monotonic() - global_start
-                        self._evaluate_and_send(tl, step_elapsed)
+                        # Calculate values inside lock
+                        lanes = tl.get("lanes", {})
+                        for lane_key in ("a", "b"):
+                            lane = lanes.get(lane_key, {})
+                            points = lane.get("points", [])
+                            self.current_values[lane_key] = evaluate_lane(points, step_elapsed)
+                        devices_snapshot = list(self._devices)
+                        vals_snapshot = dict(self.current_values)
+                        
+                    # Send OSC OUTSIDE the lock
+                    self._send_osc_snapshot(devices_snapshot, vals_snapshot)
 
                     next_tick = step_start + (int(step_elapsed / interval) + 1) * interval
                     sleep_time = next_tick - time.monotonic()
@@ -208,20 +242,13 @@ class PlaybackEngine:
             self.elapsed = self.total_duration
             self.playing = False
 
-    def _evaluate_and_send(self, timeline: dict, current_time: float):
-        """Evaluate both lanes and send OSC to all active devices."""
-        lanes = timeline.get("lanes", {})
-        for lane_key in ("a", "b"):
-            lane = lanes.get(lane_key, {})
-            points = lane.get("points", [])
-            value = evaluate_lane(points, current_time)
-            self.current_values[lane_key] = value
-
-        for device in self._devices:
+    def _send_osc_snapshot(self, devices: list[dict], values: dict):
+        """Send OSC to all active devices (runs outside the state lock)."""
+        for device in devices:
             try:
                 ip = device["ip_address"]
                 port = device.get("osc_port", 9000)
-                self.osc.send(ip, port, "/gpio/a", self.current_values["a"])
-                self.osc.send(ip, port, "/gpio/b", self.current_values["b"])
+                self.osc.send(ip, port, "/gpio/a", values.get("a", 0.0))
+                self.osc.send(ip, port, "/gpio/b", values.get("b", 0.0))
             except Exception as e:
                 logger.warning("OSC send error to %s: %s", device.get("id"), e)

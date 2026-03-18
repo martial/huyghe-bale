@@ -33,8 +33,6 @@ admin/backend/build/
 admin/backend/dist/
 *.spec
 
-# Claude Code
-.claude/
 
 # Env
 .env
