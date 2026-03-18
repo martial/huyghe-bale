@@ -9,7 +9,7 @@ echo "=== Running auto_update.sh Unit Tests ==="
 TEST_DIR=$(mktemp -d)
 REMOTE_REPO="$TEST_DIR/remote.git"
 APP_DIR="$TEST_DIR/gpio-osc"
-SCRIPT_TO_TEST="/Users/martial/Documents/Dev/huyghe-bale/rpi-controller/auto_update.sh"
+SCRIPT_TO_TEST="$(cd "$(dirname "$0")/.." && pwd)/auto_update.sh"
 
 git init --quiet --bare "$REMOTE_REPO"
 
@@ -25,8 +25,9 @@ cd "$APP_DIR"
 python3 -m venv venv
 ./venv/bin/pip install --quiet -r requirements.txt
 
+# auto_update.sh auto-detects APP_DIR via gpio_osc.py presence
+touch "$APP_DIR/gpio_osc.py"
 cp "$SCRIPT_TO_TEST" "$APP_DIR/auto_update.sh"
-sed -i '' "s|APP_DIR=\"/opt/gpio-osc\"|APP_DIR=\"$APP_DIR\"|g" "$APP_DIR/auto_update.sh"
 sed -i '' "s|LOG_FILE=\"/tmp/gpio-osc-updater.log\"|LOG_FILE=\"$TEST_DIR/updater.log\"|g" "$APP_DIR/auto_update.sh"
 
 # Test 1: No update

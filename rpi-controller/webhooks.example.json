@@ -1,0 +1,8 @@
+{
+  "webhooks": [
+    {
+      "url": "https://example.com/api/v1/webhooks/your-id-here",
+      "events": ["start", "stop", "change"]
+    }
+  ]
+}
