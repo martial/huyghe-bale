@@ -84,9 +84,13 @@ export default function DeviceCard({ device }: { device: Device }) {
               <span className="inline-flex items-center px-2 py-0.5 rounded bg-zinc-800 text-[10px] font-mono text-zinc-400 border border-zinc-700/50">
                 {deviceVersion.version}
               </span>
-              {isOutdated && (
+              {isOutdated ? (
                 <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-orange-500/10 text-[10px] font-medium text-orange-400 border border-orange-500/20">
                   Update available
+                </span>
+              ) : latestVersion && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-green-500/10 text-[10px] font-medium text-green-400 border border-green-500/20">
+                  Up to date
                 </span>
               )}
             </div>
