@@ -11,7 +11,7 @@ let interval: number;
 let lastOscMap: Record<string, number> = {};
 
 async function pollHeartbeats() {
-  for (const device of deviceStore.devices) {
+  for (const device of deviceStore.list) {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 800);
@@ -25,7 +25,7 @@ async function pollHeartbeats() {
         let receivedRecent = heartbeats.value[device.id]?.rx || false;
         if (currentOsc > prevOsc) {
           receivedRecent = true;
-          setTimeout(() => { if (heartbeats.value[device.id]) heartbeats.value[device.id].rx = false; }, 800);
+          setTimeout(() => { if (heartbeats.value[device.id] !== undefined) heartbeats.value[device.id]!.rx = false; }, 800);
         }
         
         heartbeats.value[device.id] = { ok: true, rx: receivedRecent };
@@ -40,7 +40,7 @@ async function pollHeartbeats() {
 }
 
 onMounted(() => {
-  deviceStore.fetch();
+  deviceStore.fetchList();
   interval = setInterval(pollHeartbeats, 500); // Fast poll for immediate RX visual feedback
 });
 
@@ -51,11 +51,11 @@ onUnmounted(() => {
 
 <template>
   <div class="flex flex-col gap-1.5 mb-2">
-    <div v-if="deviceStore.devices.length === 0" class="text-[10px] text-zinc-600 px-3">
+    <div v-if="deviceStore.list.length === 0" class="text-[10px] text-zinc-600 px-3">
       No devices found
     </div>
     <div 
-      v-for="device in deviceStore.devices" 
+      v-for="device in deviceStore.list" 
       :key="device.id" 
       class="flex flex-col gap-1 px-3 py-1.5 rounded-md transition-colors border border-zinc-800/50 bg-zinc-900/30"
       :title="`${device.name} (${device.ip_address})`"

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { RouterLink, RouterView } from "vue-router";
-import { RouterLink, RouterView } from "vue-router";
 import PlaybackControls from "../playback/PlaybackControls.vue";
 import DeviceHeartbeat from "./DeviceHeartbeat.vue";
 </script>
