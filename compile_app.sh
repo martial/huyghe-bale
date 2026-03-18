@@ -112,7 +112,7 @@ else
     echo ""
 fi
 
-# --- 3. Build Vue frontend ---
+# --- 3. Build frontend ---
 echo "=== Building frontend ==="
 cd "$FRONTEND_DIR"
 npm run build
@@ -234,7 +234,10 @@ rm -rf "$DMG_TEMP"
 mkdir -p "$DMG_TEMP"
 cp -R "$APP_PATH" "$DMG_TEMP/"
 ln -s /Applications "$DMG_TEMP/Applications"
-cp "$SCRIPT_DIR/Fix_App.command" "$DMG_TEMP/"
+# Fix_App.command not needed for notarized apps
+if [ -f "$SCRIPT_DIR/Fix_App.command" ]; then
+    cp "$SCRIPT_DIR/Fix_App.command" "$DMG_TEMP/"
+fi
 
 hdiutil create \
     -volname "$APP_NAME" \
