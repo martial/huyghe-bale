@@ -11,10 +11,26 @@ echo "=== GPIO OSC Controller Installer ==="
 # et ssh-agent ne passera potentiellement pas si root n'a pas les clés Github.
 # Solution : On détecte le vrai propriétaire du dossier actuel via "stat" et on force toutes 
 # les opérations locales à utiliser cet utilisateur.
-APP_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_USER="$(stat -c '%U' "$APP_DIR" 2>/dev/null || stat -f "%Su" "$APP_DIR")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Detect if we're inside the full repo (rpi-controller is a subfolder)
+# or if rpi-controller/ was cloned/copied standalone
+if [ -f "$SCRIPT_DIR/gpio_osc.py" ]; then
+    APP_DIR="$SCRIPT_DIR"
+elif [ -f "$SCRIPT_DIR/rpi-controller/gpio_osc.py" ]; then
+    APP_DIR="$SCRIPT_DIR/rpi-controller"
+else
+    echo "ERROR: Cannot find gpio_osc.py relative to $SCRIPT_DIR"
+    exit 1
+fi
+
+# Git root (for auto_update to pull from)
+GIT_DIR="$(cd "$APP_DIR" && git rev-parse --show-toplevel 2>/dev/null || echo "$APP_DIR")"
+
+APP_USER="$(stat -c '%U' "$GIT_DIR" 2>/dev/null || stat -f "%Su" "$GIT_DIR")"
 
 echo "Dossier d'installation detecte : $APP_DIR"
+echo "Racine git detectee : $GIT_DIR"
 echo "Utilisateur de service detecte : $APP_USER"
 
 # 2. Sécuriser le dossier Git (Safe Directory)
@@ -23,7 +39,7 @@ echo "Utilisateur de service detecte : $APP_USER"
 # Depuis CVE-2022-24765, Git refuse d'opérer sur un repo possédé par un utilisateur différent
 # du contexte d'exécution.
 # Solution : On ajoute explicitement ce dossier dans la config git globale de l'utilisateur.
-sudo -u "$APP_USER" git config --global --add safe.directory "$APP_DIR" || true
+sudo -u "$APP_USER" git config --global --add safe.directory "$GIT_DIR" || true
 
 # 3. Création du Virtual Environment
 # Qu'est-ce qui pourrait mal se passer ?
