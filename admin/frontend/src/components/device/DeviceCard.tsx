@@ -108,12 +108,13 @@ export default function DeviceCard({ device }: { device: Device }) {
             <button onClick={handlePing} className="text-xs text-zinc-400 hover:text-white transition-colors">
               Ping
             </button>
-            {isOutdated && (
+            {(isOutdated || isUpdating) && (
               <button
                 onClick={handleUpdate}
                 disabled={isUpdating}
-                className="text-xs text-orange-400 hover:text-orange-300 transition-colors disabled:opacity-50"
+                className="text-xs text-orange-400 hover:text-orange-300 transition-colors disabled:opacity-50 inline-flex items-center gap-1"
               >
+                {isUpdating && <span className="inline-block w-2.5 h-2.5 border border-orange-400 border-t-transparent rounded-full animate-spin" />}
                 {isUpdating ? "Updating..." : "Update"}
               </button>
             )}

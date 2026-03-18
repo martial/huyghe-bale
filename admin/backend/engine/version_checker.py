@@ -10,6 +10,12 @@ _cache = {"data": None, "ts": 0}
 CACHE_TTL = 60
 
 
+def invalidate_cache():
+    """Clear the version cache so next call fetches fresh data."""
+    _cache["data"] = None
+    _cache["ts"] = 0
+
+
 def _git_root():
     """Find the git repo root from this file's location."""
     cwd = os.path.dirname(os.path.abspath(__file__))

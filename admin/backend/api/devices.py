@@ -10,7 +10,7 @@ from storage.json_store import JsonStore
 from engine.osc_sender import OscSender
 from engine.osc_receiver import OscReceiver
 from engine.network_scanner import scan_subnet_stream
-from engine.version_checker import get_latest_version
+from engine.version_checker import get_latest_version, invalidate_cache as invalidate_version_cache
 from config import DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -178,6 +178,8 @@ def update_device_software(device_id):
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read())
+            if data.get("success"):
+                invalidate_version_cache()
             return jsonify(data)
     except Exception as e:
         return jsonify({"success": False, "logs": str(e), "new_version": "unknown"}), 502
