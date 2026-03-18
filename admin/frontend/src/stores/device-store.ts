@@ -1,10 +1,10 @@
 import { create } from "zustand";
-import type { Device, DiscoveredHost } from "../types/device";
+import type { Device, DeviceStatus, DiscoveredHost } from "../types/device";
 import * as api from "../api/devices";
 
 interface DeviceState {
   list: Device[];
-  deviceStatuses: Record<string, boolean>;
+  deviceStatuses: Record<string, DeviceStatus>;
   loading: boolean;
   scanning: boolean;
   scanResults: DiscoveredHost[];
@@ -96,9 +96,15 @@ function startStatusStream() {
   cleanupStatusStream?.();
   cleanupStatusStream = api.monitorDeviceStatus((statuses) => {
     const prev = useDeviceStore.getState().deviceStatuses;
-    // Skip update if nothing changed
-    const changed = Object.keys(statuses).length !== Object.keys(prev).length ||
-      Object.entries(statuses).some(([id, val]) => prev[id] !== val);
+    let changed = false;
+    for (const id in statuses) {
+      if (prev[id] !== statuses[id]) { changed = true; break; }
+    }
+    if (!changed) {
+      for (const id in prev) {
+        if (!(id in statuses)) { changed = true; break; }
+      }
+    }
     if (changed) {
       useDeviceStore.setState({ deviceStatuses: statuses });
     }
@@ -106,3 +112,7 @@ function startStatusStream() {
 }
 
 startStatusStream();
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => cleanupStatusStream?.());
+}

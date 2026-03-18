@@ -57,35 +57,37 @@ def scan_network():
 
 @bp.route("/status", methods=["GET"])
 def device_status_stream():
-    """SSE endpoint streaming 'online' status for all devices every 5 seconds."""
+    """SSE endpoint streaming online/offline status for all devices."""
     def generate():
         last_ping_time = 0
         logger.info("SSE status stream started")
         while True:
-            # 1. Periodically broadcast ping to all devices
             now = time.time()
+
+            devices = store.list_all()
+
+            # Periodically broadcast ping to all devices
             if now - last_ping_time > 5.0:
                 last_ping_time = now
-                devices = store.list_all()
                 logger.info("Sending /sys/ping to %d device(s)", len(devices))
                 for device in devices:
                     if ip := device.get("ip_address"):
                         try:
                             port = device.get("osc_port", 9000)
                             osc.send(ip, port, "/sys/ping", 9001)
-                            logger.debug("  Pinged %s:%d", ip, port)
                         except Exception as e:
                             logger.warning("  Ping failed for %s: %s", ip, e)
 
-            # 2. Yield current status for all devices (based on pongs received within last 6 seconds)
+            # Yield online/offline based on pong received within timeout
             statuses = {}
-            for device in store.list_all():
+            for device in devices:
                 if ip := device.get("ip_address"):
-                    statuses[device["id"]] = receiver.get_status(ip, timeout=6.0)
+                    pong = receiver.get_status(ip, timeout=6.0)
+                    statuses[device["id"]] = "online" if pong else "offline"
 
             logger.debug("Device statuses: %s (last_seen: %s)", statuses, receiver.last_seen)
             yield f"data: {json.dumps(statuses)}\n\n"
-            time.sleep(1.0)  # Stream updates once a second
+            time.sleep(1.0)
 
     return Response(generate(), mimetype="text/event-stream")
 

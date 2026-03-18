@@ -5,6 +5,8 @@ export interface Device {
   osc_port: number;
 }
 
+export type DeviceStatus = "online" | "offline";
+
 export interface DiscoveredHost {
   ip: string;
   osc_port: number;

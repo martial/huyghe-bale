@@ -1,5 +1,5 @@
 import { get, post, put, del } from "./client";
-import type { Device, DiscoveredHost } from "../types/device";
+import type { Device, DeviceStatus, DiscoveredHost } from "../types/device";
 
 export function listDevices() {
   return get<Device[]>("/devices");
@@ -81,7 +81,7 @@ export function scanNetworkStream(
 }
 
 export function monitorDeviceStatus(
-  onStatusUpdate: (statuses: Record<string, boolean>) => void,
+  onStatusUpdate: (statuses: Record<string, DeviceStatus>) => void,
 ) {
   const eventSource = new EventSource("/api/v1/devices/status");
   

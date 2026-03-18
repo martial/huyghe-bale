@@ -8,7 +8,7 @@ export default function DeviceCard({ device }: { device: Device }) {
   const remove = useDeviceStore((s) => s.remove);
   const ping = useDeviceStore((s) => s.ping);
   const notify = useNotificationStore((s) => s.notify);
-  const isOnline = useDeviceStore((s) => s.deviceStatuses[device.id]);
+  const isOnline = useDeviceStore((s) => s.deviceStatuses[device.id] === "online");
 
   const [pingStatus, setPingStatus] = useState<"idle" | "pinging" | "ok" | "error">("idle");
   const [editing, setEditing] = useState(false);
