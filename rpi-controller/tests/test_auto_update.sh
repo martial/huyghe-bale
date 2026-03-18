@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-# Very simple unit test framework for bash
 pass() { echo "✅ $1"; }
 fail() { echo "❌ $1"; exit 1; }
 
 echo "=== Running auto_update.sh Unit Tests ==="
 
-# Setup
 TEST_DIR=$(mktemp -d)
 REMOTE_REPO="$TEST_DIR/remote.git"
 APP_DIR="$TEST_DIR/gpio-osc"
@@ -27,10 +25,9 @@ cd "$APP_DIR"
 python3 -m venv venv
 ./venv/bin/pip install --quiet -r requirements.txt
 
-# Copy the script and patch it for testing
 cp "$SCRIPT_TO_TEST" "$APP_DIR/auto_update.sh"
 sed -i '' "s|APP_DIR=\"/opt/gpio-osc\"|APP_DIR=\"$APP_DIR\"|g" "$APP_DIR/auto_update.sh"
-sed -i '' "s|LOG_FILE=\"/var/log/gpio-osc-updater.log\"|LOG_FILE=\"$TEST_DIR/updater.log\"|g" "$APP_DIR/auto_update.sh"
+sed -i '' "s|LOG_FILE=\"/tmp/gpio-osc-updater.log\"|LOG_FILE=\"$TEST_DIR/updater.log\"|g" "$APP_DIR/auto_update.sh"
 
 # Test 1: No update
 cd "$APP_DIR"
@@ -63,12 +60,21 @@ git commit --quiet -am "v3-bad"
 git push --quiet origin main
 
 cd "$APP_DIR"
-# Should return non-zero exit code, so we use || true
 ./auto_update.sh || true
 if grep -q "PIP install failed. Rolling back..." "$TEST_DIR/updater.log" && [ "$(cat version.txt)" == "v2" ]; then
     pass "Test 3: Rollback on pip failure works correctly"
 else
     fail "Test 3: Failed to rollback on bad pip requirement"
+fi
+
+# Test 4: Offline mode
+cd "$APP_DIR"
+git remote set-url origin /tmp/does-not-exist-repo.git
+./auto_update.sh
+if grep -q "Failed to fetch from origin. Continuing offline." "$TEST_DIR/updater.log"; then
+    pass "Test 4: Offline mode handles failure gracefully and continues"
+else
+    fail "Test 4: Failed to handle offline mode"
 fi
 
 # Cleanup
