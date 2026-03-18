@@ -1,13 +1,15 @@
 import { defineConfig } from "vite";
-import vue from "@vitejs/plugin-vue";
+import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+const backendPort = process.env.VITE_BACKEND_PORT || "5001";
+
 export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+  plugins: [react(), tailwindcss()],
   server: {
     proxy: {
       "/api": {
-        target: "http://localhost:5001",
+        target: `http://localhost:${backendPort}`,
         changeOrigin: true,
       },
     },

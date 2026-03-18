@@ -19,6 +19,7 @@ import requests
 import RPi.GPIO as GPIO
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
+from pythonosc.udp_client import SimpleUDPClient
 
 from config import (
     OSC_PORT, OSC_ADDRESS_A, OSC_ADDRESS_B,
@@ -153,6 +154,24 @@ def handle_b(address, *args):
     logger.debug("B = %.3f (duty %.1f%%)", value, duty)
 
 
+def handle_ping(client_address, address, *args):
+    """Handle /sys/ping OSC message. args[0] should be the return port."""
+    if not args:
+        return
+    
+    try:
+        return_port = int(args[0])
+        # client_address tuple is (ip, port)
+        origin_ip = client_address[0]
+        logger.debug(f"Ping received from {origin_ip}. Replying to port {return_port}")
+        
+        client = SimpleUDPClient(origin_ip, return_port)
+        # Reply with the IP address of the sender so they can verify who it came from relative to them
+        client.send_message("/sys/pong", origin_ip)
+    except Exception as e:
+        logger.error(f"Failed to handle ping: {e}")
+
+
 def cleanup(*_):
     """Zero all outputs and clean up GPIO."""
     if shutdown_event.is_set():
@@ -188,6 +207,7 @@ def main():
     dispatcher = Dispatcher()
     dispatcher.map(OSC_ADDRESS_A, handle_a)
     dispatcher.map(OSC_ADDRESS_B, handle_b)
+    dispatcher.map("/sys/ping", handle_ping, needs_reply_address=True)
 
     server = BlockingOSCUDPServer(("0.0.0.0", OSC_PORT), dispatcher)
     logger.info("OSC server listening on 0.0.0.0:%d", OSC_PORT)

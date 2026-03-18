@@ -23,6 +23,7 @@ class PlaybackEngine:
 
         # State
         self.playing = False
+        self.paused = False
         self.elapsed = 0.0
         self.total_duration = 0.0
         self.current_values = {"a": 0.0, "b": 0.0}
@@ -33,11 +34,15 @@ class PlaybackEngine:
         self._orchestration: Optional[dict] = None
         self._resolved_timelines: dict[str, dict] = {}
         self._current_step_index = 0
+        self._active_lane: Optional[str] = None
+        self._pause_event = threading.Event()  # Set = running, Clear = paused
+        self._pause_event.set()
 
     def status(self) -> dict:
         with self._lock:
             return {
                 "playing": self.playing,
+                "paused": self.paused,
                 "elapsed": round(self.elapsed, 3),
                 "total_duration": round(self.total_duration, 3),
                 "current_values": {k: round(v, 4) for k, v in self.current_values.items()},
@@ -45,7 +50,7 @@ class PlaybackEngine:
                 "id": self._playback_id,
             }
 
-    def start_timeline(self, timeline: dict, devices: list[dict]):
+    def start_timeline(self, timeline: dict, devices: list[dict], lane: str = None):
         """Start playing a single timeline to the given devices."""
         self.stop()
         with self._lock:
@@ -53,6 +58,7 @@ class PlaybackEngine:
             self._playback_id = timeline.get("id")
             self._timeline = timeline
             self._devices = devices
+            self._active_lane = lane
             self.total_duration = timeline.get("duration", 0.0)
             self.elapsed = 0.0
             self.playing = True
@@ -94,13 +100,36 @@ class PlaybackEngine:
         self._thread.start()
         logger.info("Playback started: orchestration %s", orchestration.get("id"))
 
+    def pause(self):
+        """Pause playback, keeping position and outputs."""
+        with self._lock:
+            if not self.playing or self.paused:
+                return
+            self.paused = True
+            self._pause_elapsed = self.elapsed
+        self._pause_event.clear()
+        logger.info("Playback paused at %.1fs", self._pause_elapsed)
+
+    def resume(self):
+        """Resume playback from paused position."""
+        with self._lock:
+            if not self.playing or not self.paused:
+                return
+            self.paused = False
+            # Adjust seek offset so elapsed continues from where we paused
+            self._seek_offset = self._pause_elapsed - (time.monotonic() - self._start_time)
+        self._pause_event.set()
+        logger.info("Playback resumed from %.1fs", self._pause_elapsed)
+
     def stop(self):
         """Stop playback and zero all outputs."""
         self._stop_event.set()
+        self._pause_event.set()  # Unblock if paused so thread can exit
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
 
         with self._lock:
+            self.paused = False
             # Zero all devices
             for device in self._devices:
                 try:
@@ -119,33 +148,39 @@ class PlaybackEngine:
 
         logger.info("Playback stopped")
 
+    def seek(self, elapsed: float):
+        """Seek to a specific elapsed time during playback."""
+        with self._lock:
+            if not self.playing:
+                return
+            elapsed = max(0.0, min(elapsed, self.total_duration))
+            self._seek_offset = elapsed - (time.monotonic() - self._start_time)
+            self.elapsed = elapsed
+
     def _run_timeline(self):
         """Main timeline playback loop."""
         interval = 1.0 / self.tick_rate
         start_time = time.monotonic()
+        self._start_time = start_time
+        self._seek_offset = 0.0
 
         while not self._stop_event.is_set():
-            elapsed = time.monotonic() - start_time
+            # Block while paused
+            self._pause_event.wait()
+            if self._stop_event.is_set():
+                break
+
+            elapsed = time.monotonic() - start_time + self._seek_offset
 
             with self._lock:
                 if elapsed >= self.total_duration:
                     self.elapsed = self.total_duration
                     break
                 self.elapsed = elapsed
-                # Calculate values inside lock
-                lanes = self._timeline.get("lanes", {})
-                for lane_key in ("a", "b"):
-                    lane = lanes.get(lane_key, {})
-                    points = lane.get("points", [])
-                    self.current_values[lane_key] = evaluate_lane(points, elapsed)
-                devices_snapshot = list(self._devices)
-                vals_snapshot = dict(self.current_values)
-                
-            # Send OSC OUTSIDE the lock
-            self._send_osc_snapshot(devices_snapshot, vals_snapshot)
+                self._evaluate_and_send(self._timeline, elapsed)
 
             # Sleep for next tick
-            next_tick = start_time + (int(elapsed / interval) + 1) * interval
+            next_tick = start_time + (int((time.monotonic() - start_time) / interval) + 1) * interval
             sleep_time = next_tick - time.monotonic()
             if sleep_time > 0:
                 self._stop_event.wait(sleep_time)
@@ -153,31 +188,17 @@ class PlaybackEngine:
         with self._lock:
             # Send final values
             if self._timeline and not self._stop_event.is_set():
-                lanes = self._timeline.get("lanes", {})
-                for lane_key in ("a", "b"):
-                    lane = lanes.get(lane_key, {})
-                    points = lane.get("points", [])
-                    self.current_values[lane_key] = evaluate_lane(points, self.total_duration)
-                devices_snapshot = list(self._devices)
-                vals_snapshot = dict(self.current_values)
-            else:
-                devices_snapshot = []
-                vals_snapshot = {}
+                self._evaluate_and_send(self._timeline, self.total_duration)
             self.playing = False
-            
-        if devices_snapshot:
-            self._send_osc_snapshot(devices_snapshot, vals_snapshot)
 
     def _run_orchestration(self):
         """Main orchestration playback loop."""
         interval = 1.0 / self.tick_rate
+        global_start = time.monotonic()
         steps = self._orchestration.get("steps", [])
         loop = self._orchestration.get("loop", False)
 
         while not self._stop_event.is_set():
-            # Fix 3: Reset global start time at the beginning of each loop iteration
-            global_start = time.monotonic()
-            
             for step_idx, step in enumerate(steps):
                 if self._stop_event.is_set():
                     return
@@ -218,17 +239,7 @@ class PlaybackEngine:
 
                     with self._lock:
                         self.elapsed = time.monotonic() - global_start
-                        # Calculate values inside lock
-                        lanes = tl.get("lanes", {})
-                        for lane_key in ("a", "b"):
-                            lane = lanes.get(lane_key, {})
-                            points = lane.get("points", [])
-                            self.current_values[lane_key] = evaluate_lane(points, step_elapsed)
-                        devices_snapshot = list(self._devices)
-                        vals_snapshot = dict(self.current_values)
-                        
-                    # Send OSC OUTSIDE the lock
-                    self._send_osc_snapshot(devices_snapshot, vals_snapshot)
+                        self._evaluate_and_send(tl, step_elapsed)
 
                     next_tick = step_start + (int(step_elapsed / interval) + 1) * interval
                     sleep_time = next_tick - time.monotonic()
@@ -242,13 +253,23 @@ class PlaybackEngine:
             self.elapsed = self.total_duration
             self.playing = False
 
-    def _send_osc_snapshot(self, devices: list[dict], values: dict):
-        """Send OSC to all active devices (runs outside the state lock)."""
-        for device in devices:
+    def _evaluate_and_send(self, timeline: dict, current_time: float):
+        """Evaluate lanes and send OSC to all active devices."""
+        lanes = timeline.get("lanes", {})
+        for lane_key in ("a", "b"):
+            if self._active_lane and lane_key != self._active_lane:
+                self.current_values[lane_key] = 0.0
+                continue
+            lane = lanes.get(lane_key, {})
+            points = lane.get("points", [])
+            value = evaluate_lane(points, current_time)
+            self.current_values[lane_key] = value
+
+        for device in self._devices:
             try:
                 ip = device["ip_address"]
                 port = device.get("osc_port", 9000)
-                self.osc.send(ip, port, "/gpio/a", values.get("a", 0.0))
-                self.osc.send(ip, port, "/gpio/b", values.get("b", 0.0))
+                self.osc.send(ip, port, "/gpio/a", self.current_values["a"])
+                self.osc.send(ip, port, "/gpio/b", self.current_values["b"])
             except Exception as e:
                 logger.warning("OSC send error to %s: %s", device.get("id"), e)

@@ -14,6 +14,7 @@ def create_app(dist_dir=None, data_dir=None):
     from api import timelines, devices, orchestrations, playback, export, settings
     from api.playback import set_engine
     from engine.playback import PlaybackEngine
+    from engine.osc_receiver import OscReceiver
 
     app = Flask(__name__, static_folder=None)
     CORS(app)
@@ -35,6 +36,10 @@ def create_app(dist_dir=None, data_dir=None):
     engine = PlaybackEngine()
     set_engine(engine)
 
+    # Initialize and start OSC Receiver
+    receiver = OscReceiver(port=9001)
+    receiver.start()
+
     # SPA fallback — serve frontend dist if it exists
     if dist_dir is None:
         dist_dir = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
@@ -51,5 +56,6 @@ def create_app(dist_dir=None, data_dir=None):
 
 
 if __name__ == "__main__":
+    port = int(os.environ.get("FLASK_PORT", 5001))
     app = create_app()
-    app.run(debug=True, host="0.0.0.0", port=5001)
+    app.run(debug=True, host="0.0.0.0", port=port)

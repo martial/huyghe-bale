@@ -16,6 +16,7 @@ def _summary(tl: dict) -> dict:
         "duration": tl.get("duration", 0),
         "lane_a_points": len(tl.get("lanes", {}).get("a", {}).get("points", [])),
         "lane_b_points": len(tl.get("lanes", {}).get("b", {}).get("points", [])),
+        "created_at": tl.get("created_at"),
     }
 
 

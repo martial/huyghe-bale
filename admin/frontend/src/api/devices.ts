@@ -79,3 +79,22 @@ export function scanNetworkStream(
 
   return controller;
 }
+
+export function monitorDeviceStatus(
+  onStatusUpdate: (statuses: Record<string, boolean>) => void,
+) {
+  const eventSource = new EventSource("/api/v1/devices/status");
+  
+  eventSource.onmessage = (event) => {
+    try {
+      const statuses = JSON.parse(event.data);
+      onStatusUpdate(statuses);
+    } catch {
+      // Ignore parse errors from SSE
+    }
+  };
+
+  return () => {
+    eventSource.close();
+  };
+}

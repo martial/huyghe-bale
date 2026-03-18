@@ -5,12 +5,25 @@ export function startPlayback(data: {
   type: "timeline" | "orchestration";
   id: string;
   device_ids: string[];
+  lane?: "a" | "b";
 }) {
   return post<{ ok: boolean; message: string }>("/playback/start", data);
 }
 
 export function stopPlayback() {
   return post<{ ok: boolean; message: string }>("/playback/stop");
+}
+
+export function pausePlayback() {
+  return post<{ ok: boolean }>("/playback/pause");
+}
+
+export function resumePlayback() {
+  return post<{ ok: boolean }>("/playback/resume");
+}
+
+export function seekPlayback(elapsed: number) {
+  return post<{ ok: boolean }>("/playback/seek", { elapsed });
 }
 
 export function getPlaybackStatus() {

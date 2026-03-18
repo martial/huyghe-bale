@@ -1,16 +1,19 @@
 """Device API routes."""
 
 import json
+import time
 
 from flask import Blueprint, request, jsonify, Response
 from storage.json_store import JsonStore
 from engine.osc_sender import OscSender
+from engine.osc_receiver import OscReceiver
 from engine.network_scanner import scan_subnet_stream
 from config import DATA_DIR
 
 bp = Blueprint("devices", __name__)
 store = JsonStore(DATA_DIR, "devices", "dev")
 osc = OscSender()
+receiver = OscReceiver(port=9001)
 
 
 @bp.route("", methods=["GET"])
@@ -49,6 +52,35 @@ def scan_network():
     return Response(generate(), mimetype="text/event-stream")
 
 
+@bp.route("/status", methods=["GET"])
+def device_status_stream():
+    """SSE endpoint streaming 'online' status for all devices every 5 seconds."""
+    def generate():
+        last_ping_time = 0
+        while True:
+            # 1. Periodically broadcast ping to all devices
+            now = time.time()
+            if now - last_ping_time > 5.0:
+                last_ping_time = now
+                for device in store.list_all():
+                    if ip := device.get("ip_address"):
+                        try:
+                            osc.send(ip, device.get("osc_port", 9000), "/sys/ping", 9001)
+                        except Exception:
+                            pass
+            
+            # 2. Yield current status for all devices (based on pongs received within last 6 seconds)
+            statuses = {}
+            for device in store.list_all():
+                if ip := device.get("ip_address"):
+                    statuses[device["id"]] = receiver.get_status(ip, timeout=6.0)
+            
+            yield f"data: {json.dumps(statuses)}\n\n"
+            time.sleep(1.0)  # Stream updates once a second
+
+    return Response(generate(), mimetype="text/event-stream")
+
+
 @bp.route("/<device_id>", methods=["GET"])
 def get_device(device_id):
     device = store.get(device_id)
@@ -79,7 +111,8 @@ def ping_device(device_id):
     if not device:
         return jsonify({"error": "Not found"}), 404
     try:
-        osc.send(device["ip_address"], device.get("osc_port", 9000), "/gpio/a", 0.0)
-        return jsonify({"ok": True, "message": "OSC packet sent"})
+        # Pinging explicitly sets off a `/sys/ping`
+        osc.send(device["ip_address"], device.get("osc_port", 9000), "/sys/ping", 9001)
+        return jsonify({"ok": True, "message": "Ping sent"})
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)}), 500

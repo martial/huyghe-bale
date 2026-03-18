@@ -26,6 +26,7 @@ def start_playback():
     playback_type = data.get("type")
     playback_id = data.get("id")
     device_ids = data.get("device_ids", [])
+    lane = data.get("lane")  # optional: "a", "b", or None for both
 
     if not playback_type or not playback_id:
         return jsonify({"error": "type and id required"}), 400
@@ -46,7 +47,7 @@ def start_playback():
         timeline = timeline_store.get(playback_id)
         if not timeline:
             return jsonify({"error": "Timeline not found"}), 404
-        _engine.start_timeline(timeline, devices)
+        _engine.start_timeline(timeline, devices, lane=lane)
         return jsonify({"ok": True, "message": "Timeline playback started"})
 
     elif playback_type == "orchestration":
@@ -68,6 +69,28 @@ def start_playback():
         return jsonify({"ok": True, "message": "Orchestration playback started"})
 
     return jsonify({"error": "Invalid type (use 'timeline' or 'orchestration')"}), 400
+
+
+@bp.route("/pause", methods=["POST"])
+def pause_playback():
+    _engine.pause()
+    return jsonify({"ok": True})
+
+
+@bp.route("/resume", methods=["POST"])
+def resume_playback():
+    _engine.resume()
+    return jsonify({"ok": True})
+
+
+@bp.route("/seek", methods=["POST"])
+def seek_playback():
+    data = request.get_json() or {}
+    elapsed = data.get("elapsed")
+    if elapsed is None:
+        return jsonify({"error": "elapsed required"}), 400
+    _engine.seek(float(elapsed))
+    return jsonify({"ok": True})
 
 
 @bp.route("/stop", methods=["POST"])

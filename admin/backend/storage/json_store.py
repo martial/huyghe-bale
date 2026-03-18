@@ -45,10 +45,13 @@ class JsonStore:
                 return json.load(f)
 
     def create(self, data: dict) -> dict:
-        """Create a new entity. Assigns ID if not present."""
+        """Create a new entity. Assigns ID and created_at if not present."""
+        import datetime
         with self._lock:
             if "id" not in data or not data["id"]:
                 data["id"] = self._generate_id()
+            if "created_at" not in data:
+                data["created_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
             path = self._path(data["id"])
             with open(path, "w") as f:
                 json.dump(data, f, indent=2)

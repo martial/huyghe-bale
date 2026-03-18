@@ -32,6 +32,7 @@ export interface Timeline {
   id: string;
   name: string;
   duration: number;
+  created_at?: string;
   lanes: {
     a: Lane;
     b: Lane;
@@ -44,4 +45,5 @@ export interface TimelineSummary {
   duration: number;
   lane_a_points: number;
   lane_b_points: number;
+  created_at?: string;
 }
