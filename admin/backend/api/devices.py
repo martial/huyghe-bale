@@ -90,7 +90,9 @@ def device_status_stream():
                     statuses[device["id"]] = "online" if pong else "offline"
 
             # Periodically fetch version from online devices via HTTP
-            if now - last_version_check > 30.0:
+            # Check every 5s until we have at least one version, then every 30s
+            version_interval = 30.0 if cached_versions else 5.0
+            if now - last_version_check > version_interval:
                 last_version_check = now
                 for device in devices:
                     if statuses.get(device["id"]) != "online":

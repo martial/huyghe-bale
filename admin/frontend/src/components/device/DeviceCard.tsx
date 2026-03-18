@@ -52,7 +52,7 @@ export default function DeviceCard({ device }: { device: Device }) {
   }
 
   return (
-    <div className="p-5 rounded-xl border border-zinc-800/50 bg-zinc-900/80 shadow-sm transition-all duration-200 hover:border-zinc-700/50 hover:scale-[1.02]">
+    <div className="p-5 rounded-xl border border-zinc-800/50 bg-zinc-900/80 shadow-sm transition-all duration-200 hover:border-zinc-700/50">
       {!editing ? (
         <>
           <div className="flex items-start justify-between">
@@ -79,6 +79,14 @@ export default function DeviceCard({ device }: { device: Device }) {
           </div>
 
           {/* Version info */}
+          {isOnline && !deviceVersion && (
+            <div className="flex items-center gap-2 mt-2">
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-zinc-800 text-[10px] font-mono text-zinc-500 border border-zinc-700/50">
+                <span className="inline-block w-2.5 h-2.5 border border-zinc-500 border-t-transparent rounded-full animate-spin" />
+                Fetching version...
+              </span>
+            </div>
+          )}
           {isOnline && deviceVersion && (
             <div className="flex items-center gap-2 mt-2">
               <span className="inline-flex items-center px-2 py-0.5 rounded bg-zinc-800 text-[10px] font-mono text-zinc-400 border border-zinc-700/50">
