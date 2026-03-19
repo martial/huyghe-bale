@@ -19,6 +19,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="PIERRE HUYGHE BALE"
 APPS_DIR="$SCRIPT_DIR/apps"
 REPO="martial/huyghe-bale"
+GCS_BUCKET="gs://apps-screen-club"
+REPO_NAME="huyghe-bale"
 
 echo "========================================"
 echo "  PIERRE HUYGHE BALE — Deploy"
@@ -97,6 +99,24 @@ gh release create "$VERSION" \
     --notes "$RELEASE_NOTES" \
     "${ASSETS[@]}"
 
+# --- Upload to Google Cloud Storage ---
+echo ""
+echo "=== Uploading to GCS ==="
+GCS_PREFIX="$GCS_BUCKET/$REPO_NAME/$VERSION"
+
+GCS_LINKS=()
+if [ -f "$PKG_PATH" ]; then
+    gsutil cp "$PKG_PATH" "$GCS_PREFIX/$APP_NAME.pkg"
+    GCS_LINKS+=("$GCS_PREFIX/$APP_NAME.pkg")
+fi
+if [ -f "$DMG_PATH" ]; then
+    gsutil cp "$DMG_PATH" "$GCS_PREFIX/$APP_NAME.dmg"
+    GCS_LINKS+=("$GCS_PREFIX/$APP_NAME.dmg")
+fi
+
+# Make uploaded files publicly readable
+gsutil -m acl ch -r -u AllUsers:R "$GCS_PREFIX/"
+
 echo ""
 echo "========================================"
 echo "  Deploy complete!"
@@ -105,4 +125,10 @@ echo ""
 echo "  Tag:     $VERSION"
 echo "  Commit:  $GIT_HASH"
 echo "  Release: https://github.com/$REPO/releases/tag/$VERSION"
+echo ""
+echo "  Downloads:"
+for link in "${GCS_LINKS[@]}"; do
+    PUBLIC_URL="${link/gs:\/\//https://storage.googleapis.com/}"
+    echo "    $PUBLIC_URL"
+done
 echo ""
