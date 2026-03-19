@@ -34,6 +34,7 @@ apps/
 admin/build/
 admin/backend/build/
 admin/backend/dist/
+admin/backend/VERSION
 *.spec
 *.dmg
 

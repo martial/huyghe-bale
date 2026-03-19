@@ -176,16 +176,14 @@ function startStatusStream() {
 
     // Clear restarting flag once we get a fresh version for that device
     const restarting = state.restartingDevices;
-    let restartingChanged = false;
-    if (restarting.size > 0 && versionChanged) {
+    if (restarting.size > 0) {
       const newRestarting = new Set(restarting);
       for (const id of restarting) {
         if (versions[id]) {
           newRestarting.delete(id);
-          restartingChanged = true;
         }
       }
-      if (restartingChanged) {
+      if (newRestarting.size !== restarting.size) {
         useDeviceStore.setState({ restartingDevices: newRestarting });
       }
     }

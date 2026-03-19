@@ -112,16 +112,28 @@ else
     echo ""
 fi
 
-# --- 3. Build frontend ---
+# --- 3. Generate VERSION file from current git state ---
+echo "=== Generating VERSION file ==="
+VERSION_FILE="$BACKEND_DIR/VERSION"
+GIT_HASH=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD)
+GIT_DATE=$(git -C "$SCRIPT_DIR" log -1 --format=%ci)
+GIT_MSG=$(git -C "$SCRIPT_DIR" log -1 --format=%s)
+cat > "$VERSION_FILE" <<VEOF
+{"hash": "$GIT_HASH", "date": "$GIT_DATE", "message": "$GIT_MSG"}
+VEOF
+echo "  Version: $GIT_HASH ($GIT_DATE)"
+echo ""
+
+# --- 4. Build frontend ---
 echo "=== Building frontend ==="
 cd "$FRONTEND_DIR"
 npm run build
 echo ""
 
-# --- 4. Delete stale .spec file (it overrides CLI flags) ---
+# --- 5. Delete stale .spec file (it overrides CLI flags) ---
 rm -f "$BACKEND_DIR/$APP_NAME.spec"
 
-# --- 5. Build Mac .app with PyInstaller ---
+# --- 6. Build Mac .app with PyInstaller ---
 echo "=== Building Mac .app ==="
 cd "$BACKEND_DIR"
 "$VENV/pyinstaller" \
@@ -132,47 +144,51 @@ cd "$BACKEND_DIR"
     --osx-bundle-identifier "com.pierrehuyghe.bale" \
     --codesign-identity "$SIGN_IDENTITY" \
     --add-data "../frontend/dist:frontend/dist" \
+    --add-data "VERSION:." \
     launcher.py
 echo ""
 
-# --- 6. Copy .app to apps/ ---
+# Clean up generated VERSION file
+rm -f "$VERSION_FILE"
+
+# --- 7. Copy .app to apps/ ---
 echo "=== Copying app to apps/ ==="
 mkdir -p "$APPS_DIR"
 rm -rf "$APPS_DIR/$APP_NAME.app"
 cp -R "$BACKEND_DIR/dist/$APP_NAME.app" "$APPS_DIR/"
 APP_PATH="$APPS_DIR/$APP_NAME.app"
 
-# --- 7. Post-process Info.plist ---
+# --- 8. Post-process Info.plist ---
 echo "=== Updating Info.plist ==="
 PLIST="$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.pierrehuyghe.bale" "$PLIST"
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.0" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $GIT_HASH" "$PLIST"
 /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 12.0" "$PLIST" 2>/dev/null || \
 /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 12.0" "$PLIST"
 echo ""
 
-# --- 8. Sign inside-out with entitlements ---
+# --- 9. Sign inside-out with entitlements ---
 echo "=== Signing app (inside-out with hardened runtime) ==="
 
-# 8a. Sign all .dylib and .so files
+# 9a. Sign all .dylib and .so files
 echo "  Signing libraries..."
 find "$APP_PATH/Contents" \( -name "*.dylib" -o -name "*.so" \) \
     -exec codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime {} \;
 
-# 8b. Sign .framework bundles (if any)
+# 9b. Sign .framework bundles (if any)
 if [ -d "$APP_PATH/Contents/Frameworks" ]; then
     echo "  Signing frameworks..."
     find "$APP_PATH/Contents/Frameworks" -name "*.framework" -maxdepth 1 \
         -exec codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime {} \;
 fi
 
-# 8c. Sign the main executable with entitlements
+# 9c. Sign the main executable with entitlements
 echo "  Signing main executable..."
 codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime \
     --entitlements "$ENTITLEMENTS" \
     "$APP_PATH/Contents/MacOS/$APP_NAME"
 
-# 8d. Sign the outer .app bundle
+# 9d. Sign the outer .app bundle
 echo "  Signing app bundle..."
 codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime \
     --entitlements "$ENTITLEMENTS" "$APP_PATH"
@@ -182,7 +198,7 @@ echo "  Verifying signature..."
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 echo ""
 
-# --- 9. Notarize ---
+# --- 10. Notarize ---
 echo "=== Notarizing app (this may take a few minutes) ==="
 
 # Create zip for submission
@@ -205,7 +221,7 @@ echo "=== Verifying notarization ==="
 spctl --assess --type execute -vvv "$APP_PATH"
 echo ""
 
-# --- 10. Build .pkg installer (primary distribution) ---
+# --- 11. Build .pkg installer (primary distribution) ---
 echo "=== Building .pkg installer ==="
 PKG_ROOT="$APPS_DIR/pkg_root"
 rm -rf "$PKG_ROOT"
@@ -216,7 +232,7 @@ PKG_PATH="$APPS_DIR/$APP_NAME.pkg"
 pkgbuild \
     --root "$PKG_ROOT" \
     --identifier "com.pierrehuyghe.bale" \
-    --version "1.0.0" \
+    --version "$GIT_HASH" \
     --install-location "/" \
     --scripts "$PKG_SCRIPTS" \
     "$PKG_PATH"
@@ -224,7 +240,7 @@ pkgbuild \
 rm -rf "$PKG_ROOT"
 echo ""
 
-# --- 11. Build DMG (fallback) ---
+# --- 12. Build DMG (fallback) ---
 echo "=== Building DMG ==="
 DMG_PATH="$APPS_DIR/$APP_NAME.dmg"
 rm -f "$DMG_PATH"
