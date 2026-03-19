@@ -39,7 +39,7 @@ if ! gh auth status &>/dev/null; then
 fi
 
 # --- Ensure working tree is clean ---
-if [ -n "$(git -C "$SCRIPT_DIR" status --porcelain)" ]; then
+if [ -n "$(git -C "$SCRIPT_DIR" status --porcelain --untracked-files=no)" ]; then
     echo "ERROR: Working tree is not clean. Commit or stash changes first."
     git -C "$SCRIPT_DIR" status --short
     exit 1
