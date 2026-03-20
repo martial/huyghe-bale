@@ -1,5 +1,7 @@
 # PIERRE HUYGHE BALE
 
+[![Build App](https://github.com/martial/huyghe-bale/actions/workflows/build.yml/badge.svg)](https://github.com/martial/huyghe-bale/actions/workflows/build.yml)
+
 GPIO timeline controller for art installation. Web admin to design PWM automation curves (two channels A/B), played back via OSC to Raspberry Pis driving L298N motor controllers + fans.
 
 ## Architecture
@@ -50,15 +52,20 @@ cd admin/backend
 # Frontend only
 cd admin/frontend && npm run build
 
-# Mac .app (PyInstaller — bundles Flask + React into native macOS window)
-cd admin/backend
-../.venv/bin/pyinstaller "PIERRE HUYGHE BALE.spec"
-# Output: admin/backend/dist/PIERRE HUYGHE BALE.app
+# Mac .app (signed + notarized)
+./compile_app.sh
+
+# Windows .exe
+# Run on Windows or use GitHub Actions
+powershell -ExecutionPolicy Bypass -File compile_app_windows.ps1
 ```
 
-When running as `.app`, data is stored in `~/Library/Application Support/PierreHuygheBale/data/`.
+CI builds both platforms via GitHub Actions (manual dispatch or tag push). Artifacts are downloadable from the Actions tab.
 
-The app is unsigned — recipients must right-click → Open on first launch.
+When running as `.app`, data is stored in `~/Library/Application Support/PierreHuygheBale/data/`.
+On Windows, data is stored in `%APPDATA%\PierreHuygheBale\data\`.
+
+The macOS app is signed and notarized (Developer ID). The Windows `.exe` is unsigned — SmartScreen may warn on first run.
 
 ## RPi Setup
 
