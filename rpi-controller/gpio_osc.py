@@ -274,11 +274,11 @@ def handle_a(address, *args):
         if not args:
             return
         value = clamp(float(args[0]))
-        duty = value * 100.0
+        duty = round(value * 100.0, 1)
         pwm_a.ChangeDutyCycle(duty)
-        if value != last_value_a:
-            logger.info("GPIO A: %.3f -> %.3f (duty %.1f%%)", last_value_a if last_value_a is not None else 0.0, value, duty)
-            last_value_a = value
+        if duty != last_value_a:
+            logger.info("GPIO A: duty %.1f%% -> %.1f%%", last_value_a if last_value_a is not None else 0.0, duty)
+            last_value_a = duty
     except Exception as e:
         logger.error("Handler error on /gpio/a: %s", e)
         webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
@@ -292,11 +292,11 @@ def handle_b(address, *args):
         if not args:
             return
         value = clamp(float(args[0]))
-        duty = value * 100.0
+        duty = round(value * 100.0, 1)
         pwm_b.ChangeDutyCycle(duty)
-        if value != last_value_b:
-            logger.info("GPIO B: %.3f -> %.3f (duty %.1f%%)", last_value_b if last_value_b is not None else 0.0, value, duty)
-            last_value_b = value
+        if duty != last_value_b:
+            logger.info("GPIO B: duty %.1f%% -> %.1f%%", last_value_b if last_value_b is not None else 0.0, duty)
+            last_value_b = duty
     except Exception as e:
         logger.error("Handler error on /gpio/b: %s", e)
         webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
