@@ -8,6 +8,8 @@ const DevicesPage = lazy(() => import("./pages/DevicesPage"));
 const OrchestrationsPage = lazy(() => import("./pages/OrchestrationsPage"));
 const OrchestrationEditPage = lazy(() => import("./pages/OrchestrationEditPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const AboutPage = lazy(() => import("./pages/AboutPage"));
+const FAQPage = lazy(() => import("./pages/FAQPage"));
 
 function Loading() {
   return (
@@ -67,6 +69,22 @@ export default function App() {
           element={
             <Suspense fallback={<Loading />}>
               <SettingsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="about"
+          element={
+            <Suspense fallback={<Loading />}>
+              <AboutPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="faq"
+          element={
+            <Suspense fallback={<Loading />}>
+              <FAQPage />
             </Suspense>
           }
         />
