@@ -275,9 +275,10 @@ def handle_a(address, *args):
             return
         value = clamp(float(args[0]))
         duty = round(value * 100.0, 1)
+        logger.info("OSC /gpio/a: %.3f", value)
         pwm_a.ChangeDutyCycle(duty)
         if duty != last_value_a:
-            logger.info("OSC /gpio/a: %.3f (duty %.1f%%)", value, duty)
+            logger.info("GPIO A: duty %.1f%% -> %.1f%%", last_value_a, duty)
             last_value_a = duty
     except Exception as e:
         logger.error("Handler error on /gpio/a: %s", e)
@@ -293,9 +294,10 @@ def handle_b(address, *args):
             return
         value = clamp(float(args[0]))
         duty = round(value * 100.0, 1)
+        logger.info("OSC /gpio/b: %.3f", value)
         pwm_b.ChangeDutyCycle(duty)
         if duty != last_value_b:
-            logger.info("OSC /gpio/b: %.3f (duty %.1f%%)", value, duty)
+            logger.info("GPIO B: duty %.1f%% -> %.1f%%", last_value_b, duty)
             last_value_b = duty
     except Exception as e:
         logger.error("Handler error on /gpio/b: %s", e)
