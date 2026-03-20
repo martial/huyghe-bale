@@ -34,8 +34,6 @@ name: Build App
 on:
   workflow_dispatch:
   push:
-    branches:
-      - "feature/windows-build"
     tags:
       - "v*"
 
