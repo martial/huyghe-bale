@@ -27,14 +27,17 @@ if [ "$LOCAL" != "$REMOTE" ]; then
     echo "[$(date)] Update found! $LOCAL -> $REMOTE" >> "$LOG_FILE"
     git tag -f last_good_state "$LOCAL"
 
+    # Flags pip pour compatibilite Pi 3 (SSL casse sur Stretch)
+    PIP_EXTRA="--trusted-host pypi.org --trusted-host files.pythonhosted.org"
+
     if git pull origin main; then
         echo "[$(date)] Code updated. Installing dependencies..." >> "$LOG_FILE"
-        if "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt" >> "$LOG_FILE" 2>&1; then
+        if "$APP_DIR/venv/bin/pip" install $PIP_EXTRA -r "$APP_DIR/requirements.txt" >> "$LOG_FILE" 2>&1; then
             echo "[$(date)] Update successful." >> "$LOG_FILE"
         else
             echo "[$(date)] PIP install failed. Rolling back..." >> "$LOG_FILE"
             git reset --hard last_good_state
-            "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt" >> "$LOG_FILE" 2>&1
+            "$APP_DIR/venv/bin/pip" install $PIP_EXTRA -r "$APP_DIR/requirements.txt" >> "$LOG_FILE" 2>&1
             exit 1
         fi
     else

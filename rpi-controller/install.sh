@@ -29,13 +29,43 @@ echo "Utilisateur de service detecte : $APP_USER"
 # Marquer le repo comme safe directory (requis quand systemd execute sous un autre user)
 sudo -u "$APP_USER" git config --global --add safe.directory "$GIT_DIR" || true
 
+# Detection du modele de Pi pour adapter les dependances GPIO
+PI_MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "unknown")
+echo "Modele detecte : $PI_MODEL"
+
+VENV_OPTS=""
+PIP_EXTRA=""
+EXTRA_DEPS=""
+
+case "$PI_MODEL" in
+    *"Pi 5"*)
+        # Pi 5 : RPi.GPIO original ne fonctionne pas, il faut rpi-lgpio
+        EXTRA_DEPS="rpi-lgpio>=0.4"
+        ;;
+    *"Pi 3"*|*"Pi 2"*)
+        # Pi 3/2 : RPi.GPIO systeme, pip SSL casse sur Stretch
+        VENV_OPTS="--system-site-packages"
+        PIP_EXTRA="--trusted-host pypi.org --trusted-host files.pythonhosted.org"
+        ;;
+    *)
+        # Pi 4 ou inconnu : RPi.GPIO systeme disponible
+        VENV_OPTS="--system-site-packages"
+        ;;
+esac
+
 # Creer le venv en tant que APP_USER (pas root) pour eviter les problemes de permissions
 echo "Creation de l'environnement virtuel..."
 if [ ! -d "$APP_DIR/venv" ]; then
-    sudo -u "$APP_USER" python3 -m venv "$APP_DIR/venv"
+    sudo -u "$APP_USER" python3 -m venv $VENV_OPTS "$APP_DIR/venv"
 fi
-sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install --upgrade pip
-sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install $PIP_EXTRA --upgrade pip
+sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install $PIP_EXTRA -r "$APP_DIR/requirements.txt"
+
+# Installer la lib GPIO si necessaire (Pi 5 uniquement)
+if [ -n "$EXTRA_DEPS" ]; then
+    echo "Installation de $EXTRA_DEPS..."
+    sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install $EXTRA_DEPS
+fi
 
 # Generer le .service a la volee (pointe vers le dossier git actuel, pas /opt)
 SERVICE_NAME="gpio-osc"

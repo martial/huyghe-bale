@@ -1,3 +1,2 @@
 python-osc>=1.8.0
-rpi-lgpio>=0.4
 requests>=2.28.0
