@@ -1,11 +1,40 @@
+import { useState } from "react";
 import { Outlet } from "react-router";
 import NavLink from "./NavLink";
 import DeviceHeartbeat from "./DeviceHeartbeat";
 import PlaybackControls from "../playback/PlaybackControls";
 import ToastContainer from "./ToastContainer";
 import SystemWarnings from "./SystemWarnings";
+import { usePlaybackStore } from "../../stores/playback-store";
+import { useDeviceStore } from "../../stores/device-store";
+import { sendTestValue } from "../../api/devices";
 
 export default function AppLayout() {
+  const stop = usePlaybackStore((s) => s.stop);
+  const devices = useDeviceStore((s) => s.list);
+  const fetchDevices = useDeviceStore((s) => s.fetchList);
+  const [allOffBusy, setAllOffBusy] = useState(false);
+
+  async function handleAllOff() {
+    setAllOffBusy(true);
+    try {
+      await stop();
+      let devs = devices;
+      if (devs.length === 0) {
+        await fetchDevices();
+        devs = useDeviceStore.getState().list;
+      }
+      if (devs.length > 0) {
+        const ids = devs.map((d) => d.id);
+        await sendTestValue(ids, 0, 0, "osc");
+      }
+    } catch (e) {
+      console.error("[ALL OFF] error:", e);
+    } finally {
+      setAllOffBusy(false);
+    }
+  }
+
   return (
     <div className="flex h-screen bg-zinc-950 text-zinc-200 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900 via-zinc-950 to-zinc-950">
       {/* Sidebar */}
@@ -90,6 +119,17 @@ export default function AppLayout() {
         {/* Device heartbeat */}
         <div className="px-3 pb-2">
           <DeviceHeartbeat />
+        </div>
+
+        {/* ALL OFF */}
+        <div className="px-3 pb-2">
+          <button
+            onClick={handleAllOff}
+            disabled={allOffBusy}
+            className="w-full px-3 py-2.5 bg-red-700/80 hover:bg-red-600 disabled:opacity-50 rounded-lg text-sm font-bold uppercase tracking-wider transition-all duration-200"
+          >
+            {allOffBusy ? "Stopping..." : "All Off"}
+          </button>
         </div>
 
         {/* Playback controls at bottom */}

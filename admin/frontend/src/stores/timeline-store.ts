@@ -10,6 +10,7 @@ interface TimelineState {
   fetchOne: (id: string) => Promise<void>;
   createTimeline: (data: Partial<Timeline>) => Promise<Timeline>;
   save: (timeline: Timeline) => Promise<void>;
+  saveSilent: (timeline: Timeline) => Promise<void>;
   remove: (id: string) => Promise<void>;
   duplicate: (id: string) => Promise<Timeline>;
 }
@@ -50,6 +51,10 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     set({ current: updated });
     const list = await api.listTimelines();
     set({ list });
+  },
+
+  async saveSilent(timeline: Timeline) {
+    await api.updateTimeline(timeline.id, timeline);
   },
 
   async remove(id: string) {

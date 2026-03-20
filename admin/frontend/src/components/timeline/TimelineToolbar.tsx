@@ -27,7 +27,7 @@ export default function TimelineToolbar({
   onSave,
 }: Props) {
   const navigate = useNavigate();
-  const { status, start, stop, pause, resume } = usePlaybackStore();
+  const { status, start, pause, resume } = usePlaybackStore();
   const { list: devices, fetchList: fetchDevices } = useDeviceStore();
 
   async function handlePlay() {
@@ -109,28 +109,23 @@ export default function TimelineToolbar({
         )}
 
         <div className="ml-auto flex items-center gap-2">
-          {status.playing && (
-            <>
-              <button
-                onClick={() => status.paused ? resume() : pause()}
-                className="px-3 py-1.5 bg-yellow-600/80 hover:bg-yellow-500 rounded-lg text-sm font-medium transition-all duration-200"
-              >
-                {status.paused ? "Resume" : "Pause"}
-              </button>
-              <button
-                onClick={() => stop()}
-                className="px-3 py-1.5 bg-red-600/80 hover:bg-red-500 rounded-lg text-sm font-medium transition-all duration-200"
-              >
-                Stop
-              </button>
-            </>
-          )}
           <button
-            onClick={() => handlePlay()}
-            disabled={status.playing}
-            className="px-3 py-1.5 bg-green-600 hover:bg-green-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-all duration-200"
+            onClick={() => {
+              if (status.playing && !status.paused) {
+                pause();
+              } else if (status.playing && status.paused) {
+                resume();
+              } else {
+                handlePlay();
+              }
+            }}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+              status.playing && !status.paused
+                ? "bg-yellow-600/80 hover:bg-yellow-500"
+                : "bg-green-600 hover:bg-green-500"
+            }`}
           >
-            Play
+            {status.playing && !status.paused ? "Pause" : "Play"}
           </button>
           <button
             onClick={onSave}

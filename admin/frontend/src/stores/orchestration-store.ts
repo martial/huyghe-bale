@@ -45,7 +45,8 @@ export const useOrchestrationStore = create<OrchestrationState>((set, get) => ({
   },
 
   async save(orchestration: Orchestration) {
-    await api.updateOrchestration(orchestration.id, orchestration);
+    const updated = await api.updateOrchestration(orchestration.id, orchestration);
+    set({ current: updated });
     await get().fetchList();
   },
 

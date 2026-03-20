@@ -7,6 +7,13 @@ from config import DATA_DIR
 bp = Blueprint("timelines", __name__)
 store = JsonStore(DATA_DIR, "timelines", "tl")
 
+_engine = None
+
+
+def set_engine(engine):
+    global _engine
+    _engine = engine
+
 
 def _summary(tl: dict) -> dict:
     """Return a summary view (no full lane data)."""
@@ -62,6 +69,8 @@ def update_timeline(timeline_id):
     updated = store.update(timeline_id, data)
     if not updated:
         return jsonify({"error": "Not found"}), 404
+    if _engine:
+        _engine.reload_timeline(updated)
     return jsonify(updated)
 
 

@@ -10,7 +10,7 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
-  settings: { osc_frequency: 30 },
+  settings: { osc_frequency: 30, output_cap: 100 },
   loading: false,
 
   async fetchSettings() {

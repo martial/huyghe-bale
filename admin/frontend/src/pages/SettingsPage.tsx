@@ -10,6 +10,7 @@ export default function SettingsPage() {
   const notify = useNotificationStore((s) => s.notify);
 
   const [frequency, setFrequency] = useState(30);
+  const [cap, setCap] = useState(100);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -20,10 +21,14 @@ export default function SettingsPage() {
     setFrequency(settings.osc_frequency);
   }, [settings.osc_frequency]);
 
+  useEffect(() => {
+    setCap(settings.output_cap);
+  }, [settings.output_cap]);
+
   async function handleSave() {
     setSaving(true);
     try {
-      await updateSettings({ osc_frequency: frequency });
+      await updateSettings({ osc_frequency: frequency, output_cap: cap });
       notify("success", "Settings saved successfully");
     } finally {
       setSaving(false);
@@ -59,6 +64,28 @@ export default function SettingsPage() {
             <span className="text-xs text-zinc-600 ml-2">
               ({Math.round(1000 / frequency)} ms between messages)
             </span>
+          </div>
+        </div>
+
+        {/* Output Cap */}
+        <div className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-6 shadow-sm">
+          <label className="block text-sm font-medium text-zinc-300 mb-1">
+            Output Cap
+          </label>
+          <p className="text-xs text-zinc-500 mb-3">
+            Maximum output percentage — 80 means 100% in timeline outputs 80%.
+          </p>
+          <div className="flex items-center gap-3">
+            <input
+              value={cap}
+              onChange={(e) => setCap(Number(e.target.value))}
+              type="number"
+              min={1}
+              max={100}
+              step={1}
+              className="w-24 bg-zinc-800 border border-zinc-700/50 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-orange-500/50 transition-colors"
+            />
+            <span className="text-sm text-zinc-400">%</span>
           </div>
         </div>
 

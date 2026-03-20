@@ -36,6 +36,7 @@ class PlaybackEngine:
         self._current_step_index = 0
         self._pause_event = threading.Event()  # Set = running, Clear = paused
         self._pause_event.set()
+        self.output_cap = 100  # Max output percentage (1–100)
 
     def status(self) -> dict:
         with self._lock:
@@ -146,6 +147,17 @@ class PlaybackEngine:
 
         logger.info("Playback stopped")
 
+    def reload_timeline(self, timeline: dict):
+        """Hot-reload timeline data while playing (e.g. after a save)."""
+        with self._lock:
+            if not self.playing or self._playback_type != "timeline":
+                return
+            if self._playback_id != timeline.get("id"):
+                return
+            self._timeline = timeline
+            self.total_duration = timeline.get("duration", 0.0)
+        logger.info("Hot-reloaded timeline %s during playback", timeline.get("id"))
+
     def seek(self, elapsed: float):
         """Seek to a specific elapsed time during playback."""
         with self._lock:
@@ -172,8 +184,9 @@ class PlaybackEngine:
 
             with self._lock:
                 if elapsed >= self.total_duration:
-                    self.elapsed = self.total_duration
-                    break
+                    # Loop: reset time origin
+                    elapsed = elapsed % self.total_duration
+                    self._seek_offset -= self.total_duration
                 self.elapsed = elapsed
                 self._evaluate_and_send(self._timeline, elapsed)
 
@@ -184,9 +197,6 @@ class PlaybackEngine:
                 self._stop_event.wait(sleep_time)
 
         with self._lock:
-            # Send final values
-            if self._timeline and not self._stop_event.is_set():
-                self._evaluate_and_send(self._timeline, self.total_duration)
             self.playing = False
 
     def _run_orchestration(self):
@@ -254,10 +264,11 @@ class PlaybackEngine:
     def _evaluate_and_send(self, timeline: dict, current_time: float):
         """Evaluate lanes and send OSC to all active devices."""
         lanes = timeline.get("lanes", {})
+        cap = self.output_cap / 100.0
         for lane_key in ("a", "b"):
             lane = lanes.get(lane_key, {})
             points = lane.get("points", [])
-            value = evaluate_lane(points, current_time)
+            value = evaluate_lane(points, current_time) * cap
             self.current_values[lane_key] = value
 
         for device in self._devices:

@@ -13,6 +13,7 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
 
     from api import timelines, devices, orchestrations, playback, export, settings, health
     from api.playback import set_engine
+    from api.timelines import set_engine as set_timelines_engine
     from engine.playback import PlaybackEngine
     from engine.osc_receiver import OscReceiver
 
@@ -36,6 +37,7 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
     # Initialize playback engine
     engine = PlaybackEngine()
     set_engine(engine)
+    set_timelines_engine(engine)
 
     # Initialize and start OSC Receiver
     receiver = OscReceiver(port=9001)

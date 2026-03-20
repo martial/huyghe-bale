@@ -13,6 +13,7 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
 DEFAULTS = {
     "osc_frequency": 30,  # Hz
+    "output_cap": 100,  # Max output percentage (1–100)
 }
 
 
@@ -43,5 +44,10 @@ def update_settings():
         if not isinstance(val, (int, float)) or val < 1 or val > 120:
             return jsonify({"error": "osc_frequency must be between 1 and 120 Hz"}), 400
         current["osc_frequency"] = int(val)
+    if "output_cap" in body:
+        val = body["output_cap"]
+        if not isinstance(val, (int, float)) or val < 1 or val > 100:
+            return jsonify({"error": "output_cap must be between 1 and 100"}), 400
+        current["output_cap"] = int(val)
     _write(current)
     return jsonify(current)

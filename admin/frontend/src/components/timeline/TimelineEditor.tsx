@@ -16,6 +16,7 @@ function generateId(): string {
 
 export default function TimelineEditor({ timeline }: { timeline: Timeline }) {
   const save = useTimelineStore((s) => s.save);
+  const saveSilent = useTimelineStore((s) => s.saveSilent);
   const notify = useNotificationStore((s) => s.notify);
   const [local, setLocal] = useState<Timeline>(() => JSON.parse(JSON.stringify(timeline)));
   const containerRef = useRef<HTMLDivElement>(null);
@@ -27,6 +28,19 @@ export default function TimelineEditor({ timeline }: { timeline: Timeline }) {
   useEffect(() => {
     setLocal(JSON.parse(JSON.stringify(timeline)));
   }, [timeline]);
+
+  // Auto-save on changes (debounced)
+  const isInitialMount = useRef(true);
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+    const timer = setTimeout(() => {
+      saveSilent(local);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [local, saveSilent]);
 
   useEffect(() => {
     if (containerRef.current) {

@@ -39,8 +39,10 @@ def start_playback():
     if not devices:
         return jsonify({"error": "No valid devices specified"}), 400
 
-    # Apply current frequency setting
-    _engine.tick_rate = read_settings().get("osc_frequency", 30)
+    # Apply current settings
+    settings = read_settings()
+    _engine.tick_rate = settings.get("osc_frequency", 30)
+    _engine.output_cap = settings.get("output_cap", 100)
 
     if playback_type == "timeline":
         timeline = timeline_store.get(playback_id)
