@@ -41,8 +41,8 @@ pwm_a = None
 pwm_b = None
 webhooks = None
 shutdown_event = Event()
-last_value_a = None
-last_value_b = None
+last_value_a = 0.0
+last_value_b = 0.0
 
 # --- Version Info (read once at startup) ---
 def _read_git_version():
@@ -277,7 +277,7 @@ def handle_a(address, *args):
         duty = round(value * 100.0, 1)
         pwm_a.ChangeDutyCycle(duty)
         if duty != last_value_a:
-            logger.info("GPIO A: duty %.1f%% -> %.1f%%", last_value_a if last_value_a is not None else 0.0, duty)
+            logger.info("OSC /gpio/a: %.3f (duty %.1f%%)", value, duty)
             last_value_a = duty
     except Exception as e:
         logger.error("Handler error on /gpio/a: %s", e)
@@ -295,7 +295,7 @@ def handle_b(address, *args):
         duty = round(value * 100.0, 1)
         pwm_b.ChangeDutyCycle(duty)
         if duty != last_value_b:
-            logger.info("GPIO B: duty %.1f%% -> %.1f%%", last_value_b if last_value_b is not None else 0.0, duty)
+            logger.info("OSC /gpio/b: %.3f (duty %.1f%%)", value, duty)
             last_value_b = duty
     except Exception as e:
         logger.error("Handler error on /gpio/b: %s", e)
