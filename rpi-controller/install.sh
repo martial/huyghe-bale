@@ -36,6 +36,7 @@ echo "Modele detecte : $PI_MODEL"
 VENV_OPTS=""
 PIP_EXTRA=""
 EXTRA_DEPS=""
+SKIP_PIP_UPGRADE=0
 
 case "$PI_MODEL" in
     *"Pi 5"*)
@@ -45,7 +46,8 @@ case "$PI_MODEL" in
     *"Pi 3"*|*"Pi 2"*)
         # Pi 3/2 : RPi.GPIO systeme, pip SSL casse sur Stretch
         VENV_OPTS="--system-site-packages"
-        PIP_EXTRA="--trusted-host pypi.org --trusted-host files.pythonhosted.org"
+        PIP_EXTRA="--trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host www.piwheels.org"
+        SKIP_PIP_UPGRADE=1
         ;;
     *)
         # Pi 4 ou inconnu : RPi.GPIO systeme disponible
@@ -54,11 +56,22 @@ case "$PI_MODEL" in
 esac
 
 # Creer le venv en tant que APP_USER (pas root) pour eviter les problemes de permissions
+# Recreer le venv si les options ont change (ex: ajout --system-site-packages)
 echo "Creation de l'environnement virtuel..."
+if [ -d "$APP_DIR/venv" ] && [ -n "$VENV_OPTS" ]; then
+    # Verifier si le venv actuel a --system-site-packages
+    if [ -f "$APP_DIR/venv/pyvenv.cfg" ] && grep -q "include-system-site-packages = false" "$APP_DIR/venv/pyvenv.cfg"; then
+        echo "Recreation du venv avec --system-site-packages..."
+        rm -rf "$APP_DIR/venv"
+    fi
+fi
 if [ ! -d "$APP_DIR/venv" ]; then
     sudo -u "$APP_USER" python3 -m venv $VENV_OPTS "$APP_DIR/venv"
 fi
-sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install $PIP_EXTRA --upgrade pip
+
+if [ "$SKIP_PIP_UPGRADE" -eq 0 ]; then
+    sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install $PIP_EXTRA --upgrade pip
+fi
 sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install $PIP_EXTRA -r "$APP_DIR/requirements.txt"
 
 # Installer la lib GPIO si necessaire (Pi 5 uniquement)
