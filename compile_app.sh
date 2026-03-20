@@ -3,7 +3,7 @@ set -e
 
 # ========================================================================
 #  PIERRE HUYGHE BALE — Mac App Builder
-#  Builds, signs, notarizes, and packages as .pkg + .dmg
+#  Builds, signs, notarizes, and packages as .dmg
 # ========================================================================
 #
 #  PREREQUISITES (one-time setup):
@@ -49,7 +49,6 @@ ICON_ICNS="$BUILD_DIR/app_icon.icns"
 APP_NAME="PIERRE HUYGHE BALE"
 APPS_DIR="$SCRIPT_DIR/apps"
 ENTITLEMENTS="$BUILD_DIR/entitlements.plist"
-PKG_SCRIPTS="$BUILD_DIR/pkg_scripts"
 
 echo "========================================"
 echo "  PIERRE HUYGHE BALE — Mac App Builder"
@@ -221,26 +220,7 @@ echo "=== Verifying notarization ==="
 spctl --assess --type execute -vvv "$APP_PATH"
 echo ""
 
-# --- 11. Build .pkg installer (primary distribution) ---
-echo "=== Building .pkg installer ==="
-PKG_ROOT="$APPS_DIR/pkg_root"
-rm -rf "$PKG_ROOT"
-mkdir -p "$PKG_ROOT/Applications"
-cp -R "$APP_PATH" "$PKG_ROOT/Applications/"
-
-PKG_PATH="$APPS_DIR/$APP_NAME.pkg"
-pkgbuild \
-    --root "$PKG_ROOT" \
-    --identifier "com.pierrehuyghe.bale" \
-    --version "$GIT_HASH" \
-    --install-location "/" \
-    --scripts "$PKG_SCRIPTS" \
-    "$PKG_PATH"
-
-rm -rf "$PKG_ROOT"
-echo ""
-
-# --- 12. Build DMG (fallback) ---
+# --- 11. Build DMG ---
 echo "=== Building DMG ==="
 DMG_PATH="$APPS_DIR/$APP_NAME.dmg"
 rm -f "$DMG_PATH"
@@ -271,9 +251,8 @@ echo "  Build complete!"
 echo "========================================"
 echo ""
 echo "  App: $APP_PATH"
-echo "  PKG: $PKG_PATH  (recommended for distribution)"
-echo "  DMG: $DMG_PATH  (fallback)"
+echo "  DMG: $DMG_PATH"
 echo ""
 echo "  The app is signed and notarized."
-echo "  Share the .pkg file — recipients just double-click to install."
+echo "  Share the .dmg file — recipients drag the app to Applications."
 echo ""

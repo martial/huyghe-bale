@@ -21,10 +21,6 @@ export function deleteDevice(id: string) {
   return del(`/devices/${id}`);
 }
 
-export function pingDevice(id: string) {
-  return post<{ ok: boolean; message: string }>(`/devices/${id}/ping`);
-}
-
 export function getLatestVersion() {
   return get<LatestVersion>("/devices/version/latest");
 }

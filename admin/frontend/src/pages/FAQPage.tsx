@@ -75,40 +75,42 @@ export default function FAQPage() {
   const [openIndex, setOpenIndex] = useState<number | null>(null);
 
   return (
-    <div className="h-full overflow-auto p-8">
-      <div className="max-w-2xl mx-auto space-y-8">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-wide">FAQ</h1>
-          <p className="text-sm text-zinc-500 mt-2">
-            Common issues and troubleshooting
-          </p>
-        </div>
+    <div className="p-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
+      <div className="mb-10 pb-4 border-b border-white/10">
+        <h1 className="text-3xl font-light tracking-tight text-white mb-1">FAQ</h1>
+        <p className="text-zinc-400 text-sm">
+          Common issues and troubleshooting
+        </p>
+      </div>
 
-        <div className="space-y-1">
-          {faqItems.map((item, i) => {
-            const isOpen = openIndex === i;
-            return (
-              <div key={i} className="rounded-lg overflow-hidden">
-                <button
-                  onClick={() => setOpenIndex(isOpen ? null : i)}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/5 transition-colors duration-150 rounded-lg"
-                >
-                  <ChevronIcon open={isOpen} />
-                  <span className="text-sm font-medium text-zinc-200">
-                    {item.question}
-                  </span>
-                </button>
-                {isOpen && (
-                  <div className="px-4 pb-4 pl-11">
-                    <p className="text-sm text-zinc-400 leading-relaxed whitespace-pre-line">
-                      {item.answer}
-                    </p>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+      <div className="space-y-2">
+        {faqItems.map((item, i) => {
+          const isOpen = openIndex === i;
+          return (
+            <div
+              key={i}
+              className="rounded-2xl border border-white/5 bg-zinc-900/40 backdrop-blur-sm overflow-hidden animate-in fade-in slide-in-from-bottom-4 fill-mode-both"
+              style={{ animationDelay: `${i * 50}ms` }}
+            >
+              <button
+                onClick={() => setOpenIndex(isOpen ? null : i)}
+                className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/5 transition-all duration-300 rounded-2xl"
+              >
+                <ChevronIcon open={isOpen} />
+                <span className="text-sm font-medium text-zinc-200">
+                  {item.question}
+                </span>
+              </button>
+              {isOpen && (
+                <div className="px-4 pb-4 pl-11">
+                  <p className="text-sm text-zinc-400 leading-relaxed whitespace-pre-line">
+                    {item.answer}
+                  </p>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

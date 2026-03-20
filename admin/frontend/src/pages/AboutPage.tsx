@@ -1,6 +1,6 @@
 export default function AboutPage() {
   return (
-    <div className="h-full flex items-center justify-center p-8">
+    <div className="h-full flex items-center justify-center p-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="max-w-lg w-full text-center space-y-12">
         {/* Title */}
         <div className="space-y-3">
@@ -24,25 +24,14 @@ export default function AboutPage() {
           <p className="text-xs tracking-[0.25em] uppercase text-zinc-600">
             Designed &amp; built by
           </p>
-          <div className="flex items-center justify-center gap-8">
-            <span className="text-lg font-medium text-zinc-300 font-[var(--font-display)]">
-              Martial
-            </span>
-            <span className="text-zinc-700">&amp;</span>
-            <span className="text-lg font-medium text-zinc-300 font-[var(--font-display)]">
-              Michel
-            </span>
-          </div>
-
-          {/* screen-club link */}
           <a
             href="https://screen-club.com"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-2 group"
           >
-            <span className="text-sm font-medium tracking-wider text-zinc-400 group-hover:text-orange-400 transition-colors duration-300">
-              screen-club.com
+            <span className="text-lg font-medium text-zinc-300 group-hover:text-orange-400 transition-colors duration-300 font-[var(--font-display)]">
+              screenclub
             </span>
             <svg
               className="w-3.5 h-3.5 text-zinc-600 group-hover:text-orange-400 transition-all duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5"

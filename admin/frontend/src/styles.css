@@ -40,10 +40,6 @@ h1, h2, h3, h4, h5, h6 {
   }
 }
 
-@keyframes subtle-ping {
-  0% { transform: scale(1); opacity: 1; }
-  75%, 100% { transform: scale(1.5); opacity: 0; }
-}
-.animate-subtle-ping {
-  animation: subtle-ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+button {
+  cursor: pointer;
 }

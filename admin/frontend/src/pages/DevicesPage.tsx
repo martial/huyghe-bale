@@ -41,7 +41,7 @@ export default function DevicesPage() {
   }
 
   return (
-    <div className="p-10 max-w-6xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700">
+    <div className="p-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-10 pb-4 border-b border-white/10 gap-4">
         <div>
           <h2 className="text-3xl font-light tracking-tight text-white mb-1">Devices</h2>

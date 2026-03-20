@@ -18,7 +18,7 @@ export default function TimelinesPage() {
   }
 
   return (
-    <div className="p-10 max-w-6xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700">
+    <div className="p-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="flex items-center justify-between mb-10 pb-4 border-b border-white/10">
         <div>
           <h2 className="text-3xl font-light tracking-tight text-white mb-1">Timelines</h2>

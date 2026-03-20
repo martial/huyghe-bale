@@ -19,7 +19,6 @@ interface DeviceState {
   createDevice: (data: Partial<Device>) => Promise<Device>;
   update: (device: Device) => Promise<void>;
   remove: (id: string) => Promise<void>;
-  ping: (id: string) => Promise<{ ok: boolean; message: string }>;
   scan: (subnet?: string) => void;
   clearScanResults: () => void;
   addDiscovered: (hosts: { ip: string; osc_port: number; name: string }[]) => Promise<void>;
@@ -66,10 +65,6 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   async remove(id: string) {
     await api.deleteDevice(id);
     await get().fetchList();
-  },
-
-  async ping(id: string) {
-    return api.pingDevice(id);
   },
 
   scan(subnet?: string) {

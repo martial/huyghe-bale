@@ -38,12 +38,17 @@ export default function SettingsPage() {
   if (loading) return null;
 
   return (
-    <div className="p-8 max-w-xl">
-      <h2 className="text-xl font-semibold text-zinc-100 mb-6">Settings</h2>
+    <div className="p-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
+      <div className="flex items-center justify-between mb-10 pb-4 border-b border-white/10">
+        <div>
+          <h2 className="text-3xl font-light tracking-tight text-white mb-1">Settings</h2>
+          <p className="text-zinc-400 text-sm">Configure playback and output parameters</p>
+        </div>
+      </div>
 
       <div className="space-y-6">
         {/* OSC Frequency */}
-        <div className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-6 shadow-sm">
+        <div className="bg-zinc-900/40 backdrop-blur-sm border border-white/5 rounded-2xl p-6 shadow-lg">
           <label className="block text-sm font-medium text-zinc-300 mb-1">
             OSC Send Frequency
           </label>
@@ -58,7 +63,7 @@ export default function SettingsPage() {
               min={1}
               max={120}
               step={1}
-              className="w-24 bg-zinc-800 border border-zinc-700/50 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-orange-500/50 transition-colors"
+              className="w-24 bg-zinc-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-orange-500/50 transition-colors"
             />
             <span className="text-sm text-zinc-400">Hz</span>
             <span className="text-xs text-zinc-600 ml-2">
@@ -68,7 +73,7 @@ export default function SettingsPage() {
         </div>
 
         {/* Output Cap */}
-        <div className="bg-zinc-900/80 border border-zinc-800/50 rounded-xl p-6 shadow-sm">
+        <div className="bg-zinc-900/40 backdrop-blur-sm border border-white/5 rounded-2xl p-6 shadow-lg">
           <label className="block text-sm font-medium text-zinc-300 mb-1">
             Output Cap
           </label>
@@ -83,19 +88,21 @@ export default function SettingsPage() {
               min={1}
               max={100}
               step={1}
-              className="w-24 bg-zinc-800 border border-zinc-700/50 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-orange-500/50 transition-colors"
+              className="w-24 bg-zinc-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-orange-500/50 transition-colors"
             />
             <span className="text-sm text-zinc-400">%</span>
           </div>
         </div>
 
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="px-4 py-2 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-all duration-200"
-        >
-          {saving ? "Saving..." : "Save"}
-        </button>
+        <div className="flex justify-end">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-5 py-2.5 bg-gradient-to-r from-orange-500 to-orange-400 hover:from-orange-400 hover:to-orange-300 disabled:opacity-50 rounded-xl text-sm font-semibold text-white shadow-[0_0_20px_rgba(249,115,22,0.3)] hover:shadow-[0_0_30px_rgba(249,115,22,0.5)] transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0 active:scale-95"
+          >
+            {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
       </div>
     </div>
   );

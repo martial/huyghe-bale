@@ -6,7 +6,6 @@ import { useNotificationStore } from "../../stores/notification-store";
 export default function DeviceCard({ device }: { device: Device }) {
   const update = useDeviceStore((s) => s.update);
   const remove = useDeviceStore((s) => s.remove);
-  const ping = useDeviceStore((s) => s.ping);
   const updateSoftware = useDeviceStore((s) => s.updateSoftware);
   const notify = useNotificationStore((s) => s.notify);
   const isOnline = useDeviceStore((s) => s.deviceStatuses[device.id] === "online");
@@ -19,28 +18,9 @@ export default function DeviceCard({ device }: { device: Device }) {
 
   const isOutdated = isOnline && deviceVersion && latestVersion && deviceVersion.version !== latestVersion.hash;
 
-  const [pingStatus, setPingStatus] = useState<"idle" | "pinging" | "ok" | "error">("idle");
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ ...device });
   const [showLogs, setShowLogs] = useState(false);
-
-  async function handlePing() {
-    try {
-      setPingStatus("pinging");
-      const result = await ping(device.id);
-      if (result.ok) {
-        setPingStatus("ok");
-        notify("success", `Ping OK: ${device.name}`);
-      } else {
-        setPingStatus("error");
-        notify("error", `Ping failed: ${device.name}`);
-      }
-    } catch {
-      setPingStatus("error");
-      notify("error", `Ping error: ${device.name}`);
-    }
-    setTimeout(() => setPingStatus("idle"), 3000);
-  }
 
   async function handleUpdate() {
     await updateSoftware(device.id);
@@ -64,20 +44,11 @@ export default function DeviceCard({ device }: { device: Device }) {
                 {device.ip_address}:{device.osc_port}
               </p>
             </div>
-            <div className="relative flex h-2 w-2 items-center justify-center">
-              {pingStatus === "pinging" && (
-                <span className="absolute inline-flex h-full w-full rounded-full bg-zinc-400 opacity-75 animate-subtle-ping"></span>
-              )}
-              <div
-                className={`relative inline-flex w-2 h-2 rounded-full transition-colors ${
-                  pingStatus === "ok" || isOnline
-                    ? "bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.5)]"
-                    : pingStatus === "error" || !isOnline
-                      ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"
-                      : "bg-zinc-600"
-                }`}
-              />
-            </div>
+            <div className={`inline-flex w-2 h-2 rounded-full transition-colors ${
+              isOnline
+                ? "bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.5)]"
+                : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"
+            }`} />
           </div>
 
           {/* Version info */}
@@ -141,9 +112,6 @@ export default function DeviceCard({ device }: { device: Device }) {
           )}
 
           <div className="flex gap-3 mt-3">
-            <button onClick={handlePing} className="text-xs text-zinc-400 hover:text-white transition-colors">
-              Ping
-            </button>
             {(isOutdated || isUpdating) && (
               <button
                 onClick={handleUpdate}

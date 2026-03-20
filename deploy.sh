@@ -79,7 +79,6 @@ echo ""
 
 # --- Create GitHub release with assets ---
 echo "=== Creating GitHub release ==="
-PKG_PATH="$APPS_DIR/$APP_NAME.pkg"
 DMG_PATH="$APPS_DIR/$APP_NAME.dmg"
 
 RELEASE_NOTES="Release $VERSION
@@ -87,9 +86,6 @@ RELEASE_NOTES="Release $VERSION
 Built from commit \`$GIT_HASH\`"
 
 ASSETS=()
-if [ -f "$PKG_PATH" ]; then
-    ASSETS+=("$PKG_PATH")
-fi
 if [ -f "$DMG_PATH" ]; then
     ASSETS+=("$DMG_PATH")
 fi
@@ -106,10 +102,6 @@ echo "=== Uploading to GCS ==="
 GCS_PREFIX="$GCS_BUCKET/$REPO_NAME/$VERSION"
 
 GCS_LINKS=()
-if [ -f "$PKG_PATH" ]; then
-    gsutil cp "$PKG_PATH" "$GCS_PREFIX/$DOWNLOAD_NAME.pkg"
-    GCS_LINKS+=("$GCS_PREFIX/$DOWNLOAD_NAME.pkg")
-fi
 if [ -f "$DMG_PATH" ]; then
     gsutil cp "$DMG_PATH" "$GCS_PREFIX/$DOWNLOAD_NAME.dmg"
     GCS_LINKS+=("$GCS_PREFIX/$DOWNLOAD_NAME.dmg")
