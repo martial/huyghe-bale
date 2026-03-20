@@ -276,6 +276,8 @@ def handle_a(address, *args):
         value = clamp(float(args[0]))
         duty = round(value * 100.0, 1)
         logger.info("OSC /gpio/a: %.3f", value)
+        GPIO.output(PIN_IN1, GPIO.HIGH)
+        GPIO.output(PIN_IN2, GPIO.LOW)
         pwm_a.ChangeDutyCycle(duty)
         if duty != last_value_a:
             logger.info("GPIO A: duty %.1f%% -> %.1f%%", last_value_a, duty)
@@ -295,6 +297,8 @@ def handle_b(address, *args):
         value = clamp(float(args[0]))
         duty = round(value * 100.0, 1)
         logger.info("OSC /gpio/b: %.3f", value)
+        GPIO.output(PIN_IN3, GPIO.HIGH)
+        GPIO.output(PIN_IN4, GPIO.LOW)
         pwm_b.ChangeDutyCycle(duty)
         if duty != last_value_b:
             logger.info("GPIO B: duty %.1f%% -> %.1f%%", last_value_b, duty)
