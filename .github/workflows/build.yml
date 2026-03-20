@@ -1,0 +1,281 @@
+# ========================================================================
+#  PIERRE HUYGHE BALE — Cross-platform build
+#  Builds macOS (.dmg, signed + notarized) and Windows (.zip) artifacts
+# ========================================================================
+#
+#  Trigger: manual dispatch or push of a tag like v1.0.0
+#
+#  REQUIRED GITHUB SECRETS (for macOS signing & notarization):
+#
+#    MACOS_CERTIFICATE_P12_BASE64
+#      Your "Developer ID Application" certificate + private key
+#      exported as .p12 from Keychain Access, then base64-encoded:
+#        base64 -i certificate.p12 | pbcopy
+#
+#    MACOS_CERTIFICATE_PASSWORD
+#      The password you set when exporting the .p12
+#
+#    APPLE_ID
+#      Your Apple Developer account email
+#
+#    APPLE_TEAM_ID
+#      Your 10-character Apple Developer team ID
+#
+#    APPLE_APP_PASSWORD
+#      App-specific password from https://appleid.apple.com/account/manage
+#      (Apple ID → Sign-In and Security → App-Specific Passwords)
+#
+#  Without these secrets, the macOS build still runs but skips signing
+#  and notarization (the app will be quarantined on other machines).
+# ========================================================================
+
+name: Build App
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  # ── macOS ──────────────────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python build deps
+        run: pip install Pillow pywebview pyinstaller
+
+      - name: Generate icon
+        run: |
+          cd admin/build
+          python generate_icon.py icon_1024.png
+          mkdir -p app_icon.iconset
+          for size in 16 32 64 128 256 512; do
+            sips -z $size $size icon_1024.png --out app_icon.iconset/icon_${size}x${size}.png >/dev/null
+            double=$((size * 2))
+            sips -z $double $double icon_1024.png --out app_icon.iconset/icon_${size}x${size}@2x.png >/dev/null
+          done
+          cp icon_1024.png app_icon.iconset/icon_512x512@2x.png
+          iconutil --convert icns app_icon.iconset --output app_icon.icns
+          rm -rf app_icon.iconset
+
+      - name: Generate VERSION
+        run: |
+          GIT_HASH=$(git rev-parse --short HEAD)
+          GIT_DATE=$(git log -1 --format=%ci)
+          GIT_MSG=$(git log -1 --format=%s)
+          echo "{\"hash\": \"$GIT_HASH\", \"date\": \"$GIT_DATE\", \"message\": \"$GIT_MSG\"}" > admin/backend/VERSION
+
+      - name: Build frontend
+        run: |
+          cd admin/frontend
+          npm ci
+          npm run build
+
+      - name: Build .app with PyInstaller
+        run: |
+          cd admin/backend
+          rm -f "PIERRE HUYGHE BALE.spec"
+          pyinstaller \
+            --name "PIERRE HUYGHE BALE" \
+            --windowed \
+            --noconfirm \
+            --icon="../build/app_icon.icns" \
+            --osx-bundle-identifier "com.pierrehuyghe.bale" \
+            --add-data "../frontend/dist:frontend/dist" \
+            --add-data "VERSION:." \
+            launcher.py
+
+      - name: Update Info.plist
+        run: |
+          APP="admin/backend/dist/PIERRE HUYGHE BALE.app"
+          PLIST="$APP/Contents/Info.plist"
+          GIT_HASH=$(git rev-parse --short HEAD)
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.pierrehuyghe.bale" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $GIT_HASH" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 12.0" "$PLIST" 2>/dev/null || \
+          /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 12.0" "$PLIST"
+
+      # ── Signing (only if secrets are configured) ──
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE_P12_BASE64 != ''
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          # Decode certificate
+          echo "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > certificate.p12
+
+          # Create a temporary keychain
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate
+          security import certificate.p12 \
+            -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Add to search list
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # Find the identity name
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+          rm -f certificate.p12
+
+      - name: Sign app (inside-out)
+        if: env.SIGN_IDENTITY != ''
+        run: |
+          APP="admin/backend/dist/PIERRE HUYGHE BALE.app"
+          ENT="admin/build/entitlements.plist"
+
+          echo "Signing libraries..."
+          find "$APP/Contents" \( -name "*.dylib" -o -name "*.so" \) \
+            -exec codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime {} \;
+
+          if [ -d "$APP/Contents/Frameworks" ]; then
+            echo "Signing frameworks..."
+            find "$APP/Contents/Frameworks" -name "*.framework" -maxdepth 1 \
+              -exec codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime {} \;
+          fi
+
+          echo "Signing main executable..."
+          codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime \
+            --entitlements "$ENT" \
+            "$APP/Contents/MacOS/PIERRE HUYGHE BALE"
+
+          echo "Signing app bundle..."
+          codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime \
+            --entitlements "$ENT" "$APP"
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      - name: Notarize app
+        if: env.SIGN_IDENTITY != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          APP="admin/backend/dist/PIERRE HUYGHE BALE.app"
+
+          # Zip for submission
+          ditto -c -k --keepParent "$APP" app_for_notarization.zip
+
+          # Submit and wait
+          xcrun notarytool submit app_for_notarization.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+
+          # Staple the ticket
+          xcrun stapler staple "$APP"
+          rm -f app_for_notarization.zip
+
+      - name: Build DMG
+        run: |
+          APP="admin/backend/dist/PIERRE HUYGHE BALE.app"
+          DMG_TEMP=$(mktemp -d)
+          cp -R "$APP" "$DMG_TEMP/"
+          ln -s /Applications "$DMG_TEMP/Applications"
+
+          hdiutil create \
+            -volname "PIERRE HUYGHE BALE" \
+            -srcfolder "$DMG_TEMP" \
+            -ov \
+            -format UDZO \
+            "PIERRE HUYGHE BALE.dmg"
+
+          rm -rf "$DMG_TEMP"
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: "PIERRE HUYGHE BALE.dmg"
+
+      - name: Clean up keychain
+        if: always()
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi
+          rm -f admin/backend/VERSION
+
+  # ── Windows ────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python build deps
+        run: pip install Pillow pywebview pyinstaller
+
+      - name: Generate icon
+        run: python admin/build/generate_icon.py admin/build/icon_1024.png --ico admin/build/app_icon.ico
+
+      - name: Generate VERSION
+        shell: bash
+        run: |
+          GIT_HASH=$(git rev-parse --short HEAD)
+          GIT_DATE=$(git log -1 --format=%ci)
+          GIT_MSG=$(git log -1 --format=%s)
+          echo "{\"hash\": \"$GIT_HASH\", \"date\": \"$GIT_DATE\", \"message\": \"$GIT_MSG\"}" > admin/backend/VERSION
+
+      - name: Build frontend
+        run: |
+          cd admin/frontend
+          npm ci
+          npm run build
+
+      - name: Build .exe with PyInstaller
+        run: |
+          cd admin/backend
+          Remove-Item -ErrorAction SilentlyContinue "PIERRE HUYGHE BALE.spec"
+          pyinstaller `
+            --name "PIERRE HUYGHE BALE" `
+            --windowed `
+            --noconfirm `
+            --icon="../build/app_icon.ico" `
+            --add-data "../frontend/dist;frontend/dist" `
+            --add-data "VERSION;." `
+            launcher.py
+
+      - name: Zip output
+        run: Compress-Archive -Path "admin/backend/dist/PIERRE HUYGHE BALE" -DestinationPath "PIERRE HUYGHE BALE - Windows.zip"
+
+      - name: Upload Windows zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: "PIERRE HUYGHE BALE - Windows.zip"
+
+      - name: Clean up
+        run: Remove-Item -ErrorAction SilentlyContinue admin/backend/VERSION

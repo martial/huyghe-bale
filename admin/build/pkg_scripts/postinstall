@@ -1,0 +1,3 @@
+#!/bin/bash
+xattr -cr "/Applications/PIERRE HUYGHE BALE.app"
+exit 0

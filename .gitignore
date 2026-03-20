@@ -31,7 +31,10 @@ admin/backend/data/settings.json
 
 # PyInstaller / build artifacts
 apps/
-admin/build/
+admin/build/*.png
+admin/build/*.icns
+admin/build/*.ico
+admin/build/*.iconset/
 admin/backend/build/
 admin/backend/dist/
 admin/backend/VERSION

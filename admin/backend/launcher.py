@@ -13,9 +13,16 @@ _MEIPASS = getattr(sys, "_MEIPASS", None)
 
 if _MEIPASS:
     dist_dir = os.path.join(_MEIPASS, "frontend", "dist")
-    data_dir = os.path.expanduser(
-        "~/Library/Application Support/PierreHuygheBale/data"
-    )
+    if sys.platform == "win32":
+        data_dir = os.path.join(
+            os.environ.get("APPDATA", os.path.expanduser("~")),
+            "PierreHuygheBale",
+            "data",
+        )
+    else:
+        data_dir = os.path.expanduser(
+            "~/Library/Application Support/PierreHuygheBale/data"
+        )
     for sub in ("timelines", "devices", "orchestrations"):
         os.makedirs(os.path.join(data_dir, sub), exist_ok=True)
 else:
