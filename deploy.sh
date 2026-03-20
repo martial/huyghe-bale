@@ -17,6 +17,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="PIERRE HUYGHE BALE"
+DOWNLOAD_NAME="PIERRE-HUYGHE-BALE"
 APPS_DIR="$SCRIPT_DIR/apps"
 REPO="martial/huyghe-bale"
 GCS_BUCKET="gs://apps-screen-club"
@@ -106,12 +107,12 @@ GCS_PREFIX="$GCS_BUCKET/$REPO_NAME/$VERSION"
 
 GCS_LINKS=()
 if [ -f "$PKG_PATH" ]; then
-    gsutil cp "$PKG_PATH" "$GCS_PREFIX/$APP_NAME.pkg"
-    GCS_LINKS+=("$GCS_PREFIX/$APP_NAME.pkg")
+    gsutil cp "$PKG_PATH" "$GCS_PREFIX/$DOWNLOAD_NAME.pkg"
+    GCS_LINKS+=("$GCS_PREFIX/$DOWNLOAD_NAME.pkg")
 fi
 if [ -f "$DMG_PATH" ]; then
-    gsutil cp "$DMG_PATH" "$GCS_PREFIX/$APP_NAME.dmg"
-    GCS_LINKS+=("$GCS_PREFIX/$APP_NAME.dmg")
+    gsutil cp "$DMG_PATH" "$GCS_PREFIX/$DOWNLOAD_NAME.dmg"
+    GCS_LINKS+=("$GCS_PREFIX/$DOWNLOAD_NAME.dmg")
 fi
 
 # Make uploaded files publicly readable
