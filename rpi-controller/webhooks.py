@@ -64,7 +64,7 @@ class WebhookNotifier:
             headers = {}
             token = hook.get("token")
             if token:
-                headers["Authorization"] = f"Bearer {token}"
+                headers["Authorization"] = "Bearer " + token
             resp = requests.post(url, json=payload, headers=headers, timeout=5)
             if resp.status_code >= 400:
                 logger.warning("Webhook %s returned HTTP %d", url, resp.status_code)

@@ -45,8 +45,8 @@ shutdown_event = Event()
 def _read_git_version():
     cwd = os.path.dirname(os.path.abspath(__file__))
     try:
-        h = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=cwd, text=True).strip()
-        d = subprocess.check_output(["git", "log", "-1", "--format=%ci", "HEAD"], cwd=cwd, text=True).strip()
+        h = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=cwd).decode("utf-8").strip()
+        d = subprocess.check_output(["git", "log", "-1", "--format=%ci", "HEAD"], cwd=cwd).decode("utf-8").strip()
         return {"hash": h, "date": d}
     except Exception:
         return {"hash": "unknown", "date": "unknown"}
@@ -98,15 +98,15 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
         try:
             result = subprocess.run(
                 ["bash", script],
-                capture_output=True, text=True, timeout=120, cwd=cwd,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, cwd=cwd,
             )
             # Read detailed log
             log_file = "/tmp/gpio-osc-updater.log"
             try:
                 with open(log_file) as f:
                     logs = f.read()
-            except FileNotFoundError:
-                logs = result.stdout + result.stderr
+            except IOError:
+                logs = result.stdout.decode("utf-8", errors="replace") + result.stderr.decode("utf-8", errors="replace")
             # Read new version after update
             new_version = _read_git_version()
             VERSION_INFO = new_version
@@ -207,7 +207,7 @@ def handle_ping(client_address, address, *args):
     try:
         return_port = int(args[0])
         origin_ip = client_address[0]
-        logger.debug(f"Ping received from {origin_ip}. Replying to port {return_port}")
+        logger.debug("Ping received from %s. Replying to port %d", origin_ip, return_port)
         client = SimpleUDPClient(origin_ip, return_port)
         client.send_message("/sys/pong", origin_ip)
     except Exception as e:
@@ -242,7 +242,7 @@ def main():
     # Global crash handler — catches any unhandled exception before process dies
     def _crash_hook(exc_type, exc_value, exc_tb):
         logger.critical("Unhandled exception — %s: %s", exc_type.__name__, exc_value)
-        webhooks.fire("crash", {"error": f"{exc_type.__name__}: {exc_value}"})
+        webhooks.fire("crash", {"error": "%s: %s" % (exc_type.__name__, exc_value)})
         sys.__excepthook__(exc_type, exc_value, exc_tb)
     sys.excepthook = _crash_hook
 
