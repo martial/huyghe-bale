@@ -34,7 +34,6 @@ class PlaybackEngine:
         self._orchestration: Optional[dict] = None
         self._resolved_timelines: dict[str, dict] = {}
         self._current_step_index = 0
-        self._active_lane: Optional[str] = None
         self._pause_event = threading.Event()  # Set = running, Clear = paused
         self._pause_event.set()
 
@@ -50,7 +49,7 @@ class PlaybackEngine:
                 "id": self._playback_id,
             }
 
-    def start_timeline(self, timeline: dict, devices: list[dict], lane: str = None):
+    def start_timeline(self, timeline: dict, devices: list[dict]):
         """Start playing a single timeline to the given devices."""
         self.stop()
         with self._lock:
@@ -58,7 +57,6 @@ class PlaybackEngine:
             self._playback_id = timeline.get("id")
             self._timeline = timeline
             self._devices = devices
-            self._active_lane = lane
             self.total_duration = timeline.get("duration", 0.0)
             self.elapsed = 0.0
             self.playing = True
@@ -257,9 +255,6 @@ class PlaybackEngine:
         """Evaluate lanes and send OSC to all active devices."""
         lanes = timeline.get("lanes", {})
         for lane_key in ("a", "b"):
-            if self._active_lane and lane_key != self._active_lane:
-                self.current_values[lane_key] = 0.0
-                continue
             lane = lanes.get(lane_key, {})
             points = lane.get("points", [])
             value = evaluate_lane(points, current_time)

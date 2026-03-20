@@ -178,9 +178,39 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == '/update':
             self._handle_update()
+        elif self.path == '/gpio/test':
+            self._handle_gpio_test()
         else:
             self.send_response(404)
             self.end_headers()
+
+    def _handle_gpio_test(self):
+        """Direct GPIO test — bypasses OSC entirely."""
+        global last_value_a, last_value_b
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(length)) if length > 0 else {}
+            va = max(0.0, min(1.0, float(body.get("value_a", 0.0))))
+            vb = max(0.0, min(1.0, float(body.get("value_b", 0.0))))
+            duty_a = round(va * 100.0, 1)
+            duty_b = round(vb * 100.0, 1)
+
+            # Set direction pins and duty cycle
+            GPIO.output(PIN_IN1, GPIO.HIGH)
+            GPIO.output(PIN_IN2, GPIO.LOW)
+            pwm_a.ChangeDutyCycle(duty_a)
+            last_value_a = duty_a
+
+            GPIO.output(PIN_IN3, GPIO.HIGH)
+            GPIO.output(PIN_IN4, GPIO.LOW)
+            pwm_b.ChangeDutyCycle(duty_b)
+            last_value_b = duty_b
+
+            logger.info("HTTP /gpio/test: a=%.3f (duty %.1f%%) b=%.3f (duty %.1f%%)", va, duty_a, vb, duty_b)
+            self._send_json({"ok": True, "duty_a": duty_a, "duty_b": duty_b})
+        except Exception as e:
+            logger.error("HTTP /gpio/test error: %s", e)
+            self._send_json({"ok": False, "error": str(e)}, 500)
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -259,7 +289,9 @@ def setup_gpio():
     pwm_a.start(0)
     pwm_b.start(0)
 
-    logger.info("GPIO initialized — PWM on pins %d/%d, direction set forward", PIN_ENA, PIN_ENB)
+    logger.info("GPIO config: PWM freq=%dHz", PWM_FREQUENCY)
+    logger.info("  Pin %d (ENA): PWM channel A, IN1=%d HIGH, IN2=%d LOW", PIN_ENA, PIN_IN1, PIN_IN2)
+    logger.info("  Pin %d (ENB): PWM channel B, IN3=%d HIGH, IN4=%d LOW", PIN_ENB, PIN_IN3, PIN_IN4)
 
 
 def clamp(value, min_val=0.0, max_val=1.0):

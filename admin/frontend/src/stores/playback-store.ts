@@ -7,7 +7,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 interface PlaybackState {
   status: PlaybackStatus;
   polling: boolean;
-  start: (type: "timeline" | "orchestration", id: string, device_ids: string[], lane?: "a" | "b") => Promise<void>;
+  start: (type: "timeline" | "orchestration", id: string, device_ids: string[]) => Promise<void>;
   stop: () => Promise<void>;
   pause: () => Promise<void>;
   resume: () => Promise<void>;
@@ -29,8 +29,8 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   },
   polling: false,
 
-  async start(type, id, device_ids, lane?) {
-    await api.startPlayback({ type, id, device_ids, lane });
+  async start(type, id, device_ids) {
+    await api.startPlayback({ type, id, device_ids });
     get().startPolling();
   },
 
@@ -38,6 +38,11 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
     await api.stopPlayback();
     get().stopPolling();
     await get().fetchStatus();
+    // Fetch again after short delay to ensure backend has settled
+    setTimeout(async () => {
+      await get().fetchStatus();
+      set({ status: { ...get().status, current_values: { a: 0, b: 0 } } });
+    }, 300);
   },
 
   async pause() {
@@ -56,6 +61,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
 
   async fetchStatus() {
     const status = await api.getPlaybackStatus();
+    console.log("[Playback] status:", status);
     set({ status });
   },
 
@@ -65,6 +71,8 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
     pollTimer = setInterval(async () => {
       await get().fetchStatus();
       if (!get().status.playing) {
+        // One final fetch before stopping
+        await get().fetchStatus();
         get().stopPolling();
       }
     }, 500);

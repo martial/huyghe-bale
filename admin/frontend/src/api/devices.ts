@@ -88,6 +88,21 @@ export function scanNetworkStream(
   return controller;
 }
 
+export async function sendTestValue(
+  deviceIds: string[],
+  valueA: number,
+  valueB: number,
+  method: "osc" | "http",
+) {
+  console.log(`[Test] Sending ${method} a=${valueA} b=${valueB} to devices:`, deviceIds);
+  return post<{ ok: boolean; results: Record<string, unknown> }>("/devices/test-send", {
+    device_ids: deviceIds,
+    value_a: valueA,
+    value_b: valueB,
+    method,
+  });
+}
+
 export function monitorDeviceStatus(
   onStatusUpdate: (
     statuses: Record<string, DeviceStatus>,

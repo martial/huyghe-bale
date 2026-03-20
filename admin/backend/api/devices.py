@@ -39,6 +39,49 @@ def create_device():
     return jsonify(store.create(device)), 201
 
 
+@bp.route("/test-send", methods=["POST"])
+def test_send():
+    """Send test values to devices via OSC or HTTP."""
+    data = request.get_json() or {}
+    device_ids = data.get("device_ids", [])
+    value_a = max(0.0, min(1.0, float(data.get("value_a", 0.0))))
+    value_b = max(0.0, min(1.0, float(data.get("value_b", 0.0))))
+    method = data.get("method", "osc")
+
+    results = {}
+    for did in device_ids:
+        device = store.get(did)
+        if not device:
+            results[did] = {"ok": False, "error": "not found"}
+            continue
+        ip = device.get("ip_address")
+        if not ip:
+            results[did] = {"ok": False, "error": "no ip"}
+            continue
+
+        try:
+            if method == "http":
+                body = json.dumps({"value_a": value_a, "value_b": value_b}).encode()
+                req = urllib.request.Request(
+                    f"http://{ip}:9001/gpio/test",
+                    data=body,
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    results[did] = json.loads(resp.read())
+            else:
+                port = device.get("osc_port", 9000)
+                osc.send(ip, port, "/gpio/a", value_a)
+                osc.send(ip, port, "/gpio/b", value_b)
+                results[did] = {"ok": True, "sent_a": value_a, "sent_b": value_b}
+        except Exception as e:
+            logger.warning("Test send to %s (%s) failed: %s", did, method, e)
+            results[did] = {"ok": False, "error": str(e)}
+
+    return jsonify({"ok": True, "results": results})
+
+
 @bp.route("/scan", methods=["POST"])
 def scan_network():
     data = request.get_json(silent=True) or {}

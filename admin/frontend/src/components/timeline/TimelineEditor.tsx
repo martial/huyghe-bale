@@ -49,17 +49,6 @@ export default function TimelineEditor({ timeline }: { timeline: Timeline }) {
     await startPlayback("timeline", local.id, ids);
   }
 
-  async function handleLanePlay(lane: "a" | "b") {
-    let devs = devices;
-    if (devs.length === 0) {
-      await fetchDevices();
-      devs = useDeviceStore.getState().list;
-    }
-    if (devs.length === 0) return;
-    const ids = devs.map((d) => d.id);
-    await startPlayback("timeline", local.id, ids, lane);
-  }
-
   const canvasA = useTimelineCanvas(svgWidth, svgHeight, local.duration);
   const canvasB = useTimelineCanvas(svgWidth, svgHeight, local.duration);
 
@@ -242,14 +231,6 @@ export default function TimelineEditor({ timeline }: { timeline: Timeline }) {
         <div className="flex items-center px-2 py-1 text-xs text-zinc-500 bg-zinc-900/50">
           <span className="w-10 text-center font-medium text-orange-400/70">A</span>
           <span>{local.lanes.a.label}</span>
-          <button
-            onClick={() => handleLanePlay("a")}
-            disabled={playbackStatus.playing}
-            className="ml-2 text-orange-400/60 hover:text-orange-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            title="Play lane A only"
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10"><polygon points="1,0 10,5 1,10" fill="currentColor" /></svg>
-          </button>
         </div>
         <TimelineLane
           lane={local.lanes.a}
@@ -273,14 +254,6 @@ export default function TimelineEditor({ timeline }: { timeline: Timeline }) {
         <div className="flex items-center px-2 py-1 text-xs text-zinc-500 bg-zinc-900/50">
           <span className="w-10 text-center font-medium text-sky-400/70">B</span>
           <span>{local.lanes.b.label}</span>
-          <button
-            onClick={() => handleLanePlay("b")}
-            disabled={playbackStatus.playing}
-            className="ml-2 text-sky-400/60 hover:text-sky-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            title="Play lane B only"
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10"><polygon points="1,0 10,5 1,10" fill="currentColor" /></svg>
-          </button>
         </div>
         <TimelineLane
           lane={local.lanes.b}

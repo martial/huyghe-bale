@@ -5,7 +5,6 @@ export function startPlayback(data: {
   type: "timeline" | "orchestration";
   id: string;
   device_ids: string[];
-  lane?: "a" | "b";
 }) {
   return post<{ ok: boolean; message: string }>("/playback/start", data);
 }

@@ -26,7 +26,6 @@ def start_playback():
     playback_type = data.get("type")
     playback_id = data.get("id")
     device_ids = data.get("device_ids", [])
-    lane = data.get("lane")  # optional: "a", "b", or None for both
 
     if not playback_type or not playback_id:
         return jsonify({"error": "type and id required"}), 400
@@ -47,7 +46,7 @@ def start_playback():
         timeline = timeline_store.get(playback_id)
         if not timeline:
             return jsonify({"error": "Timeline not found"}), 404
-        _engine.start_timeline(timeline, devices, lane=lane)
+        _engine.start_timeline(timeline, devices)
         return jsonify({"ok": True, "message": "Timeline playback started"})
 
     elif playback_type == "orchestration":
