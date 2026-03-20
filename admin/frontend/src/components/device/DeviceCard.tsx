@@ -113,6 +113,12 @@ export default function DeviceCard({ device }: { device: Device }) {
               <span className="text-zinc-400 truncate">{systemInfo.model}</span>
               <span className="text-zinc-600">OS</span>
               <span className="text-zinc-400 truncate">{systemInfo.os}</span>
+              {systemInfo.ip && (
+                <>
+                  <span className="text-zinc-600">IP</span>
+                  <span className="text-zinc-400 font-mono">{systemInfo.ip}</span>
+                </>
+              )}
               <span className="text-zinc-600">Python</span>
               <span className="text-zinc-400">{systemInfo.python_version}</span>
               <span className="text-zinc-600">RAM</span>

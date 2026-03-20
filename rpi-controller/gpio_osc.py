@@ -9,6 +9,7 @@ Direction pins are set once at startup for fixed forward rotation.
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import logging
@@ -40,6 +41,8 @@ pwm_a = None
 pwm_b = None
 webhooks = None
 shutdown_event = Event()
+last_value_a = None
+last_value_b = None
 
 # --- Version Info (read once at startup) ---
 def _read_git_version():
@@ -104,6 +107,14 @@ def _read_system_info():
     except Exception:
         info["disk_total_mb"] = 0
         info["disk_free_mb"] = 0
+    # Local IP address
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        info["ip"] = s.getsockname()[0]
+        s.close()
+    except Exception:
+        info["ip"] = "unknown"
     return info
 
 SYSTEM_INFO = _read_system_info()
@@ -142,6 +153,13 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             try:
                 st = os.statvfs("/")
                 live["disk_free_mb"] = (st.f_bavail * st.f_frsize) // (1024 * 1024)
+            except Exception:
+                pass
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                live["ip"] = s.getsockname()[0]
+                s.close()
             except Exception:
                 pass
             sys_info = dict(SYSTEM_INFO)
@@ -250,7 +268,7 @@ def clamp(value, min_val=0.0, max_val=1.0):
 
 def handle_a(address, *args):
     """Handle /gpio/a OSC message."""
-    global last_osc_time
+    global last_osc_time, last_value_a
     try:
         last_osc_time = time.time()
         if not args:
@@ -258,7 +276,9 @@ def handle_a(address, *args):
         value = clamp(float(args[0]))
         duty = value * 100.0
         pwm_a.ChangeDutyCycle(duty)
-        logger.debug("A = %.3f (duty %.1f%%)", value, duty)
+        if value != last_value_a:
+            logger.info("GPIO A: %.3f -> %.3f (duty %.1f%%)", last_value_a if last_value_a is not None else 0.0, value, duty)
+            last_value_a = value
     except Exception as e:
         logger.error("Handler error on /gpio/a: %s", e)
         webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
@@ -266,7 +286,7 @@ def handle_a(address, *args):
 
 def handle_b(address, *args):
     """Handle /gpio/b OSC message."""
-    global last_osc_time
+    global last_osc_time, last_value_b
     try:
         last_osc_time = time.time()
         if not args:
@@ -274,7 +294,9 @@ def handle_b(address, *args):
         value = clamp(float(args[0]))
         duty = value * 100.0
         pwm_b.ChangeDutyCycle(duty)
-        logger.debug("B = %.3f (duty %.1f%%)", value, duty)
+        if value != last_value_b:
+            logger.info("GPIO B: %.3f -> %.3f (duty %.1f%%)", last_value_b if last_value_b is not None else 0.0, value, duty)
+            last_value_b = value
     except Exception as e:
         logger.error("Handler error on /gpio/b: %s", e)
         webhooks.fire("error", {"source": "osc_handler", "error": str(e)})

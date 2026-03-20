@@ -16,6 +16,7 @@ export interface DeviceSystemInfo {
   model: string;
   python_version: string;
   os: string;
+  ip?: string;
   ram_total_mb: number;
   ram_available_mb: number;
   cpu_temp_c: number | null;
