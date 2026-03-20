@@ -12,6 +12,17 @@ export interface DeviceVersion {
   version_date: string;
 }
 
+export interface DeviceSystemInfo {
+  model: string;
+  python_version: string;
+  os: string;
+  ram_total_mb: number;
+  ram_available_mb: number;
+  cpu_temp_c: number | null;
+  disk_total_mb: number;
+  disk_free_mb: number;
+}
+
 export interface LatestVersion {
   hash: string;
   date: string;

@@ -15,6 +15,7 @@ export default function DeviceCard({ device }: { device: Device }) {
   const isUpdating = useDeviceStore((s) => s.updatingDevices.has(device.id));
   const isRestarting = useDeviceStore((s) => s.restartingDevices.has(device.id));
   const updateLog = useDeviceStore((s) => s.updateLogs[device.id]);
+  const systemInfo = useDeviceStore((s) => s.deviceSystemInfo[device.id]);
 
   const isOutdated = isOnline && deviceVersion && latestVersion && deviceVersion.version !== latestVersion.hash;
 
@@ -102,6 +103,34 @@ export default function DeviceCard({ device }: { device: Device }) {
                   Up to date
                 </span>
               )}
+            </div>
+          )}
+
+          {/* System info */}
+          {isOnline && systemInfo && (
+            <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] font-mono text-zinc-500">
+              <span className="text-zinc-600">Model</span>
+              <span className="text-zinc-400 truncate">{systemInfo.model}</span>
+              <span className="text-zinc-600">OS</span>
+              <span className="text-zinc-400 truncate">{systemInfo.os}</span>
+              <span className="text-zinc-600">Python</span>
+              <span className="text-zinc-400">{systemInfo.python_version}</span>
+              <span className="text-zinc-600">RAM</span>
+              <span className="text-zinc-400">
+                {systemInfo.ram_available_mb} / {systemInfo.ram_total_mb} MB
+              </span>
+              {systemInfo.cpu_temp_c != null && (
+                <>
+                  <span className="text-zinc-600">CPU Temp</span>
+                  <span className={systemInfo.cpu_temp_c > 70 ? "text-orange-400" : "text-zinc-400"}>
+                    {systemInfo.cpu_temp_c}°C
+                  </span>
+                </>
+              )}
+              <span className="text-zinc-600">Disk</span>
+              <span className="text-zinc-400">
+                {systemInfo.disk_free_mb} / {systemInfo.disk_total_mb} MB free
+              </span>
             </div>
           )}
 

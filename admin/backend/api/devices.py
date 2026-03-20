@@ -64,6 +64,7 @@ def device_status_stream():
         last_ping_time = 0
         last_version_check = 0
         cached_versions = {}
+        cached_system_info = {}
         logger.info("SSE status stream started")
         while True:
             now = time.time()
@@ -109,11 +110,13 @@ def device_status_stream():
                             "version": data.get("version", "unknown"),
                             "version_date": data.get("version_date", "unknown"),
                         }
+                        if "system_info" in data:
+                            cached_system_info[device["id"]] = data["system_info"]
                     except Exception:
                         pass
 
             logger.debug("Device statuses: %s (last_seen: %s)", statuses, receiver.last_seen)
-            yield f"data: {json.dumps({'statuses': statuses, 'versions': cached_versions})}\n\n"
+            yield f"data: {json.dumps({'statuses': statuses, 'versions': cached_versions, 'system_info': cached_system_info})}\n\n"
             time.sleep(1.0)
 
     return Response(generate(), mimetype="text/event-stream")

@@ -53,6 +53,61 @@ def _read_git_version():
 
 VERSION_INFO = _read_git_version()
 
+# --- System Info (read once at startup) ---
+def _read_system_info():
+    info = {}
+    # Pi model
+    try:
+        with open("/proc/device-tree/model", "rb") as f:
+            info["model"] = f.read().replace(b"\x00", b"").decode("utf-8").strip()
+    except Exception:
+        info["model"] = "unknown"
+    # Python version
+    info["python_version"] = sys.version.split()[0]
+    # OS
+    try:
+        os_info = {}
+        with open("/etc/os-release") as f:
+            for line in f:
+                if "=" in line:
+                    k, v = line.strip().split("=", 1)
+                    os_info[k] = v.strip('"')
+        info["os"] = os_info.get("PRETTY_NAME", "unknown")
+    except Exception:
+        info["os"] = "unknown"
+    # Total + available RAM (from /proc/meminfo)
+    try:
+        meminfo = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    meminfo[parts[0].rstrip(":")] = int(parts[1])
+        info["ram_total_mb"] = meminfo.get("MemTotal", 0) // 1024
+        info["ram_available_mb"] = meminfo.get("MemAvailable", 0) // 1024
+    except Exception:
+        info["ram_total_mb"] = 0
+        info["ram_available_mb"] = 0
+    # CPU temperature
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            info["cpu_temp_c"] = round(int(f.read().strip()) / 1000.0, 1)
+    except Exception:
+        info["cpu_temp_c"] = None
+    # Disk usage
+    try:
+        st = os.statvfs("/")
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        info["disk_total_mb"] = total // (1024 * 1024)
+        info["disk_free_mb"] = free // (1024 * 1024)
+    except Exception:
+        info["disk_total_mb"] = 0
+        info["disk_free_mb"] = 0
+    return info
+
+SYSTEM_INFO = _read_system_info()
+
 # --- Heartbeat State ---
 start_time = time.time()
 last_osc_time = 0.0
@@ -67,11 +122,36 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/status':
+            # Refresh dynamic values (RAM, temp, disk)
+            live = {}
+            try:
+                with open("/proc/meminfo") as f:
+                    meminfo = {}
+                    for line in f:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            meminfo[parts[0].rstrip(":")] = int(parts[1])
+                live["ram_available_mb"] = meminfo.get("MemAvailable", 0) // 1024
+            except Exception:
+                pass
+            try:
+                with open("/sys/class/thermal/thermal_zone0/temp") as f:
+                    live["cpu_temp_c"] = round(int(f.read().strip()) / 1000.0, 1)
+            except Exception:
+                pass
+            try:
+                st = os.statvfs("/")
+                live["disk_free_mb"] = (st.f_bavail * st.f_frsize) // (1024 * 1024)
+            except Exception:
+                pass
+            sys_info = dict(SYSTEM_INFO)
+            sys_info.update(live)
             self._send_json({
                 "uptime": time.time() - start_time,
                 "last_osc": last_osc_time,
                 "version": VERSION_INFO["hash"],
                 "version_date": VERSION_INFO["date"],
+                "system_info": sys_info,
             })
         else:
             self.send_response(404)

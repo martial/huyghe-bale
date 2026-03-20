@@ -1,11 +1,12 @@
 import { create } from "zustand";
-import type { Device, DeviceStatus, DeviceVersion, LatestVersion, DiscoveredHost } from "../types/device";
+import type { Device, DeviceStatus, DeviceVersion, DeviceSystemInfo, LatestVersion, DiscoveredHost } from "../types/device";
 import * as api from "../api/devices";
 
 interface DeviceState {
   list: Device[];
   deviceStatuses: Record<string, DeviceStatus>;
   deviceVersions: Record<string, DeviceVersion>;
+  deviceSystemInfo: Record<string, DeviceSystemInfo>;
   latestVersion: LatestVersion | null;
   updatingDevices: Set<string>;
   restartingDevices: Set<string>;
@@ -31,6 +32,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   list: [],
   deviceStatuses: {},
   deviceVersions: {},
+  deviceSystemInfo: {},
   latestVersion: null,
   updatingDevices: new Set(),
   restartingDevices: new Set(),
@@ -157,7 +159,7 @@ let cleanupStatusStream: (() => void) | null = null;
 
 function startStatusStream() {
   cleanupStatusStream?.();
-  cleanupStatusStream = api.monitorDeviceStatus((statuses, versions) => {
+  cleanupStatusStream = api.monitorDeviceStatus((statuses, versions, systemInfo) => {
     const state = useDeviceStore.getState();
     const prevStatuses = state.deviceStatuses;
     const prevVersions = state.deviceVersions;
@@ -173,6 +175,7 @@ function startStatusStream() {
     }
 
     const versionChanged = JSON.stringify(versions) !== JSON.stringify(prevVersions);
+    const sysInfoChanged = JSON.stringify(systemInfo) !== JSON.stringify(state.deviceSystemInfo);
 
     // Clear restarting flag once we get a fresh version for that device
     const restarting = state.restartingDevices;
@@ -188,10 +191,11 @@ function startStatusStream() {
       }
     }
 
-    if (statusChanged || versionChanged) {
+    if (statusChanged || versionChanged || sysInfoChanged) {
       const update: Record<string, unknown> = {};
       if (statusChanged) update.deviceStatuses = statuses;
       if (versionChanged) update.deviceVersions = versions;
+      if (sysInfoChanged) update.deviceSystemInfo = systemInfo;
       useDeviceStore.setState(update);
     }
   });

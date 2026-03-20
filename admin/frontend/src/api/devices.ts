@@ -1,5 +1,5 @@
 import { get, post, put, del } from "./client";
-import type { Device, DeviceStatus, DeviceVersion, LatestVersion, UpdateResult, DiscoveredHost } from "../types/device";
+import type { Device, DeviceStatus, DeviceVersion, DeviceSystemInfo, LatestVersion, UpdateResult, DiscoveredHost } from "../types/device";
 
 export function listDevices() {
   return get<Device[]>("/devices");
@@ -92,6 +92,7 @@ export function monitorDeviceStatus(
   onStatusUpdate: (
     statuses: Record<string, DeviceStatus>,
     versions: Record<string, DeviceVersion>,
+    systemInfo: Record<string, DeviceSystemInfo>,
   ) => void,
 ) {
   const eventSource = new EventSource("/api/v1/devices/status");
@@ -103,11 +104,11 @@ export function monitorDeviceStatus(
   eventSource.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
-      // New shape: {statuses, versions} — fallback for old flat shape
+      // New shape: {statuses, versions, system_info} — fallback for old flat shape
       if (data.statuses) {
-        onStatusUpdate(data.statuses, data.versions || {});
+        onStatusUpdate(data.statuses, data.versions || {}, data.system_info || {});
       } else {
-        onStatusUpdate(data as Record<string, DeviceStatus>, {});
+        onStatusUpdate(data as Record<string, DeviceStatus>, {}, {});
       }
     } catch (e) {
       console.error("[HeartbeatSSE] Parse error:", e);
