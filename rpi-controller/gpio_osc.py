@@ -189,7 +189,8 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
         global last_value_a, last_value_b
         try:
             length = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(length)) if length > 0 else {}
+            raw = self.rfile.read(length) if length > 0 else b'{}'
+            body = json.loads(raw.decode('utf-8'))
             va = max(0.0, min(1.0, float(body.get("value_a", 0.0))))
             vb = max(0.0, min(1.0, float(body.get("value_b", 0.0))))
             duty_a = round(va * 100.0, 1)
