@@ -115,7 +115,6 @@ export function monitorDeviceStatus(
   eventSource.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
-      // New shape: {statuses, versions, system_info} — fallback for old flat shape
       if (data.statuses) {
         onStatusUpdate(data.statuses, data.versions || {}, data.system_info || {});
       } else {

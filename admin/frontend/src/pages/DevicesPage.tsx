@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { useDeviceStore } from "../stores/device-store";
 import DeviceCard from "../components/device/DeviceCard";
+import DeviceCardSkeleton from "../components/device/DeviceCardSkeleton";
 import DeviceForm from "../components/device/DeviceForm";
 import NetworkScanDialog from "../components/device/NetworkScanDialog";
 
 export default function DevicesPage() {
   const list = useDeviceStore((s) => s.list);
+  const loading = useDeviceStore((s) => s.loading);
   const fetchList = useDeviceStore((s) => s.fetchList);
   const latestVersion = useDeviceStore((s) => s.latestVersion);
   const fetchLatestVersion = useDeviceStore((s) => s.fetchLatestVersion);
@@ -96,14 +98,20 @@ export default function DevicesPage() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {list.map((device, index) => (
-          <div key={device.id} className="animate-in fade-in zoom-in-95 duration-500 fill-mode-both" style={{ animationDelay: `${index * 50}ms` }}>
-            <DeviceCard device={device} />
-          </div>
-        ))}
+        {loading && list.length === 0
+          ? Array.from({ length: 3 }).map((_, i) => (
+              <div key={`skel-${i}`} className="animate-in fade-in duration-300" style={{ animationDelay: `${i * 60}ms` }}>
+                <DeviceCardSkeleton />
+              </div>
+            ))
+          : list.map((device, index) => (
+              <div key={device.id} className="animate-in fade-in zoom-in-95 duration-500 fill-mode-both" style={{ animationDelay: `${index * 50}ms` }}>
+                <DeviceCard device={device} />
+              </div>
+            ))}
       </div>
 
-      {!list.length && !showForm && (
+      {!loading && !list.length && !showForm && (
         <div className="flex flex-col items-center justify-center p-16 border border-white/5 border-dashed rounded-3xl bg-zinc-900/20 mt-8">
           <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mb-5 border border-white/10 shadow-inner">
             <svg className="w-8 h-8 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>

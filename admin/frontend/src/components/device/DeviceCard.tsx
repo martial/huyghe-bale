@@ -1,7 +1,13 @@
 import { useState } from "react";
-import type { Device } from "../../types/device";
+import type { Device, DeviceType } from "../../types/device";
+import { DEVICE_TYPES } from "../../types/device";
 import { useDeviceStore } from "../../stores/device-store";
 import { useNotificationStore } from "../../stores/notification-store";
+
+const TYPE_BADGE: Record<DeviceType, string> = {
+  vents: "bg-orange-500/10 text-orange-300 border-orange-500/30",
+  trolley: "bg-sky-500/10 text-sky-300 border-sky-500/30",
+};
 
 export default function DeviceCard({ device }: { device: Device }) {
   const update = useDeviceStore((s) => s.update);
@@ -15,6 +21,7 @@ export default function DeviceCard({ device }: { device: Device }) {
   const isRestarting = useDeviceStore((s) => s.restartingDevices.has(device.id));
   const updateLog = useDeviceStore((s) => s.updateLogs[device.id]);
   const systemInfo = useDeviceStore((s) => s.deviceSystemInfo[device.id]);
+  const effectiveType: DeviceType = device.type || "vents";
 
   const isOutdated = isOnline && deviceVersion && latestVersion && deviceVersion.version !== latestVersion.hash;
 
@@ -39,10 +46,33 @@ export default function DeviceCard({ device }: { device: Device }) {
         <>
           <div className="flex items-start justify-between">
             <div>
-              <p className="font-medium text-zinc-200">{device.name}</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className={`font-medium ${device.needs_repair ? "text-zinc-500 italic" : "text-zinc-200"}`}>
+                  {device.name || "(unnamed device)"}
+                </p>
+                <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${TYPE_BADGE[effectiveType]}`}>
+                  {effectiveType}
+                </span>
+                {device.needs_repair && (
+                  <span
+                    className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border bg-yellow-500/10 text-yellow-300 border-yellow-500/30"
+                    title={`Old/incomplete record. Missing: ${(device.missing_fields || []).join(", ")}`}
+                  >
+                    needs repair
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-zinc-500 font-mono mt-1">
-                {device.ip_address}:{device.osc_port}
+                {device.ip_address || "—"}:{device.osc_port}
               </p>
+              {device.hardware_id && (
+                <p className="text-[10px] text-zinc-600 font-mono mt-0.5">{device.hardware_id}</p>
+              )}
+              {device.needs_repair && (
+                <p className="text-[10px] text-yellow-400/80 mt-1">
+                  Click Edit and fill in {(device.missing_fields || []).join(", ")} to restore this device.
+                </p>
+              )}
             </div>
             <div className={`inline-flex w-2 h-2 rounded-full transition-colors ${
               isOnline
@@ -177,6 +207,18 @@ export default function DeviceCard({ device }: { device: Device }) {
             className="w-full bg-zinc-800 border border-zinc-700/50 rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:border-orange-500/50 transition-colors"
             placeholder="Port"
           />
+          <label className="text-xs text-zinc-500 block">
+            Type
+            <select
+              value={form.type || "vents"}
+              onChange={(e) => setForm({ ...form, type: e.target.value as DeviceType })}
+              className="mt-1 w-full bg-zinc-800 border border-zinc-700/50 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-orange-500/50 transition-colors"
+            >
+              {DEVICE_TYPES.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+          </label>
           <div className="flex gap-2">
             <button onClick={handleSave} className="text-xs text-orange-400 hover:text-orange-300 transition-colors">
               Save

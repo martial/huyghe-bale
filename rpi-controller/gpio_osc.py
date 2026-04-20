@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""OSC listener that drives L298N motor controller via GPIO PWM.
+"""OSC-driven controller entry point.
 
-Receives /gpio/a and /gpio/b messages (float 0.0–1.0) and maps them
-to PWM duty cycle on GPIO12 (EnA) and GPIO13 (EnB).
-Direction pins are set once at startup for fixed forward rotation.
+Loads a persistent identity ({type, hardware_id}) from ~/.config/gpio-osc/device.json,
+imports the matching controller personality module (vents or trolley), and starts
+the OSC server, HTTP status server, and webhooks.
+
+The personality module owns all GPIO/PWM/direction-pin logic; this file owns
+transport (OSC, HTTP), process lifecycle, and the /sys/ping↔/sys/pong protocol.
 """
 
 import json
@@ -22,13 +25,9 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
 from pythonosc.udp_client import SimpleUDPClient
 
-from config import (
-    OSC_PORT, OSC_ADDRESS_A, OSC_ADDRESS_B,
-    PWM_FREQUENCY,
-    PIN_ENA, PIN_ENB,
-    PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4,
-    HTTP_PORT,
-)
+from config import OSC_PORT, HTTP_PORT
+import controllers
+import identity
 from webhooks import WebhookNotifier
 
 logging.basicConfig(
@@ -37,12 +36,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-pwm_a = None
-pwm_b = None
 webhooks = None
+controller = None
+IDENTITY: dict = {"type": "unknown", "id": ""}  # overwritten in main()
 shutdown_event = Event()
-last_value_a = 0.0
-last_value_b = 0.0
+
+
+def _service_name() -> str:
+    return f"gpio-osc-{IDENTITY['type']}"
+
 
 # --- Version Info (read once at startup) ---
 def _read_git_version():
@@ -59,15 +61,12 @@ VERSION_INFO = _read_git_version()
 # --- System Info (read once at startup) ---
 def _read_system_info():
     info = {}
-    # Pi model
     try:
         with open("/proc/device-tree/model", "rb") as f:
             info["model"] = f.read().replace(b"\x00", b"").decode("utf-8").strip()
     except Exception:
         info["model"] = "unknown"
-    # Python version
     info["python_version"] = sys.version.split()[0]
-    # OS
     try:
         os_info = {}
         with open("/etc/os-release") as f:
@@ -78,7 +77,6 @@ def _read_system_info():
         info["os"] = os_info.get("PRETTY_NAME", "unknown")
     except Exception:
         info["os"] = "unknown"
-    # Total + available RAM (from /proc/meminfo)
     try:
         meminfo = {}
         with open("/proc/meminfo") as f:
@@ -91,13 +89,11 @@ def _read_system_info():
     except Exception:
         info["ram_total_mb"] = 0
         info["ram_available_mb"] = 0
-    # CPU temperature
     try:
         with open("/sys/class/thermal/thermal_zone0/temp") as f:
             info["cpu_temp_c"] = round(int(f.read().strip()) / 1000.0, 1)
     except Exception:
         info["cpu_temp_c"] = None
-    # Disk usage
     try:
         st = os.statvfs("/")
         total = st.f_blocks * st.f_frsize
@@ -107,7 +103,6 @@ def _read_system_info():
     except Exception:
         info["disk_total_mb"] = 0
         info["disk_free_mb"] = 0
-    # Local IP address
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -121,7 +116,7 @@ SYSTEM_INFO = _read_system_info()
 
 # --- Heartbeat State ---
 start_time = time.time()
-last_osc_time = 0.0
+
 
 class StatusHandler(http.server.BaseHTTPRequestHandler):
     def _send_json(self, data, status=200):
@@ -133,7 +128,6 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/status':
-            # Refresh dynamic values (RAM, temp, disk)
             live = {}
             try:
                 with open("/proc/meminfo") as f:
@@ -166,10 +160,12 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             sys_info.update(live)
             self._send_json({
                 "uptime": time.time() - start_time,
-                "last_osc": last_osc_time,
+                "last_osc": controller.get_last_osc_time() if controller else 0.0,
                 "version": VERSION_INFO["hash"],
                 "version_date": VERSION_INFO["date"],
                 "system_info": sys_info,
+                "device_type": IDENTITY["type"],
+                "hardware_id": IDENTITY["id"],
             })
         else:
             self.send_response(404)
@@ -185,30 +181,13 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
     def _handle_gpio_test(self):
-        """Direct GPIO test — bypasses OSC entirely."""
-        global last_value_a, last_value_b
         try:
             length = int(self.headers.get('Content-Length', 0))
             raw = self.rfile.read(length) if length > 0 else b'{}'
             body = json.loads(raw.decode('utf-8'))
-            va = max(0.0, min(1.0, float(body.get("value_a", 0.0))))
-            vb = max(0.0, min(1.0, float(body.get("value_b", 0.0))))
-            duty_a = round(va * 100.0, 1)
-            duty_b = round(vb * 100.0, 1)
-
-            # Set direction pins and duty cycle
-            GPIO.output(PIN_IN1, GPIO.HIGH)
-            GPIO.output(PIN_IN2, GPIO.LOW)
-            pwm_a.ChangeDutyCycle(duty_a)
-            last_value_a = duty_a
-
-            GPIO.output(PIN_IN3, GPIO.HIGH)
-            GPIO.output(PIN_IN4, GPIO.LOW)
-            pwm_b.ChangeDutyCycle(duty_b)
-            last_value_b = duty_b
-
-            logger.info("HTTP /gpio/test: a=%.3f (duty %.1f%%) b=%.3f (duty %.1f%%)", va, duty_a, vb, duty_b)
-            self._send_json({"ok": True, "duty_a": duty_a, "duty_b": duty_b})
+            result = controller.handle_http_test(body)
+            status = 200 if result.get("ok") else 500
+            self._send_json(result, status)
         except Exception as e:
             logger.error("HTTP /gpio/test error: %s", e)
             self._send_json({"ok": False, "error": str(e)}, 500)
@@ -229,14 +208,12 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                 ["bash", script],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, cwd=cwd,
             )
-            # Read detailed log
             log_file = "/tmp/gpio-osc-updater.log"
             try:
                 with open(log_file) as f:
                     logs = f.read()
             except IOError:
                 logs = result.stdout.decode("utf-8", errors="replace") + result.stderr.decode("utf-8", errors="replace")
-            # Read new version after update
             new_version = _read_git_version()
             VERSION_INFO = new_version
             success = result.returncode == 0
@@ -246,9 +223,8 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                 "new_version": new_version["hash"],
             })
             if success:
-                # Schedule delayed restart so the response gets sent first
                 subprocess.Popen(
-                    ["sh", "-c", "sleep 2 && sudo systemctl restart gpio-osc"],
+                    ["sh", "-c", f"sleep 2 && sudo systemctl restart {_service_name()}"],
                     start_new_session=True,
                 )
         except subprocess.TimeoutExpired:
@@ -265,84 +241,8 @@ def run_http_server():
         server.handle_request()
 
 
-def setup_gpio():
-    """Initialize GPIO pins and start PWM at 0% duty cycle."""
-    global pwm_a, pwm_b
-
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setwarnings(False)
-
-    # Direction pins — fixed forward
-    for pin, state in [
-        (PIN_IN1, GPIO.HIGH),
-        (PIN_IN2, GPIO.LOW),
-        (PIN_IN3, GPIO.HIGH),
-        (PIN_IN4, GPIO.LOW),
-    ]:
-        GPIO.setup(pin, GPIO.OUT)
-        GPIO.output(pin, state)
-
-    # PWM pins
-    GPIO.setup(PIN_ENA, GPIO.OUT)
-    GPIO.setup(PIN_ENB, GPIO.OUT)
-    pwm_a = GPIO.PWM(PIN_ENA, PWM_FREQUENCY)
-    pwm_b = GPIO.PWM(PIN_ENB, PWM_FREQUENCY)
-    pwm_a.start(0)
-    pwm_b.start(0)
-
-    logger.info("GPIO config: PWM freq=%dHz", PWM_FREQUENCY)
-    logger.info("  Pin %d (ENA): PWM channel A, IN1=%d HIGH, IN2=%d LOW", PIN_ENA, PIN_IN1, PIN_IN2)
-    logger.info("  Pin %d (ENB): PWM channel B, IN3=%d HIGH, IN4=%d LOW", PIN_ENB, PIN_IN3, PIN_IN4)
-
-
-def clamp(value, min_val=0.0, max_val=1.0):
-    return max(min_val, min(max_val, value))
-
-
-def handle_a(address, *args):
-    """Handle /gpio/a OSC message."""
-    global last_osc_time, last_value_a
-    try:
-        last_osc_time = time.time()
-        if not args:
-            return
-        value = clamp(float(args[0]))
-        duty = round(value * 100.0, 1)
-        logger.info("OSC /gpio/a: %.3f", value)
-        GPIO.output(PIN_IN1, GPIO.HIGH)
-        GPIO.output(PIN_IN2, GPIO.LOW)
-        pwm_a.ChangeDutyCycle(duty)
-        if duty != last_value_a:
-            logger.info("GPIO A: duty %.1f%% -> %.1f%%", last_value_a, duty)
-            last_value_a = duty
-    except Exception as e:
-        logger.error("Handler error on /gpio/a: %s", e)
-        webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
-
-
-def handle_b(address, *args):
-    """Handle /gpio/b OSC message."""
-    global last_osc_time, last_value_b
-    try:
-        last_osc_time = time.time()
-        if not args:
-            return
-        value = clamp(float(args[0]))
-        duty = round(value * 100.0, 1)
-        logger.info("OSC /gpio/b: %.3f", value)
-        GPIO.output(PIN_IN3, GPIO.HIGH)
-        GPIO.output(PIN_IN4, GPIO.LOW)
-        pwm_b.ChangeDutyCycle(duty)
-        if duty != last_value_b:
-            logger.info("GPIO B: duty %.1f%% -> %.1f%%", last_value_b, duty)
-            last_value_b = duty
-    except Exception as e:
-        logger.error("Handler error on /gpio/b: %s", e)
-        webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
-
-
 def handle_ping(client_address, address, *args):
-    """Handle /sys/ping OSC message. args[0] should be the return port."""
+    """Reply to /sys/ping with (ip, type, hardware_id) so the backend can identify us."""
     if not args:
         return
     try:
@@ -350,54 +250,66 @@ def handle_ping(client_address, address, *args):
         origin_ip = client_address[0]
         logger.debug("Ping received from %s. Replying to port %d", origin_ip, return_port)
         client = SimpleUDPClient(origin_ip, return_port)
-        client.send_message("/sys/pong", origin_ip)
+        client.send_message("/sys/pong", [origin_ip, IDENTITY["type"], IDENTITY["id"]])
     except Exception as e:
         logger.error("Handler error on /sys/ping: %s", e)
-        webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
+        if webhooks:
+            webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
 
 
 def cleanup(*_):
-    """Zero all outputs and clean up GPIO."""
+    """Zero outputs and release GPIO."""
     if shutdown_event.is_set():
         return
     shutdown_event.set()
-    logger.info("Shutting down — zeroing outputs")
-    webhooks.fire("stop")
-    if pwm_a:
-        pwm_a.ChangeDutyCycle(0)
-        pwm_a.stop()
-    if pwm_b:
-        pwm_b.ChangeDutyCycle(0)
-        pwm_b.stop()
-    for pin in (PIN_IN1, PIN_IN2, PIN_IN3, PIN_IN4):
-        GPIO.output(pin, GPIO.LOW)
-    GPIO.cleanup()
-    logger.info("GPIO cleaned up")
+    logger.info("Shutting down")
+    if webhooks:
+        webhooks.fire("stop")
+    if controller:
+        try:
+            controller.cleanup()
+        except Exception as e:
+            logger.error("Controller cleanup error: %s", e)
+    try:
+        GPIO.cleanup()
+    except Exception as e:
+        logger.error("GPIO.cleanup error: %s", e)
+    logger.info("Cleaned up")
     sys.exit(0)
 
 
 def main():
-    global webhooks
+    global webhooks, controller, IDENTITY
+    IDENTITY = identity.load_or_create()
     webhooks = WebhookNotifier()
 
-    # Global crash handler — catches any unhandled exception before process dies
     def _crash_hook(exc_type, exc_value, exc_tb):
         logger.critical("Unhandled exception — %s: %s", exc_type.__name__, exc_value)
         webhooks.fire("crash", {"error": "%s: %s" % (exc_type.__name__, exc_value)})
         sys.__excepthook__(exc_type, exc_value, exc_tb)
     sys.excepthook = _crash_hook
 
+    logger.info("Identity: type=%s id=%s", IDENTITY["type"], IDENTITY["id"])
+
     try:
-        setup_gpio()
+        controller = controllers.load(IDENTITY["type"])
     except Exception as e:
-        logger.critical("GPIO initialization failed: %s", e)
+        logger.critical("Failed to load controller %r: %s", IDENTITY["type"], e)
+        webhooks.fire("error", {"source": "controller_load", "error": str(e)})
+        raise
+
+    logger.info("Loaded controller: %s", controller.describe())
+
+    try:
+        controller.setup(webhooks)
+    except Exception as e:
+        logger.critical("Controller setup failed: %s", e)
         webhooks.fire("error", {"source": "gpio", "error": str(e)})
         raise
 
     webhooks.fire("start")
     logger.info("Service started")
 
-    # Start HTTP status server
     try:
         Thread(target=run_http_server, daemon=True).start()
         logger.info("HTTP Status server listening on 0.0.0.0:%d", HTTP_PORT)
@@ -409,8 +321,7 @@ def main():
     signal.signal(signal.SIGINT, cleanup)
 
     dispatcher = Dispatcher()
-    dispatcher.map(OSC_ADDRESS_A, handle_a)
-    dispatcher.map(OSC_ADDRESS_B, handle_b)
+    controller.register_osc(dispatcher)
     dispatcher.map("/sys/ping", handle_ping, needs_reply_address=True)
 
     try:

@@ -15,15 +15,50 @@ from config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
+VALID_DEVICE_TYPES = ("vents", "trolley")
+DEFAULT_DEVICE_TYPE = "vents"
+
 bp = Blueprint("devices", __name__)
 store = JsonStore(DATA_DIR, "devices", "dev")
 osc = OscSender()
 receiver = OscReceiver(port=9001)
 
 
+def _normalize_type(value):
+    """Coerce a device-type field to one of VALID_DEVICE_TYPES, falling back to default."""
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in VALID_DEVICE_TYPES:
+            return v
+    return DEFAULT_DEVICE_TYPE
+
+
+REQUIRED_FIELDS = ("name", "ip_address", "osc_port")
+
+
+def _decorate(device):
+    """Normalize a stored device for API responses.
+
+    Fills sane defaults for any missing required fields and sets `needs_repair: true`
+    when any were missing, so the UI can flag records that came from an older
+    schema (or were damaged by a past migration bug) rather than rendering blank.
+    """
+    result = dict(device)
+    missing = [k for k in REQUIRED_FIELDS if not result.get(k)]
+    if missing:
+        result["needs_repair"] = True
+        result["missing_fields"] = missing
+        result.setdefault("name", "(unnamed device)")
+        result.setdefault("ip_address", "")
+        result.setdefault("osc_port", 9000)
+    if "type" not in result:
+        result["type"] = DEFAULT_DEVICE_TYPE
+    return result
+
+
 @bp.route("", methods=["GET"])
 def list_devices():
-    return jsonify(store.list_all())
+    return jsonify([_decorate(d) for d in store.list_all()])
 
 
 @bp.route("", methods=["POST"])
@@ -33,7 +68,10 @@ def create_device():
         "name": data.get("name", "Untitled"),
         "ip_address": data.get("ip_address", ""),
         "osc_port": data.get("osc_port", 9000),
+        "type": _normalize_type(data.get("type")),
     }
+    if "hardware_id" in data:
+        device["hardware_id"] = data["hardware_id"]
     if "id" in data:
         device["id"] = data["id"]
     return jsonify(store.create(device)), 201
@@ -86,7 +124,7 @@ def test_send():
 def scan_network():
     data = request.get_json(silent=True) or {}
     subnet = data.get("subnet") or None
-    existing_ips = {d["ip_address"] for d in store.list_all()}
+    existing_ips = {ip for d in store.list_all() if (ip := d.get("ip_address"))}
 
     def generate():
         try:
@@ -126,12 +164,24 @@ def device_status_stream():
                         except Exception as e:
                             logger.warning("  Ping failed for %s: %s", ip, e)
 
-            # Yield online/offline based on pong received within timeout
+            # Yield online/offline based on pong received within timeout.
+            # Also backfill type/hardware_id on legacy records from pong data
+            # (store.patch() merges; the next loop tick reads the patched value).
             statuses = {}
             for device in devices:
+                did = device["id"]
                 if ip := device.get("ip_address"):
-                    pong = receiver.get_status(ip, timeout=6.0)
-                    statuses[device["id"]] = "online" if pong else "offline"
+                    statuses[did] = "online" if receiver.get_status(ip, timeout=6.0) else "offline"
+
+                    info = receiver.get_device_info(ip)
+                    patch = {}
+                    if "type" not in device and info.get("type"):
+                        patch["type"] = info["type"]
+                    if not device.get("hardware_id") and info.get("hardware_id"):
+                        patch["hardware_id"] = info["hardware_id"]
+                    if patch:
+                        logger.info("Backfilling %s from pong: %s", did, patch)
+                        store.patch(did, patch)
 
             # Periodically fetch version from online devices via HTTP
             # Check every 5s until we have at least one version, then every 30s
@@ -176,16 +226,18 @@ def get_device(device_id):
     device = store.get(device_id)
     if not device:
         return jsonify({"error": "Not found"}), 404
-    return jsonify(device)
+    return jsonify(_decorate(device))
 
 
 @bp.route("/<device_id>", methods=["PUT"])
 def update_device(device_id):
     data = request.get_json() or {}
+    if "type" in data:
+        data["type"] = _normalize_type(data["type"])
     updated = store.update(device_id, data)
     if not updated:
         return jsonify({"error": "Not found"}), 404
-    return jsonify(updated)
+    return jsonify(_decorate(updated))
 
 
 @bp.route("/<device_id>", methods=["DELETE"])

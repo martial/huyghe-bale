@@ -1,8 +1,16 @@
+export type DeviceType = "vents" | "trolley";
+
+export const DEVICE_TYPES: DeviceType[] = ["vents", "trolley"];
+
 export interface Device {
   id: string;
   name: string;
   ip_address: string;
   osc_port: number;
+  type: DeviceType;
+  hardware_id?: string;
+  needs_repair?: boolean;
+  missing_fields?: string[];
 }
 
 export type DeviceStatus = "online" | "offline";

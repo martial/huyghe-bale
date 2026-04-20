@@ -7,6 +7,11 @@ from api.settings import _read as read_settings
 
 bp = Blueprint("playback", __name__)
 
+# Current timeline schema only supports vents (/gpio/a + /gpio/b OSC addresses).
+# Trolley devices are listed in the admin but cannot receive playback yet —
+# they'll get their own timeline/playback flow once the hardware spec lands.
+PLAYBACK_DEVICE_TYPE = "vents"
+
 timeline_store = JsonStore(DATA_DIR, "timelines", "tl")
 device_store = JsonStore(DATA_DIR, "devices", "dev")
 orchestration_store = JsonStore(DATA_DIR, "orchestrations", "orch")
@@ -30,12 +35,22 @@ def start_playback():
     if not playback_type or not playback_id:
         return jsonify({"error": "type and id required"}), 400
 
-    # Resolve devices
+    # Resolve devices, reject non-vents targets (trolley playback not supported yet)
     devices = []
+    wrong_type = []
     for did in device_ids:
         d = device_store.get(did)
-        if d:
-            devices.append(d)
+        if not d:
+            continue
+        if d.get("type", "vents") != PLAYBACK_DEVICE_TYPE:
+            wrong_type.append({"id": did, "name": d.get("name"), "type": d.get("type")})
+            continue
+        devices.append(d)
+    if wrong_type:
+        return jsonify({
+            "error": f"Playback is only supported for {PLAYBACK_DEVICE_TYPE} devices",
+            "unsupported_devices": wrong_type,
+        }), 400
     if not devices:
         return jsonify({"error": "No valid devices specified"}), 400
 
@@ -58,7 +73,22 @@ def start_playback():
 
         # Resolve all timelines referenced in steps
         resolved_timelines = {}
-        devices_map = {d["id"]: d for d in device_store.list_all()}
+        all_devices = device_store.list_all()
+        devices_map = {d["id"]: d for d in all_devices}
+
+        # Any trolley referenced in the steps is a hard error
+        orch_wrong_type = []
+        for step in orch.get("steps", []):
+            for did in step.get("device_ids", []):
+                d = devices_map.get(did)
+                if d and d.get("type", "vents") != PLAYBACK_DEVICE_TYPE:
+                    orch_wrong_type.append({"id": did, "name": d.get("name"), "type": d.get("type")})
+        if orch_wrong_type:
+            return jsonify({
+                "error": f"Orchestration references non-{PLAYBACK_DEVICE_TYPE} devices",
+                "unsupported_devices": orch_wrong_type,
+            }), 400
+
         for step in orch.get("steps", []):
             tl_id = step.get("timeline_id")
             if tl_id and tl_id not in resolved_timelines:

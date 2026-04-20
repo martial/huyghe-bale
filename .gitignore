@@ -51,3 +51,6 @@ rpi-controller/webhooks.json
 
 # Firebase
 firebase-debug.log
+
+# Claude Code
+.claude/

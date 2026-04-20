@@ -68,6 +68,20 @@ class JsonStore:
                 json.dump(data, f, indent=2)
             return data
 
+    def patch(self, entity_id: str, data: dict) -> Optional[dict]:
+        """Merge `data` into the existing entity (shallow). Returns None if not found."""
+        with self._lock:
+            path = self._path(entity_id)
+            if not os.path.exists(path):
+                return None
+            with open(path, "r") as f:
+                current = json.load(f)
+            current.update(data)
+            current["id"] = entity_id
+            with open(path, "w") as f:
+                json.dump(current, f, indent=2)
+            return current
+
     def delete(self, entity_id: str) -> bool:
         """Delete entity. Returns True if deleted, False if not found."""
         with self._lock:

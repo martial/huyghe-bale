@@ -36,7 +36,8 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   updatingDevices: new Set(),
   restartingDevices: new Set(),
   updateLogs: {},
-  loading: false,
+  // Start in loading state so the first render shows skeletons, not the empty state.
+  loading: true,
   scanning: false,
   scanResults: [],
   scanError: null,

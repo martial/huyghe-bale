@@ -58,8 +58,10 @@ export default function TimelineEditor({ timeline }: { timeline: Timeline }) {
       await fetchDevices();
       devs = useDeviceStore.getState().list;
     }
-    if (devs.length === 0) return;
-    const ids = devs.map((d) => d.id);
+    // Timelines only drive vents — skip trolley devices.
+    const ventsDevs = devs.filter((d) => (d.type ?? "vents") === "vents");
+    if (ventsDevs.length === 0) return;
+    const ids = ventsDevs.map((d) => d.id);
     await startPlayback("timeline", local.id, ids);
   }
 

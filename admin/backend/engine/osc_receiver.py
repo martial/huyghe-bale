@@ -22,6 +22,7 @@ class OscReceiver:
     def _init(self, port):
         self.port = port
         self.last_seen = {}  # ip_address -> timestamp
+        self.device_info = {}  # ip_address -> {"type": str, "hardware_id": str}
         self.server = None
         self.thread = None
         self.running = False
@@ -32,14 +33,33 @@ class OscReceiver:
 
     def _handle_pong(self, client_address, addr, *args):
         # client_address = (ip, port) of the UDP sender (the RPi)
+        # Pong args: [origin_ip, device_type, hardware_id]
+        # Legacy Pis send only [origin_ip]. Parse defensively.
         ip = client_address[0]
         self.last_seen[ip] = time.time()
-        logger.info("Received /sys/pong from %s", ip)
+
+        device_type = "vents"  # back-compat default
+        hardware_id = ""
+        if len(args) >= 2 and isinstance(args[1], str) and args[1].strip():
+            device_type = args[1].strip().lower()
+        if len(args) >= 3 and isinstance(args[2], str):
+            hardware_id = args[2].strip()
+
+        prev = self.device_info.get(ip)
+        info = {"type": device_type, "hardware_id": hardware_id}
+        if prev != info:
+            logger.info("Device at %s identified as type=%s hw_id=%s", ip, device_type, hardware_id)
+        self.device_info[ip] = info
+        logger.debug("Received /sys/pong from %s (type=%s)", ip, device_type)
 
     def get_status(self, ip: str, timeout: float = 6.0) -> bool:
         """Return True if we've seen a pong from this IP within the timeout."""
         last_time = self.last_seen.get(ip, 0)
         return (time.time() - last_time) < timeout
+
+    def get_device_info(self, ip: str) -> dict:
+        """Return {"type", "hardware_id"} last reported by the device at ip, or {} if unseen."""
+        return dict(self.device_info.get(ip, {}))
 
     def start(self):
         # Stop any existing server first (handles Flask debug reloader)
