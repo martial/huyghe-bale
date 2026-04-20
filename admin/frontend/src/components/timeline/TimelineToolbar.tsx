@@ -4,6 +4,7 @@ import type { Timeline, Point, CurveType } from "../../types/timeline";
 import { usePlaybackStore } from "../../stores/playback-store";
 import { useDeviceStore } from "../../stores/device-store";
 import { sendTestValue } from "../../api/devices";
+import { downloadFromUrl } from "../../lib/download";
 
 const curveTypes: CurveType[] = [
   "linear", "step", "ease-in", "ease-out", "ease-in-out", "sine", "exponential", "bezier",
@@ -127,22 +128,26 @@ export default function TimelineToolbar({
           >
             {status.playing && !status.paused ? "Pause" : "Play"}
           </button>
-          <a
-            href={`/api/v1/export/timeline/${timeline.id}`}
-            download={`${timeline.name || timeline.id}.json`}
+          <button
+            onClick={() => downloadFromUrl(
+              `/api/v1/export/timeline/${timeline.id}`,
+              `${timeline.name || timeline.id}.json`,
+            )}
             className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium text-zinc-300 transition-all duration-200"
             title="Download timeline JSON (raw curve points)"
           >
             Export
-          </a>
-          <a
-            href={`/api/v1/export/timeline/${timeline.id}/sampled`}
-            download={`${timeline.name || timeline.id}_sampled.json`}
+          </button>
+          <button
+            onClick={() => downloadFromUrl(
+              `/api/v1/export/timeline/${timeline.id}/sampled`,
+              `${timeline.name || timeline.id}_sampled.json`,
+            )}
             className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium text-zinc-300 transition-all duration-200"
             title="Download frame-by-frame rendered values at the app's configured FPS (Settings → OSC frequency)"
           >
             Export sampled
-          </a>
+          </button>
           <button
             onClick={onSave}
             className="px-4 py-1.5 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition-all duration-200"

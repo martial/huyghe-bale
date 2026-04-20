@@ -7,6 +7,7 @@ import { useTimelineStore } from "../../stores/timeline-store";
 import { useDeviceStore } from "../../stores/device-store";
 import OrchestrationStepCard from "./OrchestrationStepCard";
 import PlaybackStartButton from "../playback/PlaybackStartButton";
+import { downloadFromUrl } from "../../lib/download";
 
 function generateId(): string {
   return "step_" + Math.random().toString(36).substring(2, 10);
@@ -115,22 +116,26 @@ export default function OrchestrationEditor({ orchestration }: { orchestration: 
 
         <div className="ml-auto flex gap-2">
           <PlaybackStartButton type="orchestration" id={local.id} />
-          <a
-            href={`/api/v1/export/orchestration/${local.id}`}
-            download={`${local.name || local.id}.json`}
+          <button
+            onClick={() => downloadFromUrl(
+              `/api/v1/export/orchestration/${local.id}`,
+              `${local.name || local.id}.json`,
+            )}
             className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium text-zinc-300 transition-all duration-200"
             title="Download orchestration JSON (timelines embedded)"
           >
             Export
-          </a>
-          <a
-            href={`/api/v1/export/orchestration/${local.id}/sampled`}
-            download={`${local.name || local.id}_sampled.json`}
+          </button>
+          <button
+            onClick={() => downloadFromUrl(
+              `/api/v1/export/orchestration/${local.id}/sampled`,
+              `${local.name || local.id}_sampled.json`,
+            )}
             className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium text-zinc-300 transition-all duration-200"
             title="Download frame-by-frame rendered values for the full orchestration (uses app's configured FPS)"
           >
             Export sampled
-          </a>
+          </button>
           <button
             onClick={handleSave}
             className="px-4 py-1.5 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition-all duration-200"
