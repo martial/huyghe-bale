@@ -20,6 +20,10 @@ export default function OrchestrationEditor({ orchestration }: { orchestration: 
   const fetchTimelines = useTimelineStore((s) => s.fetchList);
   const devices = useDeviceStore((s) => s.list);
   const fetchDevices = useDeviceStore((s) => s.fetchList);
+  const ventsDevices = useMemo(
+    () => devices.filter((d) => (d.type ?? "vents") === "vents"),
+    [devices],
+  );
 
   const [local, setLocal] = useState<Orchestration>(() => JSON.parse(JSON.stringify(orchestration)));
 
@@ -111,6 +115,22 @@ export default function OrchestrationEditor({ orchestration }: { orchestration: 
 
         <div className="ml-auto flex gap-2">
           <PlaybackStartButton type="orchestration" id={local.id} />
+          <a
+            href={`/api/v1/export/orchestration/${local.id}`}
+            download={`${local.name || local.id}.json`}
+            className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium text-zinc-300 transition-all duration-200"
+            title="Download orchestration JSON (timelines embedded)"
+          >
+            Export
+          </a>
+          <a
+            href={`/api/v1/export/orchestration/${local.id}/sampled`}
+            download={`${local.name || local.id}_sampled.json`}
+            className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium text-zinc-300 transition-all duration-200"
+            title="Download frame-by-frame rendered values for the full orchestration (uses app's configured FPS)"
+          >
+            Export sampled
+          </a>
           <button
             onClick={handleSave}
             className="px-4 py-1.5 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition-all duration-200"
@@ -144,7 +164,7 @@ export default function OrchestrationEditor({ orchestration }: { orchestration: 
             key={step.id}
             step={step}
             timelines={timelines}
-            devices={devices}
+            devices={ventsDevices}
             isFirst={step.order === 0}
             isLast={step.order === local.steps.length - 1}
             onChange={updateStep}

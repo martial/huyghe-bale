@@ -127,6 +127,22 @@ export default function TimelineToolbar({
           >
             {status.playing && !status.paused ? "Pause" : "Play"}
           </button>
+          <a
+            href={`/api/v1/export/timeline/${timeline.id}`}
+            download={`${timeline.name || timeline.id}.json`}
+            className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium text-zinc-300 transition-all duration-200"
+            title="Download timeline JSON (raw curve points)"
+          >
+            Export
+          </a>
+          <a
+            href={`/api/v1/export/timeline/${timeline.id}/sampled`}
+            download={`${timeline.name || timeline.id}_sampled.json`}
+            className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium text-zinc-300 transition-all duration-200"
+            title="Download frame-by-frame rendered values at the app's configured FPS (Settings → OSC frequency)"
+          >
+            Export sampled
+          </a>
           <button
             onClick={onSave}
             className="px-4 py-1.5 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition-all duration-200"
