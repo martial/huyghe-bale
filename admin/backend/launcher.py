@@ -50,11 +50,32 @@ for _ in range(50):
     except Exception:
         time.sleep(0.1)
 
+
+class Api:
+    """JS bridge — WKWebView ignores <a download> and Content-Disposition,
+    so the frontend calls save_file() to pop a native Save As dialog."""
+
+    def save_file(self, filename, content):
+        win = webview.windows[0]
+        path = win.create_file_dialog(
+            webview.SAVE_DIALOG, save_filename=filename
+        )
+        if not path:
+            return False
+        # create_file_dialog returns str on some platforms, tuple on others
+        if isinstance(path, (list, tuple)):
+            path = path[0]
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return True
+
+
 # Open native macOS window — blocks until closed
 webview.create_window(
     "PIERRE HUYGHE BALE",
     "http://127.0.0.1:5001",
     width=1280,
     height=800,
+    js_api=Api(),
 )
 webview.start()
