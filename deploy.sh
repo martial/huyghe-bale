@@ -110,6 +110,21 @@ fi
 # Make uploaded files publicly readable
 gsutil -m acl ch -r -u AllUsers:R "$GCS_PREFIX/"
 
+# Refresh the Pi one-liner bootstrap script at the stable URL.
+# Path is intentionally version-less: docs link
+# https://storage.googleapis.com/apps-screen-club/huyghe-bale/install.sh
+if [ -f "$SCRIPT_DIR/install.sh" ]; then
+    INSTALL_GCS="$GCS_BUCKET/$REPO_NAME/install.sh"
+    echo ""
+    echo "=== Refreshing Pi install.sh on GCS ==="
+    gsutil cp "$SCRIPT_DIR/install.sh" "$INSTALL_GCS"
+    gsutil acl ch -u AllUsers:R "$INSTALL_GCS"
+    INSTALL_URL="${INSTALL_GCS/gs:\/\//https://storage.googleapis.com/}"
+    GCS_LINKS+=("$INSTALL_GCS")
+else
+    INSTALL_URL=""
+fi
+
 echo ""
 echo "========================================"
 echo "  Deploy complete!"
