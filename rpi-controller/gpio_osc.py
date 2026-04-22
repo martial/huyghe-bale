@@ -43,8 +43,30 @@ shutdown_event = Event()
 last_pinger = None  # (ip, return_port) — used by the trolley status broadcaster
 
 
+def _systemd_unit_exists(unit: str) -> bool:
+    """True if systemd has a unit file for the given name. Read-only, no sudo."""
+    try:
+        return subprocess.call(
+            ["systemctl", "cat", f"{unit}.service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ) == 0
+    except Exception:
+        return False
+
+
 def _service_name() -> str:
-    return f"gpio-osc-{IDENTITY['type']}"
+    """Resolve the systemd unit name actually managing this Pi's gpio-osc
+    service. Prefers the per-type convention `gpio-osc-<type>` (introduced
+    with the trolley refactor); falls back to legacy `gpio-osc` for Pis
+    installed before that refactor and never reinstalled."""
+    preferred = f"gpio-osc-{IDENTITY['type']}"
+    for candidate in (preferred, "gpio-osc"):
+        if _systemd_unit_exists(candidate):
+            return candidate
+    # Nothing matched — return the preferred name so the failure log is
+    # diagnosable ("Failed to restart gpio-osc-vents.service").
+    return preferred
 
 
 # --- Version Info (read once at startup) ---

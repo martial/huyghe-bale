@@ -13,7 +13,37 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 import gpio_osc
-from gpio_osc import handle_ping, cleanup, main
+from gpio_osc import handle_ping, cleanup, main, _service_name
+
+
+# ── _service_name (systemd unit resolution) ─────────────────────────
+
+
+class TestServiceName:
+    """The Update-button restart targets whatever _service_name() returns.
+    It must pick a unit that actually exists on this Pi — new-convention
+    `gpio-osc-<type>` on fresh installs, legacy `gpio-osc` on old ones.
+    """
+
+    def setup_method(self):
+        gpio_osc.IDENTITY = {"type": "vents", "id": "vents_x"}
+
+    def test_prefers_per_type_unit_when_present(self):
+        # `systemctl cat gpio-osc-vents.service` → 0, legacy lookup never reached
+        with patch("gpio_osc.subprocess.call", return_value=0) as call:
+            assert _service_name() == "gpio-osc-vents"
+            # First (and only) call should be for the preferred name
+            assert call.call_args_list[0].args[0][-1] == "gpio-osc-vents.service"
+
+    def test_falls_back_to_legacy_when_per_type_missing(self):
+        # First call (gpio-osc-vents) fails, second (gpio-osc) succeeds
+        with patch("gpio_osc.subprocess.call", side_effect=[1, 0]):
+            assert _service_name() == "gpio-osc"
+
+    def test_returns_preferred_when_nothing_exists(self):
+        # Neither unit exists — return preferred so the error log is clear.
+        with patch("gpio_osc.subprocess.call", return_value=1):
+            assert _service_name() == "gpio-osc-vents"
 
 
 # ── handle_ping ──────────────────────────────────────────────────────
