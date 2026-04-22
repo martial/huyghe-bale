@@ -15,6 +15,48 @@ const ROUTING_OPTIONS: { value: BridgeRouting; label: string; hint: string }[] =
   { value: "none", label: "none (tap only)", hint: "log but don't forward" },
 ];
 
+/** Small ? icon that reveals a tooltip on hover. */
+function RoutingHelp() {
+  return (
+    <span className="relative group inline-flex items-center">
+      <span
+        tabIndex={0}
+        role="button"
+        aria-label="Routing modes"
+        className="w-4 h-4 rounded-full bg-zinc-700 hover:bg-zinc-600 text-zinc-200 text-[10px] font-bold flex items-center justify-center transition-colors cursor-help select-none"
+      >
+        ?
+      </span>
+      <div className="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-2 w-80 p-3 rounded-lg bg-zinc-950 border border-white/10 text-[11px] text-zinc-300 shadow-xl opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity z-50 leading-relaxed">
+        <p className="mb-2 text-zinc-400">Which devices receive each incoming message:</p>
+        <div className="space-y-1.5">
+          <div>
+            <span className="font-mono text-sky-300">type-match</span>
+            <span className="text-zinc-500"> — </span>
+            <span>Smart: vents commands go to vents, trolley commands to trolley.</span>
+          </div>
+          <div>
+            <span className="font-mono text-sky-300">passthrough</span>
+            <span className="text-zinc-500"> — </span>
+            <span>Send every message to every device.</span>
+          </div>
+          <div>
+            <span className="font-mono text-sky-300">none</span>
+            <span className="text-zinc-500"> — </span>
+            <span>Just log, don't send anywhere. For debugging.</span>
+          </div>
+        </div>
+        <p className="mt-3 pt-2 border-t border-white/10 text-zinc-400">
+          <span className="text-zinc-500">Target one device:</span> prefix your address with{" "}
+          <span className="font-mono text-sky-300">/to/&lt;name-or-ip&gt;/</span>. Example:{" "}
+          <span className="font-mono text-zinc-300">/to/circadian.home/vents/fan/1 0.5</span>.
+          Works in any routing mode.
+        </p>
+      </div>
+    </span>
+  );
+}
+
 function formatTime(t: number): string {
   const d = new Date(t * 1000);
   return d.toLocaleTimeString(undefined, { hour12: false }) +
@@ -190,7 +232,10 @@ export default function BridgePage() {
         </label>
 
         <label className="flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wider text-zinc-500">Routing</span>
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500 flex items-center gap-1.5">
+            Routing
+            <RoutingHelp />
+          </span>
           <select
             value={settings.bridge_routing}
             onChange={(e) => changeRouting(e.target.value as BridgeRouting)}
@@ -273,7 +318,15 @@ export default function BridgePage() {
               >
                 <span className="text-zinc-500">{formatTime(ev.t)}</span>
                 <span className="text-zinc-400 truncate">{ev.src}</span>
-                <span className="text-orange-200/90 truncate">{ev.address}</span>
+                <span
+                  className="text-orange-200/90 truncate"
+                  title={ev.forwarded_as ? `received: ${ev.address}\nforwarded as: ${ev.forwarded_as}` : ev.address}
+                >
+                  {ev.address}
+                  {ev.forwarded_as && (
+                    <span className="text-zinc-500"> → <span className="text-sky-300/90">{ev.forwarded_as}</span></span>
+                  )}
+                </span>
                 <span className="text-zinc-300 truncate">{formatArgs(ev.args)}</span>
                 <span
                   className={`truncate ${dropped ? "text-yellow-400/80" : "text-zinc-400"}`}

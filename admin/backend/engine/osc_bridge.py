@@ -45,6 +45,31 @@ def _address_matches_type(address: str, device_type: str) -> bool:
     return False
 
 
+def _parse_targeted(address: str) -> "tuple[str, str] | None":
+    """Parse `/to/<identifier>/<rest>`. Returns (identifier, "/rest") or None
+    if the address isn't targeted. `<rest>` keeps its leading slash so the
+    forwarded address is a valid OSC path."""
+    if not address.startswith("/to/"):
+        return None
+    remainder = address[len("/to/"):]
+    if "/" not in remainder:
+        # `/to/foo` with no trailing address — malformed.
+        return None
+    identifier, rest = remainder.split("/", 1)
+    if not identifier:
+        return None
+    return identifier, "/" + rest
+
+
+def _match_device(devices: list, identifier: str) -> "dict | None":
+    """Find a device by id, name, ip_address, or hardware_id (in that order)."""
+    for key in ("id", "name", "ip_address", "hardware_id"):
+        for d in devices:
+            if d.get(key) == identifier:
+                return d
+    return None
+
+
 class OscBridge:
     """Listen on a UDP port, fan out to devices, publish events on an SSE queue.
 
@@ -178,15 +203,46 @@ class OscBridge:
     # ── internals ───────────────────────────────────────────────────────
 
     def _handle(self, client_address, address, *args) -> None:
-        """Catch-all dispatcher handler: route + log + publish."""
+        """Catch-all dispatcher handler: route + log + publish.
+
+        Three dispatch paths, in order:
+          1. Targeted: address starts with /to/<identifier>/<rest>. Look up
+             a single device by id/name/ip/hardware_id and forward <rest>
+             only to that device. Always wins, regardless of routing mode.
+          2. routing == "none": log but don't forward.
+          3. Normal routing: type-match or passthrough over all devices.
+        """
         src_ip = client_address[0] if client_address else ""
         targets: list[str] = []
         dropped: Optional[str] = None
+        forwarded_address = address  # what we actually send to the Pi (stripped /to/<id>/ if present)
 
-        if self._routing == "none":
+        targeted = _parse_targeted(address)
+        devices = list(self._device_provider())
+
+        if targeted is not None:
+            identifier, rest = targeted
+            device = _match_device(devices, identifier)
+            if device is None:
+                dropped = f"no device matching {identifier!r}"
+            elif not device.get("ip_address"):
+                dropped = f"device {identifier!r} has no IP address"
+            else:
+                forwarded_address = rest
+                try:
+                    self._osc.send(
+                        device["ip_address"],
+                        device.get("osc_port", 9000),
+                        rest,
+                        _to_osc_value(args),
+                    )
+                    targets.append(device.get("id") or device["ip_address"])
+                except Exception as e:
+                    logger.warning("Bridge targeted forward to %s failed: %s", identifier, e)
+                    dropped = f"send to {identifier!r} failed: {e}"
+        elif self._routing == "none":
             dropped = "routing=none"
         else:
-            devices = list(self._device_provider())
             for device in devices:
                 dev_ip = device.get("ip_address")
                 if not dev_ip:
@@ -212,6 +268,10 @@ class OscBridge:
             "args": list(args),
             "targets": targets,
         }
+        # Surface the resolved address when a /to/ prefix was stripped, so the
+        # UI can show "/to/X/vents/fan/1 → /vents/fan/1".
+        if forwarded_address != address:
+            event["forwarded_as"] = forwarded_address
         if dropped:
             event["dropped"] = dropped
 

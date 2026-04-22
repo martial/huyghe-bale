@@ -335,6 +335,33 @@ const BRIDGE: Section = {
         },
       ],
     },
+    {
+      label: "Targeting a single device (overrides routing mode)",
+      direction: "admin-to-pi",
+      items: [
+        {
+          address: "/to/<identifier>/<real-address>",
+          direction: "admin-to-pi",
+          args: "any",
+          description:
+            "Prefix any address with /to/<identifier>/ and the bridge forwards only to that one device, regardless of routing mode. <identifier> matches (in order): device id, name, IP address, or hardware id. Match is exact and case-sensitive. Name renames take effect immediately — the bridge re-reads the device store on every message. Unknown identifier → event logged with dropped=\"no device matching '<x>'\" and not forwarded.",
+          example:
+            "oscsend <admin-ip> 9002 /to/vents-1/vents/fan/1 f 0.5\noscsend <admin-ip> 9002 /to/192.168.1.74/vents/target f 20\noscsend <admin-ip> 9002 /to/vents_a1b2c3d4/vents/mode s auto",
+        },
+        {
+          address: "Name constraints",
+          direction: "admin-to-pi",
+          description:
+            "Device names are auto-trimmed on save and cannot contain '/' (conflicts with /to/<name>/… parsing). Empty names rejected. Names are not enforced unique — if two devices share a name, the first match wins by store order. Use IPs or hardware ids to be unambiguous.",
+        },
+        {
+          address: "Event log shape",
+          direction: "admin-to-pi",
+          description:
+            "Each forwarded /to/ message shows in the feed with a 'forwarded_as' field equal to the unwrapped address that was actually sent. GET /api/v1/bridge/state returns the current 500-entry ring buffer; GET /api/v1/bridge/stream is an SSE feed pushing each event as it arrives.",
+        },
+      ],
+    },
   ],
 };
 

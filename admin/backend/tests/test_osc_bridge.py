@@ -13,10 +13,10 @@ from engine.osc_bridge import OscBridge, RING_BUFFER_SIZE
 
 def _devices():
     return [
-        {"id": "vents-1",   "ip_address": "10.0.0.1", "osc_port": 9000, "type": "vents"},
-        {"id": "vents-2",   "ip_address": "10.0.0.2", "osc_port": 9000, "type": "vents"},
-        {"id": "trolley-1", "ip_address": "10.0.0.3", "osc_port": 9000, "type": "trolley"},
-        {"id": "no-ip",     "ip_address": "",          "osc_port": 9000, "type": "vents"},
+        {"id": "vents-1",   "name": "circadian.home",   "hardware_id": "vents_aaaa",   "ip_address": "10.0.0.1", "osc_port": 9000, "type": "vents"},
+        {"id": "vents-2",   "name": "other-vents",      "hardware_id": "vents_bbbb",   "ip_address": "10.0.0.2", "osc_port": 9000, "type": "vents"},
+        {"id": "trolley-1", "name": "screenclub.home",  "hardware_id": "trolley_cccc", "ip_address": "10.0.0.3", "osc_port": 9000, "type": "trolley"},
+        {"id": "no-ip",     "name": "broken",           "hardware_id": "",             "ip_address": "",         "osc_port": 9000, "type": "vents"},
     ]
 
 
@@ -165,3 +165,160 @@ def test_reconfigure_applies_routing_immediately():
     bridge.reconfigure(routing="passthrough")
     bridge._handle(("10.0.0.99", 50000), "/anything", 1)
     assert sender.send.call_count == 3  # all 3 devices with ips
+
+
+# ── targeted dispatch: /to/<identifier>/<real-address> ───────────────────
+
+
+def test_targeted_by_id():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/to/vents-2/vents/fan/1", 0.5)
+    sent = [c.args for c in sender.send.call_args_list]
+    assert len(sent) == 1
+    # Destination address is unwrapped; only the targeted device receives it
+    assert sent[0] == ("10.0.0.2", 9000, "/vents/fan/1", 0.5)
+    evt = bridge.get_events()[-1]
+    assert evt["forwarded_as"] == "/vents/fan/1"
+    assert evt["targets"] == ["vents-2"]
+    assert "dropped" not in evt
+
+
+def test_targeted_by_name():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/to/screenclub.home/trolley/home", 0)
+    sent = [c.args for c in sender.send.call_args_list]
+    assert len(sent) == 1
+    assert sent[0][0] == "10.0.0.3"
+    assert sent[0][2] == "/trolley/home"
+
+
+def test_targeted_by_ip():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/to/10.0.0.1/vents/target", 20)
+    sent = [c.args for c in sender.send.call_args_list]
+    assert len(sent) == 1
+    assert sent[0][0] == "10.0.0.1"
+    assert sent[0][2] == "/vents/target"
+
+
+def test_targeted_by_hardware_id():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/to/trolley_cccc/trolley/stop", 0)
+    sent = [c.args for c in sender.send.call_args_list]
+    assert len(sent) == 1
+    assert sent[0][0] == "10.0.0.3"
+
+
+def test_targeted_unknown_identifier_drops():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/to/nonexistent/vents/fan/1", 0.5)
+    sender.send.assert_not_called()
+    evt = bridge.get_events()[-1]
+    assert evt["dropped"] == "no device matching 'nonexistent'"
+
+
+def test_targeted_overrides_routing_none():
+    """Targeted dispatch must win even when the global routing is 'none'."""
+    bridge, sender = _make("none")
+    bridge._handle(("10.0.0.99", 50000), "/to/vents-1/vents/peltier/1", 1)
+    assert sender.send.call_count == 1
+    evt = bridge.get_events()[-1]
+    assert "dropped" not in evt
+    assert evt["targets"] == ["vents-1"]
+
+
+def test_targeted_overrides_type_mismatch():
+    """`/to/<vents-device>/trolley/anything` still reaches the vents device —
+    the user asked for it explicitly, type-match is bypassed."""
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/to/vents-1/custom/address", 1)
+    assert sender.send.call_count == 1
+    assert sender.send.call_args.args[0] == "10.0.0.1"
+    assert sender.send.call_args.args[2] == "/custom/address"
+
+
+def test_targeted_malformed_no_trailing_address():
+    bridge, sender = _make("type-match")
+    # `/to/foo` has no destination address — parsed as not targeted, falls
+    # through to normal routing. type-match doesn't recognise /to/ prefix so
+    # it's dropped.
+    bridge._handle(("10.0.0.99", 50000), "/to/foo", 1)
+    sender.send.assert_not_called()
+    evt = bridge.get_events()[-1]
+    assert evt.get("dropped")
+
+
+def test_targeted_empty_identifier():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "//vents/fan/1", 1)
+    # Empty identifier — not a targeted address, falls back to normal routing
+    # (and /vents/fan/1 fanout still works for the preceding "//" — actually
+    # pythonosc treats the leading // as an empty first segment). We just
+    # verify the bridge doesn't crash and nothing unexpected happens.
+    evt = bridge.get_events()[-1]
+    assert evt["address"] == "//vents/fan/1"
+
+
+# ── rename flow: targeting tracks live device_provider changes ─────────────
+
+
+def test_rename_takes_effect_on_next_message():
+    """Mimicking the admin-rename flow: device_provider returns the current
+    store contents on every call, so the bridge picks up a new name without
+    needing a reconfigure."""
+    from unittest.mock import MagicMock
+    from engine.osc_bridge import OscBridge
+
+    state = [
+        {"id": "d1", "name": "old-name", "ip_address": "10.0.0.9",
+         "osc_port": 9000, "type": "vents"},
+    ]
+    sender = MagicMock()
+    bridge = OscBridge(
+        port=0,
+        routing="type-match",
+        osc_sender=sender,
+        device_provider=lambda: state,
+    )
+
+    # Before rename
+    bridge._handle(("1.1.1.1", 1000), "/to/old-name/vents/fan/1", 0.5)
+    assert sender.send.call_count == 1
+
+    # Simulate the admin PUT flow: the store's list_all() now returns the new name.
+    state[0]["name"] = "new-name"
+
+    # /to/old-name/… must now MISS
+    sender.reset_mock()
+    bridge._handle(("1.1.1.1", 1000), "/to/old-name/vents/fan/1", 0.5)
+    sender.send.assert_not_called()
+    assert bridge.get_events()[-1]["dropped"] == "no device matching 'old-name'"
+
+    # /to/new-name/… must HIT
+    sender.reset_mock()
+    bridge._handle(("1.1.1.1", 1000), "/to/new-name/vents/fan/1", 0.5)
+    sender.send.assert_called_once()
+    assert sender.send.call_args.args[0] == "10.0.0.9"
+
+
+def test_trailing_whitespace_defeats_exact_match():
+    """Sanity check that _match_device is exact-match — proving the API's
+    validation is load-bearing: if someone bypasses the API and stores a name
+    with trailing whitespace, targeting will silently miss."""
+    from unittest.mock import MagicMock
+    from engine.osc_bridge import OscBridge
+
+    sender = MagicMock()
+    bridge = OscBridge(
+        port=0,
+        routing="type-match",
+        osc_sender=sender,
+        device_provider=lambda: [
+            {"id": "d1", "name": "vents ", "ip_address": "10.0.0.9",
+             "osc_port": 9000, "type": "vents"},  # trailing space
+        ],
+    )
+
+    bridge._handle(("1.1.1.1", 1000), "/to/vents/vents/fan/1", 0.5)
+    sender.send.assert_not_called()
+    assert bridge.get_events()[-1]["dropped"] == "no device matching 'vents'"
