@@ -71,6 +71,17 @@ def get_status(device_id):
     ip = device.get("ip_address")
     if not ip:
         return jsonify({"position": 0.0, "limit": 0, "homed": 0, "online": False})
+
+    # The trolleys page doesn't open the /devices SSE stream, so nobody is
+    # broadcasting /sys/ping. Send one on each status poll so the Pi's last_seen
+    # stays fresh (keeping `online` true and triggering the Pi's /trolley/status
+    # broadcast loop). Fire-and-forget.
+    port = device.get("osc_port", 9000)
+    try:
+        _osc.send(ip, port, "/sys/ping", _receiver.port)
+    except Exception as e:
+        logger.debug("ping on status poll failed: %s", e)
+
     status = _receiver.get_trolley_status(ip)
     online = _receiver.get_status(ip, timeout=6.0)
     return jsonify({

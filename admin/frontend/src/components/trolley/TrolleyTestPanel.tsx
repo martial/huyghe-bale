@@ -56,6 +56,10 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
   }
 
   async function handleStep() {
+    // Re-apply current dir + speed so the burst matches what the UI shows,
+    // regardless of what the Pi's last command left the controller in.
+    await send("dir", direction);
+    await send("speed", speed);
     await send("step", steps);
   }
 
