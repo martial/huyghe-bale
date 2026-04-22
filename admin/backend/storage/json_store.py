@@ -1,10 +1,29 @@
-"""Thread-safe JSON file storage with CRUD operations."""
+"""Thread-safe JSON file storage with CRUD operations.
+
+Writes go through write-to-temp + os.replace so a kill -9 mid-save leaves
+the on-disk file either fully-written-old or fully-written-new — never
+truncated. Reads in list_all() quarantine any file that fails to parse
+(rename to *.corrupted) so a single bad file can't prevent startup.
+"""
 
 import json
+import logging
 import os
 import secrets
 import threading
 from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+def _write_atomic(path: str, data: dict) -> None:
+    """Write `data` to `path` atomically. Crash-safe on POSIX and Windows."""
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 class JsonStore:
@@ -23,16 +42,31 @@ class JsonStore:
         return f"{self.id_prefix}_{secrets.token_hex(4)}"
 
     def list_all(self) -> list[dict]:
-        """Return all entities."""
+        """Return all entities. Quarantines any malformed *.json file."""
         with self._lock:
             entities = []
             if not os.path.isdir(self.base_dir):
                 return entities
             for filename in sorted(os.listdir(self.base_dir)):
-                if filename.endswith(".json"):
-                    filepath = os.path.join(self.base_dir, filename)
+                if not filename.endswith(".json"):
+                    continue
+                filepath = os.path.join(self.base_dir, filename)
+                try:
                     with open(filepath, "r") as f:
                         entities.append(json.load(f))
+                except (json.JSONDecodeError, OSError) as e:
+                    quarantine = f"{filepath}.corrupted"
+                    try:
+                        os.replace(filepath, quarantine)
+                        logger.warning(
+                            "Quarantined corrupt %s → %s (%s)",
+                            filepath, quarantine, e,
+                        )
+                    except OSError as rename_err:
+                        logger.warning(
+                            "Corrupt %s (%s); could not quarantine: %s",
+                            filepath, e, rename_err,
+                        )
             return entities
 
     def get(self, entity_id: str) -> Optional[dict]:
@@ -52,9 +86,7 @@ class JsonStore:
                 data["id"] = self._generate_id()
             if "created_at" not in data:
                 data["created_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            path = self._path(data["id"])
-            with open(path, "w") as f:
-                json.dump(data, f, indent=2)
+            _write_atomic(self._path(data["id"]), data)
             return data
 
     def update(self, entity_id: str, data: dict) -> Optional[dict]:
@@ -64,8 +96,7 @@ class JsonStore:
             if not os.path.exists(path):
                 return None
             data["id"] = entity_id
-            with open(path, "w") as f:
-                json.dump(data, f, indent=2)
+            _write_atomic(path, data)
             return data
 
     def patch(self, entity_id: str, data: dict) -> Optional[dict]:
@@ -78,8 +109,7 @@ class JsonStore:
                 current = json.load(f)
             current.update(data)
             current["id"] = entity_id
-            with open(path, "w") as f:
-                json.dump(current, f, indent=2)
+            _write_atomic(path, current)
             return current
 
     def delete(self, entity_id: str) -> bool:

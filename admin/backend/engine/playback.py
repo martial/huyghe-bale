@@ -37,6 +37,15 @@ class PlaybackEngine:
         self._pause_event = threading.Event()  # Set = running, Clear = paused
         self._pause_event.set()
         self.output_cap = 100  # Max output percentage (1–100)
+        self._last_error: Optional[str] = None
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._last_error
+
+    @property
+    def thread_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
 
     def status(self) -> dict:
         with self._lock:
@@ -48,6 +57,7 @@ class PlaybackEngine:
                 "current_values": {k: round(v, 4) for k, v in self.current_values.items()},
                 "type": self._playback_type,
                 "id": self._playback_id,
+                "last_error": self._last_error,
             }
 
     def start_timeline(self, timeline: dict, devices: list[dict]):
@@ -257,146 +267,167 @@ class PlaybackEngine:
 
     def _run_trolley_timeline(self):
         """Event-based trolley playback: fire each bang at its scheduled time."""
-        interval = 1.0 / max(1, self.tick_rate)
-        start_time = time.monotonic()
-        self._start_time = start_time
-        self._seek_offset = 0.0
-        cursor = 0
-        events = self._trolley_events()
+        self._last_error = None
+        try:
+            interval = 1.0 / max(1, self.tick_rate)
+            start_time = time.monotonic()
+            self._start_time = start_time
+            self._seek_offset = 0.0
+            cursor = 0
+            events = self._trolley_events()
 
-        while not self._stop_event.is_set():
-            self._pause_event.wait()
-            if self._stop_event.is_set():
-                break
+            while not self._stop_event.is_set():
+                self._pause_event.wait()
+                if self._stop_event.is_set():
+                    break
 
-            elapsed = time.monotonic() - start_time + self._seek_offset
+                elapsed = time.monotonic() - start_time + self._seek_offset
 
-            with self._lock:
-                if self.total_duration > 0 and elapsed >= self.total_duration:
-                    # Implicit stop at end of a run, then wrap to t=0.
-                    self._send_trolley_stop()
-                    elapsed = elapsed % self.total_duration
-                    self._seek_offset -= self.total_duration
-                    cursor = 0
-                self.elapsed = elapsed
-
-                # Seek support: if elapsed moved backwards (seek() or loop wrap),
-                # re-find cursor.
-                if cursor > 0 and cursor <= len(events):
-                    prev_ev_time = events[cursor - 1][0]
-                    if elapsed < prev_ev_time:
+                with self._lock:
+                    if self.total_duration > 0 and elapsed >= self.total_duration:
+                        # Implicit stop at end of a run, then wrap to t=0.
+                        self._send_trolley_stop()
+                        elapsed = elapsed % self.total_duration
+                        self._seek_offset -= self.total_duration
                         cursor = 0
+                    self.elapsed = elapsed
 
-                # Fire every event whose time has arrived.
-                while cursor < len(events) and events[cursor][0] <= elapsed:
-                    self._fire_trolley_event(events[cursor][2])
-                    cursor += 1
+                    # Seek support: if elapsed moved backwards (seek() or loop wrap),
+                    # re-find cursor.
+                    if cursor > 0 and cursor <= len(events):
+                        prev_ev_time = events[cursor - 1][0]
+                        if elapsed < prev_ev_time:
+                            cursor = 0
 
-            next_tick = start_time + (int((time.monotonic() - start_time) / interval) + 1) * interval
-            sleep_time = next_tick - time.monotonic()
-            if sleep_time > 0:
-                self._stop_event.wait(sleep_time)
+                    # Fire every event whose time has arrived.
+                    while cursor < len(events) and events[cursor][0] <= elapsed:
+                        self._fire_trolley_event(events[cursor][2])
+                        cursor += 1
 
-        # Exit path: make sure the trolley stops cleanly, whether we were
-        # stopped externally or ran off the end.
-        with self._lock:
-            self.playing = False
-        if not self._stop_event.is_set():
-            self._send_trolley_stop()
+                next_tick = start_time + (int((time.monotonic() - start_time) / interval) + 1) * interval
+                sleep_time = next_tick - time.monotonic()
+                if sleep_time > 0:
+                    self._stop_event.wait(sleep_time)
+
+            # Exit path: make sure the trolley stops cleanly, whether we were
+            # stopped externally or ran off the end.
+            if not self._stop_event.is_set():
+                self._send_trolley_stop()
+        except Exception as e:
+            logger.exception("playback _run_trolley_timeline crashed")
+            self._last_error = f"trolley playback crashed: {e}"
+        finally:
+            with self._lock:
+                self.playing = False
+                self.paused = False
 
     def _run_timeline(self):
         """Main timeline playback loop."""
-        interval = 1.0 / self.tick_rate
-        start_time = time.monotonic()
-        self._start_time = start_time
-        self._seek_offset = 0.0
+        self._last_error = None
+        try:
+            interval = 1.0 / self.tick_rate
+            start_time = time.monotonic()
+            self._start_time = start_time
+            self._seek_offset = 0.0
 
-        while not self._stop_event.is_set():
-            # Block while paused
-            self._pause_event.wait()
-            if self._stop_event.is_set():
-                break
+            while not self._stop_event.is_set():
+                # Block while paused
+                self._pause_event.wait()
+                if self._stop_event.is_set():
+                    break
 
-            elapsed = time.monotonic() - start_time + self._seek_offset
+                elapsed = time.monotonic() - start_time + self._seek_offset
 
+                with self._lock:
+                    if elapsed >= self.total_duration:
+                        # Loop: reset time origin
+                        elapsed = elapsed % self.total_duration
+                        self._seek_offset -= self.total_duration
+                    self.elapsed = elapsed
+                    self._evaluate_and_send(self._timeline, elapsed)
+
+                # Sleep for next tick
+                next_tick = start_time + (int((time.monotonic() - start_time) / interval) + 1) * interval
+                sleep_time = next_tick - time.monotonic()
+                if sleep_time > 0:
+                    self._stop_event.wait(sleep_time)
+        except Exception as e:
+            logger.exception("playback _run_timeline crashed")
+            self._last_error = f"timeline playback crashed: {e}"
+        finally:
             with self._lock:
-                if elapsed >= self.total_duration:
-                    # Loop: reset time origin
-                    elapsed = elapsed % self.total_duration
-                    self._seek_offset -= self.total_duration
-                self.elapsed = elapsed
-                self._evaluate_and_send(self._timeline, elapsed)
-
-            # Sleep for next tick
-            next_tick = start_time + (int((time.monotonic() - start_time) / interval) + 1) * interval
-            sleep_time = next_tick - time.monotonic()
-            if sleep_time > 0:
-                self._stop_event.wait(sleep_time)
-
-        with self._lock:
-            self.playing = False
+                self.playing = False
+                self.paused = False
 
     def _run_orchestration(self):
         """Main orchestration playback loop."""
-        interval = 1.0 / self.tick_rate
-        global_start = time.monotonic()
-        steps = self._orchestration.get("steps", [])
-        loop = self._orchestration.get("loop", False)
+        self._last_error = None
+        try:
+            interval = 1.0 / self.tick_rate
+            global_start = time.monotonic()
+            steps = self._orchestration.get("steps", [])
+            loop = self._orchestration.get("loop", False)
 
-        while not self._stop_event.is_set():
-            for step_idx, step in enumerate(steps):
-                if self._stop_event.is_set():
-                    return
-
-                with self._lock:
-                    self._current_step_index = step_idx
-
-                # Delay before
-                delay = step.get("delay_before", 0.0)
-                if delay > 0:
-                    self._stop_event.wait(delay)
+            while not self._stop_event.is_set():
+                for step_idx, step in enumerate(steps):
                     if self._stop_event.is_set():
                         return
 
-                # Get timeline and devices for this step
-                tl = self._resolved_timelines.get(step.get("timeline_id"))
-                if not tl:
-                    continue
+                    with self._lock:
+                        self._current_step_index = step_idx
 
-                device_ids = step.get("device_ids", [])
-                step_devices = [
-                    self._devices_map[did]
-                    for did in device_ids
-                    if did in self._devices_map
-                ]
+                    # Delay before
+                    delay = step.get("delay_before", 0.0)
+                    if delay > 0:
+                        self._stop_event.wait(delay)
+                        if self._stop_event.is_set():
+                            return
 
-                with self._lock:
-                    self._devices = step_devices
+                    # Get timeline and devices for this step
+                    tl = self._resolved_timelines.get(step.get("timeline_id"))
+                    if not tl:
+                        continue
 
-                # Play the timeline
-                step_start = time.monotonic()
-                step_duration = tl.get("duration", 0.0)
-
-                while not self._stop_event.is_set():
-                    step_elapsed = time.monotonic() - step_start
-                    if step_elapsed >= step_duration:
-                        break
+                    device_ids = step.get("device_ids", [])
+                    step_devices = [
+                        self._devices_map[did]
+                        for did in device_ids
+                        if did in self._devices_map
+                    ]
 
                     with self._lock:
-                        self.elapsed = time.monotonic() - global_start
-                        self._evaluate_and_send(tl, step_elapsed)
+                        self._devices = step_devices
 
-                    next_tick = step_start + (int(step_elapsed / interval) + 1) * interval
-                    sleep_time = next_tick - time.monotonic()
-                    if sleep_time > 0:
-                        self._stop_event.wait(sleep_time)
+                    # Play the timeline
+                    step_start = time.monotonic()
+                    step_duration = tl.get("duration", 0.0)
 
-            if not loop:
-                break
+                    while not self._stop_event.is_set():
+                        step_elapsed = time.monotonic() - step_start
+                        if step_elapsed >= step_duration:
+                            break
 
-        with self._lock:
-            self.elapsed = self.total_duration
-            self.playing = False
+                        with self._lock:
+                            self.elapsed = time.monotonic() - global_start
+                            self._evaluate_and_send(tl, step_elapsed)
+
+                        next_tick = step_start + (int(step_elapsed / interval) + 1) * interval
+                        sleep_time = next_tick - time.monotonic()
+                        if sleep_time > 0:
+                            self._stop_event.wait(sleep_time)
+
+                if not loop:
+                    break
+
+            with self._lock:
+                self.elapsed = self.total_duration
+        except Exception as e:
+            logger.exception("playback _run_orchestration crashed")
+            self._last_error = f"orchestration playback crashed: {e}"
+        finally:
+            with self._lock:
+                self.playing = False
+                self.paused = False
 
     def _evaluate_and_send(self, timeline: dict, current_time: float):
         """Evaluate lanes and send OSC to all active devices."""

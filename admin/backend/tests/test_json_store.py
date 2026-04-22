@@ -6,8 +6,8 @@ Regression guard: an earlier version of the device SSE loop called
 update() still does full-replace (intended) and patch() preserves fields.
 """
 
+import os
 import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -68,3 +68,56 @@ class TestPatch:
         store.patch(dev["id"], {"id": "dev_hijack"})
         reloaded = store.get(dev["id"])
         assert reloaded["id"] == dev["id"]  # id field is locked to the path
+
+
+class TestAtomicWrites:
+    """Writes must never leave a truncated file on disk — a killed Python
+    mid-write used to produce a 0-byte .json that crashed list_all() on
+    next boot. _write_atomic routes through a *.tmp + os.replace."""
+
+    def test_create_leaves_no_tmp_file(self, store):
+        store.create({"name": "A"})
+        leftover = [f for f in os.listdir(store.base_dir) if f.endswith(".tmp")]
+        assert leftover == []
+
+    def test_update_leaves_no_tmp_file(self, store):
+        dev = store.create({"name": "A"})
+        store.update(dev["id"], {"name": "B"})
+        leftover = [f for f in os.listdir(store.base_dir) if f.endswith(".tmp")]
+        assert leftover == []
+
+    def test_patch_leaves_no_tmp_file(self, store):
+        dev = store.create({"name": "A"})
+        store.patch(dev["id"], {"name": "B"})
+        leftover = [f for f in os.listdir(store.base_dir) if f.endswith(".tmp")]
+        assert leftover == []
+
+
+class TestCorruptionRecovery:
+    """A single truncated JSON file must not take down list_all().
+    It's quarantined to *.corrupted and the rest of the store still loads."""
+
+    def test_list_all_quarantines_truncated_file(self, store):
+        dev_good = store.create({"name": "good"})
+        # Simulate a kill-9-during-write: a half-written file.
+        bad_path = os.path.join(store.base_dir, "dev_broken.json")
+        with open(bad_path, "w") as f:
+            f.write('{"name": "bad",')  # trailing comma, unclosed
+
+        # list_all must not raise; the good entity is returned.
+        result = store.list_all()
+        ids = [d["id"] for d in result]
+        assert dev_good["id"] in ids
+        assert "dev_broken" not in ids
+
+        # The corrupt file has been renamed aside so we don't trip on it
+        # again next boot — and so the operator can forensics it.
+        assert os.path.exists(bad_path + ".corrupted")
+        assert not os.path.exists(bad_path)
+
+    def test_list_all_tolerates_multiple_corrupt_files(self, store):
+        store.create({"name": "A"})
+        for name in ("broken1", "broken2"):
+            with open(os.path.join(store.base_dir, f"{name}.json"), "w") as f:
+                f.write("not json")
+        assert len(store.list_all()) == 1

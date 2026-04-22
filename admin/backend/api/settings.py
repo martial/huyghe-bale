@@ -1,11 +1,15 @@
 """Settings API routes."""
 
 import json
+import logging
 import os
 
 from flask import Blueprint, jsonify, request
 
 from config import DATA_DIR
+from storage.json_store import _write_atomic
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint("settings", __name__)
 
@@ -34,15 +38,28 @@ def on_change(key: str, callback):
 
 def _read():
     if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE) as f:
-            return {**DEFAULTS, **json.load(f)}
+        try:
+            with open(SETTINGS_FILE) as f:
+                return {**DEFAULTS, **json.load(f)}
+        except (json.JSONDecodeError, OSError) as e:
+            quarantine = f"{SETTINGS_FILE}.corrupted"
+            try:
+                os.replace(SETTINGS_FILE, quarantine)
+                logger.warning(
+                    "Corrupt settings file quarantined to %s (%s); reverting to defaults",
+                    quarantine, e,
+                )
+            except OSError as rename_err:
+                logger.warning(
+                    "Corrupt settings file %s (%s); could not quarantine: %s",
+                    SETTINGS_FILE, e, rename_err,
+                )
     return dict(DEFAULTS)
 
 
 def _write(data):
     os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _write_atomic(SETTINGS_FILE, data)
 
 
 def _fire(key: str, old, new):
