@@ -395,8 +395,11 @@ function ChevronIcon({ open }: { open: boolean }) {
   );
 }
 
-function CopyButton({ text }: { text: string }) {
+function CopyButton({ text, alwaysVisible = false }: { text: string; alwaysVisible?: boolean }) {
   const [copied, setCopied] = useState(false);
+  const baseOpacity = alwaysVisible
+    ? "opacity-60 group-hover:opacity-100"
+    : "opacity-0 group-hover:opacity-100";
   return (
     <button
       onClick={(e) => {
@@ -406,11 +409,74 @@ function CopyButton({ text }: { text: string }) {
           setTimeout(() => setCopied(false), 1200);
         });
       }}
-      className="opacity-0 group-hover:opacity-100 text-[10px] text-zinc-500 hover:text-zinc-200 transition-all"
-      title="Copy address"
+      className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] uppercase tracking-wider font-semibold text-zinc-400 hover:text-white hover:bg-white/5 transition-all ${baseOpacity}`}
+      title="Copy to clipboard"
     >
-      {copied ? "copied" : "copy"}
+      {copied ? (
+        <>
+          <svg className="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+          copied
+        </>
+      ) : (
+        <>
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h6a2 2 0 002-2M8 5a2 2 0 012-2h6a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+          </svg>
+          copy
+        </>
+      )}
     </button>
+  );
+}
+
+function detectLang(code: string): string {
+  const first = code.trimStart().split("\n", 1)[0];
+  if (/^#\s*!.*\b(bash|sh)\b/.test(first)) return "bash";
+  if (/^(curl|sudo|ssh|cd|ls|apt|systemctl|journalctl)\b/.test(first)) return "bash";
+  if (/^\s*(GET|POST|PUT|DELETE|PATCH)\s/i.test(first)) return "http";
+  return "shell";
+}
+
+function renderCodeLines(code: string) {
+  return code.split("\n").map((line, i) => {
+    if (line.trimStart().startsWith("#")) {
+      return (
+        <span key={i} className="text-zinc-500 italic">
+          {line}
+          {"\n"}
+        </span>
+      );
+    }
+    return (
+      <span key={i} className="text-zinc-100">
+        {line}
+        {"\n"}
+      </span>
+    );
+  });
+}
+
+function CodeBlock({ code }: { code: string }) {
+  const lang = detectLang(code);
+  return (
+    <div className="group relative rounded-lg overflow-hidden border border-white/10 bg-zinc-950">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/5 bg-white/[0.02]">
+        <div className="flex items-center gap-2">
+          <div className="flex gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-red-500/40" />
+            <span className="w-2 h-2 rounded-full bg-yellow-500/40" />
+            <span className="w-2 h-2 rounded-full bg-green-500/40" />
+          </div>
+          <span className="text-[10px] uppercase tracking-wider font-medium text-zinc-500">{lang}</span>
+        </div>
+        <CopyButton text={code} alwaysVisible />
+      </div>
+      <pre className="px-4 py-3 text-[12.5px] leading-relaxed font-mono overflow-x-auto whitespace-pre">
+        <code>{renderCodeLines(code)}</code>
+      </pre>
+    </div>
   );
 }
 
@@ -441,9 +507,9 @@ function EndpointRow({ item }: { item: Endpoint }) {
       </div>
       <p className="mt-2 text-xs text-zinc-400 leading-relaxed">{item.description}</p>
       {item.example && (
-        <pre className="mt-2 p-2 rounded bg-black/50 border border-white/5 text-[11px] text-zinc-400 font-mono overflow-x-auto">
-          {item.example}
-        </pre>
+        <div className="mt-2">
+          <CodeBlock code={item.example} />
+        </div>
       )}
     </div>
   );
@@ -552,7 +618,7 @@ function SectionBlock({
 interface InstallStep {
   title: string;
   body: string;
-  code?: string;
+  code?: string | string[];
 }
 
 const INSTALL_STEPS: InstallStep[] = [
@@ -571,8 +637,10 @@ const INSTALL_STEPS: InstallStep[] = [
     title: "Run the one-liner installer",
     body:
       "This downloads and runs install.sh from Google Cloud Storage. It installs git if missing, clones the repo into ~/huyghe-bale, then hands off to rpi-controller/install.sh — which creates a Python venv, installs dependencies (rpi-lgpio on Pi 5), generates the device identity, writes a systemd unit, and starts it. Re-running is idempotent: it'll git pull and re-install instead of re-cloning.",
-    code:
-      "# vents device (L298N fan driver)\ncurl -sSL https://storage.googleapis.com/apps-screen-club/huyghe-bale/install.sh \\\n  | sudo bash -s -- --type=vents\n\n# trolley device (stepper + limit switch)\ncurl -sSL https://storage.googleapis.com/apps-screen-club/huyghe-bale/install.sh \\\n  | sudo bash -s -- --type=trolley",
+    code: [
+      "# vents device (L298N fan driver)\ncurl -sSL https://storage.googleapis.com/apps-screen-club/huyghe-bale/install.sh \\\n  | sudo bash -s -- --type=vents",
+      "# trolley device (stepper + limit switch)\ncurl -sSL https://storage.googleapis.com/apps-screen-club/huyghe-bale/install.sh \\\n  | sudo bash -s -- --type=trolley",
+    ],
   },
   {
     title: "Verify the service is running",
@@ -596,40 +664,31 @@ const INSTALL_STEPS: InstallStep[] = [
 function InstallGuide() {
   return (
     <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-sky-500/[0.04] to-transparent overflow-hidden">
-      <div className="px-6 py-4 border-b border-white/10 bg-white/[0.02]">
-        <div className="flex items-center gap-3">
-          <svg className="w-5 h-5 text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2a4 4 0 014-4h3m0 0l-3-3m3 3l-3 3M5 19.5v-15A1.5 1.5 0 016.5 3h11A1.5 1.5 0 0119 4.5v15a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 015 19.5z" />
-          </svg>
+      <div className="px-6 py-4 border-b border-white/10 bg-white/[0.02] flex items-start gap-3">
+        <svg className="w-5 h-5 text-sky-300 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2a4 4 0 014-4h3m0 0l-3-3m3 3l-3 3M5 19.5v-15A1.5 1.5 0 016.5 3h11A1.5 1.5 0 0119 4.5v15a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 015 19.5z" />
+        </svg>
+        <div>
           <h2 className="text-xl font-medium text-white">Install on a Raspberry Pi</h2>
+          <p className="text-sm text-zinc-400 mt-1">
+            Start-to-finish steps for turning a fresh Pi into a vents or trolley device. Assumes the
+            Pi already has Raspberry Pi OS installed and is reachable over SSH.
+          </p>
         </div>
-        <p className="text-sm text-zinc-400 mt-2">
-          Start-to-finish steps for turning a fresh Pi into a vents or trolley device. Assumes the
-          Pi already has Raspberry Pi OS installed and is reachable over SSH.
-        </p>
       </div>
 
-      <ol className="p-6 space-y-4">
+      <ol className="p-6 space-y-5">
         {INSTALL_STEPS.map((step, i) => (
           <li key={step.title} className="flex gap-4">
-            <div className="flex-shrink-0">
-              <div className="w-7 h-7 rounded-full bg-sky-500/20 border border-sky-400/40 text-sky-300 text-xs font-semibold flex items-center justify-center">
-                {i + 1}
-              </div>
-            </div>
-            <div className="flex-1 min-w-0 pb-1">
-              <h3 className="text-sm font-semibold text-white mb-1">{step.title}</h3>
+            <span className="w-7 h-7 rounded-full bg-sky-500/20 border border-sky-400/40 text-sky-300 text-xs font-semibold flex items-center justify-center shrink-0">
+              {i + 1}
+            </span>
+            <div className="flex-1 min-w-0 space-y-2">
+              <h3 className="text-sm font-semibold text-white">{step.title}</h3>
               <p className="text-sm text-zinc-400 leading-relaxed">{step.body}</p>
-              {step.code && (
-                <div className="group relative mt-2">
-                  <pre className="p-3 rounded-lg bg-black/60 border border-white/5 text-[12px] text-zinc-300 font-mono overflow-x-auto whitespace-pre pr-14">
-                    {step.code}
-                  </pre>
-                  <div className="absolute top-2 right-2">
-                    <CopyButton text={step.code} />
-                  </div>
-                </div>
-              )}
+              {Array.isArray(step.code)
+                ? step.code.map((c, j) => <CodeBlock key={j} code={c} />)
+                : step.code && <CodeBlock code={step.code} />}
             </div>
           </li>
         ))}
@@ -652,7 +711,15 @@ function InstallGuide() {
 
 // ──────────────────────────────────────────────────────────────────────────
 
+type DocsTab = "install" | "protocol";
+
+const TABS: { id: DocsTab; label: string }[] = [
+  { id: "install", label: "Install on a Pi" },
+  { id: "protocol", label: "Protocol reference" },
+];
+
 export default function DocsPage() {
+  const [tab, setTab] = useState<DocsTab>("install");
   const [openIds, setOpenIds] = useState<Record<string, boolean>>({
     vents: true,
     trolley: true,
@@ -665,38 +732,54 @@ export default function DocsPage() {
 
   return (
     <div className="p-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
-      <div className="mb-8 pb-4 border-b border-white/10">
-        <h1 className="text-3xl font-light tracking-tight text-white mb-1">Protocol docs</h1>
+      <div className="mb-6 pb-4 border-b border-white/10">
+        <h1 className="text-3xl font-light tracking-tight text-white mb-1">Docs</h1>
         <p className="text-zinc-400 text-sm">
-          Every OSC address and HTTP endpoint the system speaks, grouped by device type. The admin
-          sends OSC on port 9000; Pis reply on port 9001. Each Pi also exposes an HTTP status/test
-          server on <span className="font-mono">:9001</span>.
+          Setup walkthrough for new hardware, and a reference for every OSC address and HTTP
+          endpoint the system speaks.
         </p>
       </div>
 
-      <div className="mb-6">
-        <InstallGuide />
+      <div role="tablist" className="flex gap-1 border-b border-white/10 mb-6">
+        {TABS.map((t) => {
+          const isActive = t.id === tab;
+          return (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => setTab(t.id)}
+              className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                isActive
+                  ? "text-white border-sky-400"
+                  : "text-zinc-400 border-transparent hover:text-zinc-200"
+              }`}
+            >
+              {t.label}
+            </button>
+          );
+        })}
       </div>
 
-      <h2 className="text-xs uppercase tracking-[0.2em] font-semibold text-zinc-500 mb-3 mt-10">
-        Protocol reference
-      </h2>
-      <div className="space-y-3">
-        {SECTIONS.map((s) => (
-          <SectionBlock
-            key={s.id}
-            section={s}
-            open={!!openIds[s.id]}
-            onToggle={() => toggle(s.id)}
-          />
-        ))}
-      </div>
+      {tab === "install" && <InstallGuide />}
 
-      <p className="mt-8 text-[11px] text-zinc-600 font-mono">
-        Source of truth: <code>rpi-controller/controllers/*.py</code>,{" "}
-        <code>rpi-controller/gpio_osc.py</code>, <code>admin/backend/api/*.py</code>,{" "}
-        <code>admin/backend/engine/osc_receiver.py</code>.
-      </p>
+      {tab === "protocol" && (
+        <div className="space-y-3">
+          {SECTIONS.map((s) => (
+            <SectionBlock
+              key={s.id}
+              section={s}
+              open={!!openIds[s.id]}
+              onToggle={() => toggle(s.id)}
+            />
+          ))}
+          <p className="mt-8 text-[11px] text-zinc-600 font-mono">
+            Source of truth: <code>rpi-controller/controllers/*.py</code>,{" "}
+            <code>rpi-controller/gpio_osc.py</code>, <code>admin/backend/api/*.py</code>,{" "}
+            <code>admin/backend/engine/osc_receiver.py</code>.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
