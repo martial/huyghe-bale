@@ -34,6 +34,9 @@ export default function DeviceForm({ onCreated }: { onCreated: () => void }) {
             className="w-full bg-zinc-800 border border-zinc-700/50 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-orange-500/50 transition-colors"
             placeholder="Room 11"
           />
+          <p className="text-[10px] text-zinc-500 mt-1">
+            Used in OSC <span className="font-mono">/to/&lt;name&gt;/…</span> · no slashes
+          </p>
         </div>
         <div>
           <label className="text-xs text-zinc-400 block mb-1">IP Address</label>

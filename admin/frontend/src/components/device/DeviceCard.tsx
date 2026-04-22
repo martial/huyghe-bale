@@ -167,6 +167,9 @@ export default function DeviceCard({ device }: { device: Device }) {
             className="w-full bg-zinc-800 border border-zinc-700/50 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-orange-500/50 transition-colors"
             placeholder="Name"
           />
+          <p className="text-[10px] text-zinc-500 -mt-1 ml-1">
+            Used in OSC addresses: <span className="font-mono text-zinc-400">/to/&lt;name&gt;/…</span> · no slashes
+          </p>
           <input
             value={form.ip_address}
             onChange={(e) => setForm({ ...form, ip_address: e.target.value })}

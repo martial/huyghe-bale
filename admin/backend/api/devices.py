@@ -33,6 +33,21 @@ def _normalize_type(value):
     return DEFAULT_DEVICE_TYPE
 
 
+def _clean_name(value) -> str:
+    """Return a trimmed, /-free device name. Raises ValueError on invalid input.
+    The /-free rule exists because the bridge's targeting convention
+    `/to/<name>/<rest>` splits on the first slash; a name containing '/'
+    can't be targeted that way."""
+    if not isinstance(value, str):
+        raise ValueError("name must be a string")
+    name = value.strip()
+    if not name:
+        raise ValueError("name cannot be empty")
+    if "/" in name:
+        raise ValueError("name cannot contain '/' — it conflicts with OSC /to/<name>/… routing")
+    return name
+
+
 REQUIRED_FIELDS = ("name", "ip_address", "osc_port")
 
 
@@ -64,8 +79,12 @@ def list_devices():
 @bp.route("", methods=["POST"])
 def create_device():
     data = request.get_json() or {}
+    try:
+        name = _clean_name(data.get("name", "Untitled"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     device = {
-        "name": data.get("name", "Untitled"),
+        "name": name,
         "ip_address": data.get("ip_address", ""),
         "osc_port": data.get("osc_port", 9000),
         "type": _normalize_type(data.get("type")),
@@ -246,6 +265,11 @@ def update_device(device_id):
     data = request.get_json() or {}
     if "type" in data:
         data["type"] = _normalize_type(data["type"])
+    if "name" in data:
+        try:
+            data["name"] = _clean_name(data["name"])
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
     updated = store.update(device_id, data)
     if not updated:
         return jsonify({"error": "Not found"}), 404
