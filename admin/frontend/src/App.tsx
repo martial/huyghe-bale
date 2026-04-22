@@ -13,6 +13,7 @@ const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const AboutPage = lazy(() => import("./pages/AboutPage"));
 const FAQPage = lazy(() => import("./pages/FAQPage"));
 const DocsPage = lazy(() => import("./pages/DocsPage"));
+const BridgePage = lazy(() => import("./pages/BridgePage"));
 
 function Loading() {
   return (
@@ -112,6 +113,14 @@ export default function App() {
           element={
             <Suspense fallback={<Loading />}>
               <DocsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="bridge"
+          element={
+            <Suspense fallback={<Loading />}>
+              <BridgePage />
             </Suspense>
           }
         />

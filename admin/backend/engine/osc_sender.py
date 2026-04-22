@@ -1,19 +1,31 @@
 """Thin OSC sender wrapper with lazy client creation."""
 
+import threading
 from pythonosc.udp_client import SimpleUDPClient
 
 
 class OscSender:
-    """Manages OSC UDP clients keyed by (ip, port)."""
+    """Manages OSC UDP clients keyed by (ip, port).
+
+    The cache dict is guarded by a lock because concurrent senders (playback
+    engine tick thread, per-tab status pollers, the bridge listener) can race
+    on the first insertion of a given (ip, port) key. Actual send_message
+    calls remain lock-free — SimpleUDPClient is already safe to call from
+    multiple threads.
+    """
 
     def __init__(self):
         self._clients: dict[tuple[str, int], SimpleUDPClient] = {}
+        self._lock = threading.Lock()
 
     def _get_client(self, ip: str, port: int) -> SimpleUDPClient:
         key = (ip, port)
-        if key not in self._clients:
-            self._clients[key] = SimpleUDPClient(ip, port)
-        return self._clients[key]
+        with self._lock:
+            client = self._clients.get(key)
+            if client is None:
+                client = SimpleUDPClient(ip, port)
+                self._clients[key] = client
+        return client
 
     def send(self, ip: str, port: int, address: str, value: float):
         """Send an OSC message.

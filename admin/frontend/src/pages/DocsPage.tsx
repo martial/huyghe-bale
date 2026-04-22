@@ -290,7 +290,55 @@ const SYSTEM: Section = {
   ],
 };
 
-const SECTIONS: Section[] = [VENTS, TROLLEY, SYSTEM];
+const BRIDGE: Section = {
+  id: "bridge",
+  title: "Bridge (external source → admin → devices)",
+  subtitle:
+    "Optional OSC listener on the admin host. Point an external source (Max, TouchDesigner, show controller) at the bridge port; the admin forwards each incoming message to the devices that care about its address. Live feed at /bridge. Enable + configure in Settings.",
+  transport: { osc: "UDP (default 9002, configurable)" },
+  groups: [
+    {
+      label: "OSC — external → admin (anything)",
+      direction: "admin-to-pi",
+      items: [
+        {
+          address: "/<any-address>",
+          direction: "admin-to-pi",
+          args: "any",
+          description:
+            "Every message reaching the bridge port is logged into a 500-entry ring buffer and dispatched to devices according to the Routing setting.",
+          example: "oscsend <admin-ip> 9002 /vents/fan/1 f 0.5",
+        },
+      ],
+    },
+    {
+      label: "Routing modes (Settings → OSC Bridge → Routing)",
+      direction: "admin-to-pi",
+      items: [
+        {
+          address: "type-match (default)",
+          direction: "admin-to-pi",
+          description:
+            "/vents/* → forwarded to every vents device. /trolley/* → every trolley device. /sys/* → every device. Any other prefix is logged as 'no type-matching device' and not forwarded.",
+        },
+        {
+          address: "passthrough",
+          direction: "admin-to-pi",
+          description:
+            "Every message is forwarded verbatim to every device regardless of address prefix. Use when the source is driving custom addresses.",
+        },
+        {
+          address: "none",
+          direction: "admin-to-pi",
+          description:
+            "Tap-only. Messages are logged in the live feed but never forwarded. Useful for inspecting what a source is sending without side effects.",
+        },
+      ],
+    },
+  ],
+};
+
+const SECTIONS: Section[] = [VENTS, TROLLEY, SYSTEM, BRIDGE];
 
 const DIR_BADGE: Record<Direction, { label: string; cls: string }> = {
   "admin-to-pi": {

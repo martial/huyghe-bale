@@ -92,6 +92,19 @@ export default function AppLayout() {
           >
             Orchestrations
           </NavLink>
+
+          <NavLink
+            to="/bridge"
+            icon={
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h8m-8 0l-3-3m3 3l-3 3m11-3l3-3m-3 3l3 3" />
+                <circle cx="5" cy="12" r="1.5" strokeWidth={1.5} />
+                <circle cx="19" cy="12" r="1.5" strokeWidth={1.5} />
+              </svg>
+            }
+          >
+            Bridge
+          </NavLink>
         </div>
 
         {/* Settings & About links */}

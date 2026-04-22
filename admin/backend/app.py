@@ -12,12 +12,16 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
         config.DATA_DIR = data_dir
 
     from api import timelines, devices, orchestrations, playback, export, settings, health
-    from api import trolley_timelines, trolley_control, vents_control
+    from api import trolley_timelines, trolley_control, vents_control, bridge
     from api.playback import set_engine
     from api.timelines import set_engine as set_timelines_engine
     from api.trolley_timelines import set_engine as set_trolley_timelines_engine
+    from api.settings import _read as read_settings, on_change as on_settings_change
+    from api.bridge import set_bridge
     from engine.playback import PlaybackEngine
     from engine.osc_receiver import OscReceiver
+    from engine.osc_bridge import OscBridge
+    from storage.json_store import JsonStore
 
     app = Flask(__name__, static_folder=None)
     CORS(app)
@@ -33,6 +37,7 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
     app.register_blueprint(trolley_timelines.bp, url_prefix="/api/v1/trolley-timelines")
     app.register_blueprint(trolley_control.bp, url_prefix="/api/v1/trolley-control")
     app.register_blueprint(vents_control.bp, url_prefix="/api/v1/vents-control")
+    app.register_blueprint(bridge.bp, url_prefix="/api/v1/bridge")
 
     # Import endpoint is under /api/v1/import
     @app.route("/api/v1/import/timeline", methods=["POST"])
@@ -49,6 +54,42 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
     receiver = OscReceiver(port=9001)
     if start_osc:
         receiver.start()
+
+    # Initialize OSC Bridge (external source → admin → devices).
+    # Devices are looked up fresh on every message so add/remove takes effect
+    # without a restart.
+    _device_store = JsonStore(
+        data_dir if data_dir is not None else
+        os.path.join(os.path.dirname(__file__), "data"),
+        "devices", "dev",
+    )
+    _bridge_settings = read_settings()
+    osc_bridge = OscBridge(
+        port=int(_bridge_settings.get("bridge_port", 9002)),
+        routing=str(_bridge_settings.get("bridge_routing", "type-match")),
+        device_provider=_device_store.list_all,
+    )
+    set_bridge(osc_bridge)
+    if start_osc and _bridge_settings.get("bridge_enabled"):
+        osc_bridge.start()
+
+    # Live-apply setting changes so the Settings page can toggle the bridge
+    # without a backend restart.
+    def _on_bridge_enabled(_old, new):
+        if new:
+            osc_bridge.start()
+        else:
+            osc_bridge.stop()
+
+    def _on_bridge_port(_old, new):
+        osc_bridge.reconfigure(port=int(new))
+
+    def _on_bridge_routing(_old, new):
+        osc_bridge.reconfigure(routing=str(new))
+
+    on_settings_change("bridge_enabled", _on_bridge_enabled)
+    on_settings_change("bridge_port", _on_bridge_port)
+    on_settings_change("bridge_routing", _on_bridge_routing)
 
     # SPA fallback — serve frontend dist if it exists
     if dist_dir is None:
