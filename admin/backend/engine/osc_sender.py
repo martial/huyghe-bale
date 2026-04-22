@@ -28,7 +28,10 @@ class OscSender:
         client.send_message(address, value)
 
     def send_zero(self, ip: str, port: int):
-        """Send zero to both channels."""
+        """Halt a vents device: drop both fan PWMs to 0 and clear peltiers.
+        The new vents controller uses /vents/* addresses; older /gpio/a,b Pis
+        no longer exist in this codebase."""
         client = self._get_client(ip, port)
-        client.send_message("/gpio/a", 0.0)
-        client.send_message("/gpio/b", 0.0)
+        client.send_message("/vents/fan/1", 0.0)
+        client.send_message("/vents/fan/2", 0.0)
+        client.send_message("/vents/peltier", 0)

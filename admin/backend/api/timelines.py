@@ -33,8 +33,8 @@ def _new_timeline(data: dict) -> dict:
         "name": data.get("name", "Untitled"),
         "duration": data.get("duration", 60.0),
         "lanes": data.get("lanes", {
-            "a": {"label": "Variable A (EnA)", "points": []},
-            "b": {"label": "Variable B (EnB)", "points": []},
+            "a": {"label": "Fan 1 (cold side)", "points": []},
+            "b": {"label": "Fan 2 (hot side)", "points": []},
         }),
     }
     if "id" in data:

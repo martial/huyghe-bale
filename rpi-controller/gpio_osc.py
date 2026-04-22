@@ -25,7 +25,7 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
 from pythonosc.udp_client import SimpleUDPClient
 
-from config import OSC_PORT, HTTP_PORT, TROLLEY_STATUS_HZ
+from config import OSC_PORT, HTTP_PORT
 import controllers
 import identity
 from webhooks import WebhookNotifier
@@ -260,31 +260,28 @@ def handle_ping(client_address, address, *args):
             webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
 
 
-def run_trolley_status_broadcaster():
-    """Emit /trolley/status to the last admin that pinged us, at TROLLEY_STATUS_HZ.
-
-    Runs only when the loaded controller exposes get_status(); vents doesn't, so
-    the thread exits immediately on other personalities.
-    """
-    if controller is None or not hasattr(controller, "get_status"):
+def run_status_broadcaster():
+    """Emit <controller.STATUS_BROADCAST_ADDRESS> to the last admin that pinged
+    us, at <controller.STATUS_BROADCAST_HZ>. Each controller supplies its own
+    OSC address + argument builder via get_status_osc_args()."""
+    if controller is None:
         return
-    period = 1.0 / max(1, TROLLEY_STATUS_HZ)
+    address = getattr(controller, "STATUS_BROADCAST_ADDRESS", None)
+    if not isinstance(address, str):
+        return
+    hz = getattr(controller, "STATUS_BROADCAST_HZ", 5)
+    if not isinstance(hz, (int, float)) or hz <= 0:
+        hz = 5
+    period = 1.0 / hz
     while not shutdown_event.is_set():
         try:
             if last_pinger is not None:
                 ip, port = last_pinger
-                status = controller.get_status()
+                args = controller.get_status_osc_args()
                 client = SimpleUDPClient(ip, port)
-                client.send_message(
-                    "/trolley/status",
-                    [
-                        float(status.get("position", 0.0)),
-                        int(status.get("limit", 0)),
-                        int(status.get("homed", 0)),
-                    ],
-                )
+                client.send_message(address, args)
         except Exception as e:
-            logger.debug("Trolley status broadcast error (non-fatal): %s", e)
+            logger.debug("Status broadcast error (non-fatal): %s", e)
         shutdown_event.wait(period)
 
 
@@ -348,9 +345,11 @@ def main():
         webhooks.fire("error", {"source": "http_server", "error": str(e)})
         logger.error("Failed to start HTTP status server: %s", e)
 
-    if hasattr(controller, "get_status"):
-        Thread(target=run_trolley_status_broadcaster, daemon=True).start()
-        logger.info("Trolley status broadcaster started at %d Hz", TROLLEY_STATUS_HZ)
+    broadcast_addr = getattr(controller, "STATUS_BROADCAST_ADDRESS", None)
+    if isinstance(broadcast_addr, str):
+        Thread(target=run_status_broadcaster, daemon=True).start()
+        hz = getattr(controller, "STATUS_BROADCAST_HZ", 5)
+        logger.info("Status broadcaster started: %s @ %s Hz", broadcast_addr, hz)
 
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)

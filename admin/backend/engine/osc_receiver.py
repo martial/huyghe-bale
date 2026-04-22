@@ -24,6 +24,7 @@ class OscReceiver:
         self.last_seen = {}  # ip_address -> timestamp
         self.device_info = {}  # ip_address -> {"type": str, "hardware_id": str}
         self.trolley_status = {}  # ip_address -> {"position", "limit", "homed", "timestamp"}
+        self.vents_status = {}   # ip_address -> full vents snapshot + "timestamp"
         self.server = None
         self.thread = None
         self.running = False
@@ -32,6 +33,7 @@ class OscReceiver:
         self.dispatcher = Dispatcher()
         self.dispatcher.map("/sys/pong", self._handle_pong, needs_reply_address=True)
         self.dispatcher.map("/trolley/status", self._handle_trolley_status, needs_reply_address=True)
+        self.dispatcher.map("/vents/status", self._handle_vents_status, needs_reply_address=True)
 
     def _handle_pong(self, client_address, addr, *args):
         # client_address = (ip, port) of the UDP sender (the RPi)
@@ -73,6 +75,47 @@ class OscReceiver:
             "timestamp": time.time(),
         }
 
+    def _handle_vents_status(self, client_address, addr, *args):
+        """Pi-pushed status for vents controllers. Arg layout matches
+        controllers.vents.get_status_osc_args():
+          (temp1, temp2, fan1, fan2, peltier_mask,
+           rpm1A, rpm1B, rpm2A, rpm2B, target_c, mode, state)
+        Missing temperatures arrive encoded as -1.0 and are exposed as None.
+        """
+        ip = client_address[0]
+        self.last_seen[ip] = time.time()
+        try:
+            temp1 = float(args[0])
+            temp2 = float(args[1])
+            fan1 = float(args[2])
+            fan2 = float(args[3])
+            peltier_mask = int(args[4])
+            rpm1A = int(args[5])
+            rpm1B = int(args[6])
+            rpm2A = int(args[7])
+            rpm2B = int(args[8])
+            target_c = float(args[9])
+            mode = str(args[10])
+            state = str(args[11])
+        except (IndexError, TypeError, ValueError):
+            return
+        self.vents_status[ip] = {
+            "temp1_c": temp1 if temp1 >= 0 else None,
+            "temp2_c": temp2 if temp2 >= 0 else None,
+            "fan1": fan1,
+            "fan2": fan2,
+            "peltier_mask": peltier_mask,
+            "peltier": [bool(peltier_mask & 1), bool(peltier_mask & 2), bool(peltier_mask & 4)],
+            "rpm1A": rpm1A,
+            "rpm1B": rpm1B,
+            "rpm2A": rpm2A,
+            "rpm2B": rpm2B,
+            "target_c": target_c,
+            "mode": mode,
+            "state": state,
+            "timestamp": time.time(),
+        }
+
     def get_status(self, ip: str, timeout: float = 6.0) -> bool:
         """Return True if we've seen a pong from this IP within the timeout."""
         last_time = self.last_seen.get(ip, 0)
@@ -85,6 +128,10 @@ class OscReceiver:
     def get_trolley_status(self, ip: str) -> dict:
         """Return last {position, limit, homed, timestamp} for a trolley device, or {}."""
         return dict(self.trolley_status.get(ip, {}))
+
+    def get_vents_status(self, ip: str) -> dict:
+        """Return last vents snapshot for a vents device, or {}."""
+        return dict(self.vents_status.get(ip, {}))
 
     def start(self):
         # Stop any existing server first (handles Flask debug reloader)

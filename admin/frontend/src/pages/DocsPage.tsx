@@ -33,26 +33,84 @@ const VENTS: Section = {
   id: "vents",
   title: "Vents",
   subtitle:
-    "L298N dual-channel DC motor driver, continuous PWM. Direction pins are fixed forward at startup.",
-  transport: { osc: "UDP 9000", http: "http://<ip>:9001" },
+    "3 Peltier cells (digital on/off) + 2 PWM fans + 4 tachos + 2 DS18B20 temperature probes. Auto-regulation is bang-bang with hysteresis around a target temperature.",
+  transport: { osc: "UDP 9000 (admin → Pi) · UDP 9001 (Pi → admin)", http: "http://<ip>:9001" },
   groups: [
     {
-      label: "OSC — admin → Pi",
+      label: "OSC — admin → Pi (raw)",
       direction: "admin-to-pi",
       items: [
         {
-          address: "/gpio/a",
+          address: "/vents/peltier/1",
           direction: "admin-to-pi",
-          args: "float 0..1",
-          description: "PWM duty on L298N EnA (BCM GPIO 12, 1 kHz). 0 = stopped, 1 = full.",
-          example: "/gpio/a 0.75",
+          args: "int 0|1",
+          description: "Cell 1 on/off (BCM GPIO 26, active HIGH). Sending any value forces mode=raw.",
         },
         {
-          address: "/gpio/b",
+          address: "/vents/peltier/2",
+          direction: "admin-to-pi",
+          args: "int 0|1",
+          description: "Cell 2 on/off (BCM GPIO 25, active HIGH). Forces mode=raw.",
+        },
+        {
+          address: "/vents/peltier/3",
+          direction: "admin-to-pi",
+          args: "int 0|1",
+          description: "Cell 3 on/off (BCM GPIO 24, active HIGH). Forces mode=raw.",
+        },
+        {
+          address: "/vents/peltier",
+          direction: "admin-to-pi",
+          args: "int mask 0..7",
+          description:
+            "Set all three cells at once as a bitmask (bit 0 = P1, bit 1 = P2, bit 2 = P3). Forces mode=raw.",
+          example: "/vents/peltier 5   # P1 + P3",
+        },
+        {
+          address: "/vents/fan/1",
           direction: "admin-to-pi",
           args: "float 0..1",
-          description: "PWM duty on L298N EnB (BCM GPIO 13, 1 kHz). 0 = stopped, 1 = full.",
-          example: "/gpio/b 0.5",
+          description: "Cold-side fan PWM duty (BCM GPIO 20, 1 kHz). Forces mode=raw.",
+        },
+        {
+          address: "/vents/fan/2",
+          direction: "admin-to-pi",
+          args: "float 0..1",
+          description: "Hot-side fan PWM duty (BCM GPIO 18, 1 kHz). Forces mode=raw.",
+        },
+      ],
+    },
+    {
+      label: "OSC — admin → Pi (auto-regulation)",
+      direction: "admin-to-pi",
+      items: [
+        {
+          address: "/vents/mode",
+          direction: "admin-to-pi",
+          args: "string raw|auto",
+          description:
+            "'raw' = manual control via the addresses above. 'auto' = bang-bang loop drives peltiers + fans toward /vents/target.",
+        },
+        {
+          address: "/vents/target",
+          direction: "admin-to-pi",
+          args: "float °C",
+          description:
+            "Target temperature for auto mode. Hysteresis ±0.5°C: above → peltiers on + fans high, below → peltiers off + fans low, deadband → hold.",
+        },
+      ],
+    },
+    {
+      label: "OSC — Pi → admin (push)",
+      direction: "pi-to-admin",
+      items: [
+        {
+          address: "/vents/status",
+          direction: "pi-to-admin",
+          args:
+            "float temp1_c, float temp2_c, float fan1, float fan2, int peltier_mask, int rpm1A, int rpm1B, int rpm2A, int rpm2B, float target_c, string mode, string state",
+          description:
+            "Broadcast at 5 Hz to the last admin that pinged. Missing DS18B20 sensors report -1.0. state ∈ {idle, cooling, holding, coasting, sensor_error}. Exposed via GET /api/v1/vents-control/<id>/status.",
         },
       ],
     },
@@ -69,10 +127,12 @@ const VENTS: Section = {
         {
           address: "POST /gpio/test",
           direction: "http",
-          args: "{value_a: float, value_b: float}",
+          args:
+            '{command: "peltier"|"peltier_mask"|"fan"|"mode"|"target", index?: 1..3, value: …}',
           description:
-            "Set PWM directly, bypassing OSC. Handy for manual diagnostics from the admin. Returns {ok, duty_a, duty_b}.",
-          example: 'curl -XPOST -d \'{"value_a":1,"value_b":0}\' http://<ip>:9001/gpio/test',
+            "Runs the same handler as the matching OSC address, bypassing UDP. Returns {ok, …current status snapshot}.",
+          example:
+            'curl -XPOST -d \'{"command":"target","value":22.0}\' http://<ip>:9001/gpio/test',
         },
         {
           address: "POST /update",
@@ -147,7 +207,7 @@ const TROLLEY: Section = {
           direction: "admin-to-pi",
           args: "float 0..1",
           description:
-            "Target position along the rail (0 = home, 1 = far end = TROLLEY_MAX_STEPS). Controller runs a follow loop toward the target at the last /trolley/speed (or default). Sent per-tick during trolley-timeline playback.",
+            "Target position along the rail (0 = home, 1 = far end = TROLLEY_MAX_STEPS). Controller runs a follow loop toward the target at the last /trolley/speed (or default). Sent as a bang by trolley-timeline playback (the Pi-side follow loop handles smooth motion — no per-tick traffic).",
           example: "/trolley/position 0.42",
         },
       ],

@@ -30,11 +30,14 @@ from config import (
     STEP_DEBOUNCE_MS,
     TROLLEY_MAX_STEPS, TROLLEY_MIN_PULSE_DELAY_S, TROLLEY_MAX_PULSE_DELAY_S,
     TROLLEY_DEFAULT_SPEED_HZ, TROLLEY_AUTO_HOME_ON_BOOT,
+    TROLLEY_STATUS_HZ,
 )
 
 logger = logging.getLogger(__name__)
 
 NAME = "trolley"
+STATUS_BROADCAST_ADDRESS = "/trolley/status"
+STATUS_BROADCAST_HZ = TROLLEY_STATUS_HZ
 
 DIR_REVERSE = 0  # toward home / limit switch
 DIR_FORWARD = 1
@@ -437,3 +440,9 @@ def get_status():
         "homed": int(homed),
         "enabled": int(_enabled),
     }
+
+
+def get_status_osc_args():
+    """OSC argument list matching /trolley/status (position, limit, homed)."""
+    s = get_status()
+    return [float(s["position"]), int(s["limit"]), int(s["homed"])]

@@ -75,12 +75,22 @@ case "$PI_MODEL" in
         APT_DEPS="swig liblgpio-dev"
         ;;
     *"Pi 3"*|*"Pi 2"*)
+        # Legacy Pi 3/2 (Stretch/Buster). Keep --system-site-packages so the
+        # OS-provided python3-rpi.gpio is visible. Also pip-install RPi.GPIO
+        # explicitly so things still work when the venv uses a custom Python
+        # (rebuilt from source) where system site-packages don't apply.
         VENV_OPTS="--system-site-packages"
         PIP_EXTRA="--trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host www.piwheels.org"
         SKIP_PIP_UPGRADE=1
+        EXTRA_DEPS="RPi.GPIO>=0.7.0"
+        APT_DEPS="build-essential python3-dev"
         ;;
     *)
+        # Default (Pi 4, Zero 2, unknown). pip-install RPi.GPIO for the venv
+        # in case --system-site-packages can't satisfy it.
         VENV_OPTS="--system-site-packages"
+        EXTRA_DEPS="RPi.GPIO>=0.7.0"
+        APT_DEPS="build-essential python3-dev"
         ;;
 esac
 

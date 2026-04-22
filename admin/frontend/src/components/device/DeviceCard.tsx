@@ -3,6 +3,8 @@ import type { Device, DeviceType } from "../../types/device";
 import { DEVICE_TYPES } from "../../types/device";
 import { useDeviceStore } from "../../stores/device-store";
 import { useNotificationStore } from "../../stores/notification-store";
+import VentsTestPanel from "./VentsTestPanel";
+import TrolleyStatusPanel from "./TrolleyStatusPanel";
 
 const TYPE_BADGE: Record<DeviceType, string> = {
   vents: "bg-orange-500/10 text-orange-300 border-orange-500/30",
@@ -139,6 +141,16 @@ export default function DeviceCard({ device }: { device: Device }) {
                 {systemInfo.disk_free_mb} / {systemInfo.disk_total_mb} MB free
               </span>
             </div>
+          )}
+
+          {/* Vents test panel (live readings + raw OSC controls) */}
+          {effectiveType === "vents" && !device.needs_repair && (
+            <VentsTestPanel device={device} />
+          )}
+
+          {/* Trolley read-only status — full controls live on /trolleys */}
+          {effectiveType === "trolley" && !device.needs_repair && (
+            <TrolleyStatusPanel device={device} />
           )}
 
           <div className="flex gap-3 mt-3">

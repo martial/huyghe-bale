@@ -1,4 +1,4 @@
-"""Tests for controllers.vents — GPIO/PWM/OSC handler logic."""
+"""Tests for the new vents controller (3 Peltier cells + 2 PWM fans + tachos + DS18B20)."""
 
 import time
 from unittest.mock import MagicMock, patch
@@ -6,168 +6,266 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from controllers import vents
-from controllers.vents import clamp, handle_a, handle_b, setup, cleanup
 
 
-class TestClamp:
-    def test_within_range(self):
-        assert clamp(0.5) == 0.5
-
-    def test_lower_bound(self):
-        assert clamp(-1.0) == 0.0
-
-    def test_upper_bound(self):
-        assert clamp(2.0) == 1.0
-
-    def test_exact_zero(self):
-        assert clamp(0.0) == 0.0
-
-    def test_exact_one(self):
-        assert clamp(1.0) == 1.0
-
-    def test_custom_range(self):
-        assert clamp(5, 0, 10) == 5
-        assert clamp(-1, 0, 10) == 0
-        assert clamp(15, 0, 10) == 10
+def _reset():
+    """Reset module-level state so each test starts clean."""
+    vents._webhooks = MagicMock()
+    vents.pwm_fan_1 = None
+    vents.pwm_fan_2 = None
+    vents.peltier_state[:] = [0, 0, 0]
+    vents.fan_duty[:] = [vents.VENTS_FAN_PWM_MIN_PCT, vents.VENTS_FAN_PWM_MIN_PCT] \
+        if hasattr(vents, "VENTS_FAN_PWM_MIN_PCT") else [20.0, 20.0]
+    vents.tacho_rpm[:] = [0.0, 0.0, 0.0, 0.0]
+    vents.tacho_last_t[:] = [0.0, 0.0, 0.0, 0.0]
+    vents.temp_c[:] = [None, None]
+    vents._temp_files[:] = [None, None]
+    vents.target_temp_c = 25.0
+    vents.mode = "raw"
+    vents.state = "idle"
+    vents.last_osc_time = 0.0
+    vents._shutdown_event.clear()
 
 
-class TestHandleA:
-    def setup_method(self):
-        self.mock_pwm = MagicMock()
-        vents.pwm_a = self.mock_pwm
-        vents._webhooks = MagicMock()
-        vents.last_osc_time = 0.0
-
-    def test_sets_duty_cycle(self):
-        handle_a("/gpio/a", 0.5)
-        self.mock_pwm.ChangeDutyCycle.assert_called_once_with(50.0)
-
-    def test_clamps_high_value(self):
-        handle_a("/gpio/a", 1.5)
-        self.mock_pwm.ChangeDutyCycle.assert_called_once_with(100.0)
-
-    def test_clamps_negative_value(self):
-        handle_a("/gpio/a", -0.5)
-        self.mock_pwm.ChangeDutyCycle.assert_called_once_with(0.0)
-
-    def test_zero_value(self):
-        handle_a("/gpio/a", 0.0)
-        self.mock_pwm.ChangeDutyCycle.assert_called_once_with(0.0)
-
-    def test_no_args_does_nothing(self):
-        handle_a("/gpio/a")
-        self.mock_pwm.ChangeDutyCycle.assert_not_called()
-
-    def test_updates_last_osc_time(self):
-        before = time.time()
-        handle_a("/gpio/a", 0.5)
-        assert vents.last_osc_time >= before
-
-    def test_error_fires_webhook(self):
-        self.mock_pwm.ChangeDutyCycle.side_effect = RuntimeError("pwm fail")
-        handle_a("/gpio/a", 0.5)
-        vents._webhooks.fire.assert_called_once()
-        args = vents._webhooks.fire.call_args
-        assert args[0][0] == "error"
-        assert "osc_handler" in args[0][1]["source"]
+def _make_gpio():
+    g = MagicMock()
+    g.BCM = 11
+    g.OUT = 0
+    g.IN = 1
+    g.HIGH = 1
+    g.LOW = 0
+    g.PUD_UP = 22
+    g.FALLING = 32
+    return g
 
 
-class TestHandleB:
-    def setup_method(self):
-        self.mock_pwm = MagicMock()
-        vents.pwm_b = self.mock_pwm
-        vents._webhooks = MagicMock()
-        vents.last_osc_time = 0.0
-
-    def test_sets_duty_cycle(self):
-        handle_b("/gpio/b", 0.75)
-        self.mock_pwm.ChangeDutyCycle.assert_called_once_with(75.0)
-
-    def test_no_args_does_nothing(self):
-        handle_b("/gpio/b")
-        self.mock_pwm.ChangeDutyCycle.assert_not_called()
-
-    def test_error_fires_webhook(self):
-        self.mock_pwm.ChangeDutyCycle.side_effect = RuntimeError("pwm fail")
-        handle_b("/gpio/b", 0.5)
-        vents._webhooks.fire.assert_called_once()
+# ── setup / cleanup ────────────────────────────────────────────────────────
 
 
 class TestSetup:
-    def test_initializes_pwm(self):
-        mock_pwm = MagicMock()
-        mock_gpio = MagicMock()
-        mock_gpio.BCM = 11
-        mock_gpio.OUT = 0
-        mock_gpio.HIGH = 1
-        mock_gpio.LOW = 0
-        mock_gpio.PWM.return_value = mock_pwm
-        vents.pwm_a = None
-        vents.pwm_b = None
-        with patch.object(vents, "GPIO", mock_gpio):
-            setup(MagicMock())
-        assert mock_gpio.setmode.called
-        assert mock_gpio.PWM.call_count == 2
-        assert mock_pwm.start.call_count == 2
+    def setup_method(self):
+        _reset()
 
-    def test_sets_direction_pins(self):
-        mock_gpio = MagicMock()
-        mock_gpio.BCM = 11
-        mock_gpio.OUT = 0
-        mock_gpio.HIGH = 1
-        mock_gpio.LOW = 0
-        mock_gpio.PWM.return_value = MagicMock()
-        with patch.object(vents, "GPIO", mock_gpio):
-            setup(MagicMock())
-        # 4 direction + 2 enable pins
-        assert mock_gpio.setup.call_count == 6
-        # 4 direction pin outputs
-        assert mock_gpio.output.call_count == 4
+    def teardown_method(self):
+        with patch.object(vents, "GPIO", _make_gpio()):
+            vents.cleanup()
+
+    def test_configures_peltier_fan_tacho_pins(self):
+        gpio = _make_gpio()
+        with patch.object(vents, "GPIO", gpio), \
+             patch.object(vents.os, "system", return_value=0), \
+             patch.object(vents.glob, "glob", return_value=[]):
+            vents.setup(MagicMock())
+        # 3 peltier + 2 fan PWM + 4 tacho = 9 GPIO.setup calls
+        assert gpio.setup.call_count == 9
+        # 2 PWM objects created
+        assert gpio.PWM.call_count == 2
+        # 4 tacho event-detect registrations
+        assert gpio.add_event_detect.call_count == 4
 
 
 class TestCleanup:
     def setup_method(self):
-        vents.pwm_a = MagicMock()
-        vents.pwm_b = MagicMock()
+        _reset()
+        self.gpio = _make_gpio()
+        self._patch = patch.object(vents, "GPIO", self.gpio)
+        self._patch.start()
+        with patch.object(vents.os, "system", return_value=0), \
+             patch.object(vents.glob, "glob", return_value=[]):
+            vents.setup(MagicMock())
 
-    def test_zeros_and_stops_pwm(self):
-        with patch.object(vents, "GPIO", MagicMock()):
-            cleanup()
-        vents.pwm_a.ChangeDutyCycle.assert_called_once_with(0)
-        vents.pwm_a.stop.assert_called_once()
-        vents.pwm_b.ChangeDutyCycle.assert_called_once_with(0)
-        vents.pwm_b.stop.assert_called_once()
+    def teardown_method(self):
+        self._patch.stop()
 
-    def test_handles_none_pwm(self):
-        vents.pwm_a = None
-        vents.pwm_b = None
-        with patch.object(vents, "GPIO", MagicMock()):
-            cleanup()  # must not crash
+    def test_sets_peltiers_low_and_stops_pwm(self):
+        vents.cleanup()
+        assert any(
+            c.args == (vents.PIN_PELTIER_1, 0)
+            for c in self.gpio.output.call_args_list
+        )
+        assert vents.pwm_fan_1.stop.called
+        assert vents.pwm_fan_2.stop.called
+
+
+# ── OSC handlers ──────────────────────────────────────────────────────────
+
+
+class TestPeltierHandlers:
+    def setup_method(self):
+        _reset()
+
+    def test_peltier_1_on(self):
+        with patch.object(vents, "GPIO", _make_gpio()) as gpio:
+            vents.handle_peltier_1("/vents/peltier/1", 1)
+            gpio.output.assert_called_with(vents.PIN_PELTIER_1, 1)
+            assert vents.peltier_state[0] == 1
+
+    def test_peltier_mask_all(self):
+        with patch.object(vents, "GPIO", _make_gpio()):
+            vents.handle_peltier_mask("/vents/peltier", 0b101)
+            assert vents.peltier_state == [1, 0, 1]
+
+    def test_manual_peltier_forces_mode_raw(self):
+        vents.mode = "auto"
+        with patch.object(vents, "GPIO", _make_gpio()):
+            vents.handle_peltier_1("/vents/peltier/1", 1)
+        assert vents.mode == "raw"
+
+    def test_updates_last_osc_time(self):
+        before = time.time()
+        with patch.object(vents, "GPIO", _make_gpio()):
+            vents.handle_peltier_1("/vents/peltier/1", 1)
+        assert vents.last_osc_time >= before
+
+    def test_error_fires_webhook(self):
+        with patch.object(vents, "GPIO", _make_gpio()) as gpio:
+            gpio.output.side_effect = RuntimeError("pin boom")
+            vents.handle_peltier_1("/vents/peltier/1", 1)
+        vents._webhooks.fire.assert_called_once()
+
+
+class TestFanHandlers:
+    def setup_method(self):
+        _reset()
+        vents.pwm_fan_1 = MagicMock()
+        vents.pwm_fan_2 = MagicMock()
+
+    def test_fan_1_duty(self):
+        vents.handle_fan_1("/vents/fan/1", 0.5)
+        vents.pwm_fan_1.ChangeDutyCycle.assert_called_once_with(50.0)
+        assert vents.fan_duty[0] == 50.0
+
+    def test_fan_2_duty(self):
+        vents.handle_fan_2("/vents/fan/2", 1.0)
+        vents.pwm_fan_2.ChangeDutyCycle.assert_called_once_with(100.0)
+
+    def test_fan_clamps_high(self):
+        vents.handle_fan_1("/vents/fan/1", 2.0)
+        vents.pwm_fan_1.ChangeDutyCycle.assert_called_once_with(100.0)
+
+    def test_fan_zero_drops_below_floor(self):
+        # 0.0 should resolve to 0% duty (explicit off, not floor)
+        vents.handle_fan_1("/vents/fan/1", 0.0)
+        vents.pwm_fan_1.ChangeDutyCycle.assert_called_once_with(0.0)
+
+    def test_manual_fan_forces_mode_raw(self):
+        vents.mode = "auto"
+        vents.handle_fan_1("/vents/fan/1", 0.3)
+        assert vents.mode == "raw"
+
+
+class TestModeTarget:
+    def setup_method(self):
+        _reset()
+
+    def test_mode_accepts_raw(self):
+        vents.handle_mode("/vents/mode", "raw")
+        assert vents.mode == "raw"
+
+    def test_mode_accepts_auto(self):
+        vents.handle_mode("/vents/mode", "auto")
+        assert vents.mode == "auto"
+
+    def test_mode_rejects_garbage(self):
+        vents.handle_mode("/vents/mode", "banana")
+        vents._webhooks.fire.assert_called_once()
+
+    def test_target_sets_celsius(self):
+        vents.handle_target("/vents/target", 18.5)
+        assert vents.target_temp_c == 18.5
+
+
+# ── status + describe ────────────────────────────────────────────────────
+
+
+class TestStatus:
+    def setup_method(self):
+        _reset()
+
+    def test_status_includes_all_fields(self):
+        s = vents.get_status()
+        for k in (
+            "temp1_c", "temp2_c", "fan1", "fan2", "peltier_mask", "peltier",
+            "rpm1A", "rpm1B", "rpm2A", "rpm2B", "target_c", "mode", "state",
+            "sensors_ok",
+        ):
+            assert k in s
+
+    def test_osc_args_encode_missing_temp_as_neg1(self):
+        args = vents.get_status_osc_args()
+        # temp1 and temp2 are the first two args; both None → -1.0
+        assert args[0] == -1.0
+        assert args[1] == -1.0
+        # mode and state are strings at the tail
+        assert isinstance(args[-2], str)
+        assert isinstance(args[-1], str)
+
+    def test_osc_args_encode_present_temp(self):
+        vents.temp_c[0] = 22.5
+        vents.temp_c[1] = 18.0
+        args = vents.get_status_osc_args()
+        assert args[0] == 22.5
+        assert args[1] == 18.0
+
+    def test_peltier_mask_reflects_state(self):
+        vents.peltier_state[:] = [1, 0, 1]
+        assert vents.get_status()["peltier_mask"] == 0b101
 
 
 class TestHttpTest:
     def setup_method(self):
-        vents.pwm_a = MagicMock()
-        vents.pwm_b = MagicMock()
+        _reset()
 
-    def test_returns_ok_with_duties(self):
-        with patch.object(vents, "GPIO", MagicMock()):
-            result = vents.handle_http_test({"value_a": 0.25, "value_b": 0.75})
-        assert result["ok"] is True
-        assert result["duty_a"] == 25.0
-        assert result["duty_b"] == 75.0
-        vents.pwm_a.ChangeDutyCycle.assert_called_once_with(25.0)
-        vents.pwm_b.ChangeDutyCycle.assert_called_once_with(75.0)
+    def test_peltier_via_http(self):
+        with patch.object(vents, "GPIO", _make_gpio()):
+            r = vents.handle_http_test({"command": "peltier", "index": 1, "value": 1})
+        assert r["ok"] is True
+        assert r["peltier"][0] == 1
 
-    def test_clamps(self):
-        with patch.object(vents, "GPIO", MagicMock()):
-            result = vents.handle_http_test({"value_a": 2.0, "value_b": -1.0})
-        assert result["duty_a"] == 100.0
-        assert result["duty_b"] == 0.0
+    def test_fan_via_http(self):
+        vents.pwm_fan_1 = MagicMock()
+        r = vents.handle_http_test({"command": "fan", "index": 1, "value": 0.75})
+        assert r["ok"] is True
+        assert r["fan1"] == 0.75
+
+    def test_target_via_http(self):
+        r = vents.handle_http_test({"command": "target", "value": 21.5})
+        assert r["ok"] is True
+        assert r["target_c"] == 21.5
+
+    def test_unknown_command(self):
+        r = vents.handle_http_test({"command": "teleport"})
+        assert r["ok"] is False
 
 
 class TestDescribe:
-    def test_returns_controller_name(self):
+    def test_describe(self):
+        _reset()
         d = vents.describe()
         assert d["controller"] == "vents"
-        assert "channels" in d
+        assert "pins" in d
+        assert d["pins"]["peltier"] == list(vents.PELTIER_PINS)
+
+
+# ── DS18B20 parsing ──────────────────────────────────────────────────────
+
+
+class TestDS18B20Parser:
+    def test_valid_reading(self, tmp_path):
+        p = tmp_path / "w1_slave"
+        p.write_text(
+            "aa bb cc dd ee ff : crc=aa YES\n"
+            "aa bb cc dd ee ff t=23125\n"
+        )
+        assert vents._read_ds18b20(str(p)) == pytest.approx(23.125)
+
+    def test_invalid_crc(self, tmp_path):
+        p = tmp_path / "w1_slave"
+        p.write_text(
+            "aa bb cc dd ee ff : crc=aa NO\n"
+            "aa bb cc dd ee ff t=23125\n"
+        )
+        assert vents._read_ds18b20(str(p)) is None
+
+    def test_missing_file(self):
+        assert vents._read_ds18b20("/nope/missing") is None

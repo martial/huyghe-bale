@@ -79,7 +79,11 @@ def create_device():
 
 @bp.route("/test-send", methods=["POST"])
 def test_send():
-    """Send test values to devices via OSC or HTTP."""
+    """Send vents fan test values to devices via OSC or HTTP.
+
+    Body: {device_ids: [...], value_a: 0..1, value_b: 0..1, method: "osc"|"http"}.
+    value_a/b map to /vents/fan/1 and /vents/fan/2 respectively (legacy A/B).
+    """
     data = request.get_json() or {}
     device_ids = data.get("device_ids", [])
     value_a = max(0.0, min(1.0, float(data.get("value_a", 0.0))))
@@ -99,20 +103,23 @@ def test_send():
 
         try:
             if method == "http":
-                body = json.dumps({"value_a": value_a, "value_b": value_b}).encode()
-                req = urllib.request.Request(
-                    f"http://{ip}:9001/gpio/test",
-                    data=body,
-                    method="POST",
-                    headers={"Content-Type": "application/json"},
-                )
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    results[did] = json.loads(resp.read())
+                # Pi HTTP /gpio/test now routes through the controller's
+                # handle_http_test which expects {command, index, value}.
+                for idx, v in ((1, value_a), (2, value_b)):
+                    body = json.dumps({"command": "fan", "index": idx, "value": v}).encode()
+                    req = urllib.request.Request(
+                        f"http://{ip}:9001/gpio/test",
+                        data=body,
+                        method="POST",
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        results[did] = json.loads(resp.read())
             else:
                 port = device.get("osc_port", 9000)
-                osc.send(ip, port, "/gpio/a", value_a)
-                osc.send(ip, port, "/gpio/b", value_b)
-                results[did] = {"ok": True, "sent_a": value_a, "sent_b": value_b}
+                osc.send(ip, port, "/vents/fan/1", value_a)
+                osc.send(ip, port, "/vents/fan/2", value_b)
+                results[did] = {"ok": True, "sent_fan_1": value_a, "sent_fan_2": value_b}
         except Exception as e:
             logger.warning("Test send to %s (%s) failed: %s", did, method, e)
             results[did] = {"ok": False, "error": str(e)}

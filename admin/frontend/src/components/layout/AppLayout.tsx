@@ -165,7 +165,6 @@ export default function AppLayout() {
       <main className="flex-1 overflow-auto relative z-0 flex flex-col">
         <SystemWarnings />
         <div className="flex-1 relative">
-          <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 mix-blend-overlay pointer-events-none"></div>
           <div className="relative z-10 h-full">
             <Outlet />
           </div>
