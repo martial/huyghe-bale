@@ -173,14 +173,19 @@ def device_status_stream():
                 if ip := device.get("ip_address"):
                     statuses[did] = "online" if receiver.get_status(ip, timeout=6.0) else "offline"
 
+                    # The Pi is authoritative for its own {type, hardware_id}.
+                    # If scan added the device with a default type=vents and the
+                    # Pi actually reports trolley (or vice versa), reconcile.
                     info = receiver.get_device_info(ip)
+                    reported_type = info.get("type")
+                    reported_hwid = info.get("hardware_id")
                     patch = {}
-                    if "type" not in device and info.get("type"):
-                        patch["type"] = info["type"]
-                    if not device.get("hardware_id") and info.get("hardware_id"):
-                        patch["hardware_id"] = info["hardware_id"]
+                    if reported_type and device.get("type") != reported_type:
+                        patch["type"] = reported_type
+                    if reported_hwid and device.get("hardware_id") != reported_hwid:
+                        patch["hardware_id"] = reported_hwid
                     if patch:
-                        logger.info("Backfilling %s from pong: %s", did, patch)
+                        logger.info("Reconciling %s from pong: %s", did, patch)
                         store.patch(did, patch)
 
             # Periodically fetch version from online devices via HTTP
