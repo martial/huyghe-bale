@@ -266,9 +266,6 @@ def test_rename_takes_effect_on_next_message():
     """Mimicking the admin-rename flow: device_provider returns the current
     store contents on every call, so the bridge picks up a new name without
     needing a reconfigure."""
-    from unittest.mock import MagicMock
-    from engine.osc_bridge import OscBridge
-
     state = [
         {"id": "d1", "name": "old-name", "ip_address": "10.0.0.9",
          "osc_port": 9000, "type": "vents"},
@@ -305,9 +302,6 @@ def test_trailing_whitespace_defeats_exact_match():
     """Sanity check that _match_device is exact-match — proving the API's
     validation is load-bearing: if someone bypasses the API and stores a name
     with trailing whitespace, targeting will silently miss."""
-    from unittest.mock import MagicMock
-    from engine.osc_bridge import OscBridge
-
     sender = MagicMock()
     bridge = OscBridge(
         port=0,
