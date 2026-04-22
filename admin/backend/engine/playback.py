@@ -66,6 +66,26 @@ class PlaybackEngine:
         self._thread.start()
         logger.info("Playback started: timeline %s to %d device(s)", timeline.get("id"), len(devices))
 
+    def start_trolley_timeline(self, timeline: dict, devices: list[dict]):
+        """Start playing a trolley position timeline.
+
+        Timeline schema has a single `lane` with points whose value is position
+        along the rail (0..1). Sent as /trolley/position on each tick.
+        """
+        self.stop()
+        with self._lock:
+            self._playback_type = "trolley-timeline"
+            self._playback_id = timeline.get("id")
+            self._timeline = timeline
+            self._devices = devices
+            self.total_duration = timeline.get("duration", 0.0)
+            self.elapsed = 0.0
+            self.playing = True
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run_trolley_timeline, daemon=True)
+        self._thread.start()
+        logger.info("Playback started: trolley-timeline %s to %d device(s)", timeline.get("id"), len(devices))
+
     def start_orchestration(self, orchestration: dict, resolved_timelines: dict, devices_map: dict):
         """Start playing an orchestration (sequential steps).
 
@@ -121,7 +141,7 @@ class PlaybackEngine:
         logger.info("Playback resumed from %.1fs", self._pause_elapsed)
 
     def stop(self):
-        """Stop playback and zero all outputs."""
+        """Stop playback and zero / halt all outputs appropriately for the type."""
         self._stop_event.set()
         self._pause_event.set()  # Unblock if paused so thread can exit
         if self._thread and self._thread.is_alive():
@@ -129,12 +149,17 @@ class PlaybackEngine:
 
         with self._lock:
             self.paused = False
-            # Zero all devices
+            was_trolley = self._playback_type == "trolley-timeline"
             for device in self._devices:
                 try:
-                    self.osc.send_zero(device["ip_address"], device.get("osc_port", 9000))
+                    ip = device["ip_address"]
+                    port = device.get("osc_port", 9000)
+                    if was_trolley or device.get("type") == "trolley":
+                        self.osc.send(ip, port, "/trolley/stop", 0)
+                    else:
+                        self.osc.send_zero(ip, port)
                 except Exception as e:
-                    logger.warning("Failed to zero device %s: %s", device.get("id"), e)
+                    logger.warning("Failed to halt device %s: %s", device.get("id"), e)
 
             self.playing = False
             self.elapsed = 0.0
@@ -148,9 +173,13 @@ class PlaybackEngine:
         logger.info("Playback stopped")
 
     def reload_timeline(self, timeline: dict):
-        """Hot-reload timeline data while playing (e.g. after a save)."""
+        """Hot-reload timeline data while playing (e.g. after a save).
+
+        Works for both vents timelines and trolley timelines — we only compare
+        on the playback id, which is unique per run.
+        """
         with self._lock:
-            if not self.playing or self._playback_type != "timeline":
+            if not self.playing or self._playback_type not in ("timeline", "trolley-timeline"):
                 return
             if self._playback_id != timeline.get("id"):
                 return
@@ -166,6 +195,53 @@ class PlaybackEngine:
             elapsed = max(0.0, min(elapsed, self.total_duration))
             self._seek_offset = elapsed - (time.monotonic() - self._start_time)
             self.elapsed = elapsed
+
+    def _run_trolley_timeline(self):
+        """Trolley timeline playback loop — single lane, /trolley/position target."""
+        interval = 1.0 / self.tick_rate
+        start_time = time.monotonic()
+        self._start_time = start_time
+        self._seek_offset = 0.0
+
+        while not self._stop_event.is_set():
+            self._pause_event.wait()
+            if self._stop_event.is_set():
+                break
+
+            elapsed = time.monotonic() - start_time + self._seek_offset
+
+            with self._lock:
+                if elapsed >= self.total_duration:
+                    elapsed = elapsed % self.total_duration
+                    self._seek_offset -= self.total_duration
+                self.elapsed = elapsed
+                self._evaluate_and_send_trolley(self._timeline, elapsed)
+
+            next_tick = start_time + (int((time.monotonic() - start_time) / interval) + 1) * interval
+            sleep_time = next_tick - time.monotonic()
+            if sleep_time > 0:
+                self._stop_event.wait(sleep_time)
+
+        with self._lock:
+            self.playing = False
+
+    def _evaluate_and_send_trolley(self, timeline: dict, current_time: float):
+        """Evaluate the single-lane trolley timeline and push /trolley/position."""
+        lane = timeline.get("lane") or {}
+        points = lane.get("points", []) or []
+        value = evaluate_lane(points, current_time)
+        # Clamp to [0, 1] — output_cap intentionally not applied; position is
+        # physical, not brightness.
+        value = max(0.0, min(1.0, value))
+        self.current_values["position"] = value
+
+        for device in self._devices:
+            try:
+                ip = device["ip_address"]
+                port = device.get("osc_port", 9000)
+                self.osc.send(ip, port, "/trolley/position", value)
+            except Exception as e:
+                logger.warning("Trolley OSC send error to %s: %s", device.get("id"), e)
 
     def _run_timeline(self):
         """Main timeline playback loop."""

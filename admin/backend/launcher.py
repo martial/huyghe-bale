@@ -23,7 +23,7 @@ if _MEIPASS:
         data_dir = os.path.expanduser(
             "~/Library/Application Support/PierreHuygheBale/data"
         )
-    for sub in ("timelines", "devices", "orchestrations"):
+    for sub in ("timelines", "devices", "orchestrations", "trolley_timelines"):
         os.makedirs(os.path.join(data_dir, sub), exist_ok=True)
 else:
     dist_dir = None

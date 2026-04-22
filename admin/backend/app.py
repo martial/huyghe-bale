@@ -12,8 +12,10 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
         config.DATA_DIR = data_dir
 
     from api import timelines, devices, orchestrations, playback, export, settings, health
+    from api import trolley_timelines, trolley_control
     from api.playback import set_engine
     from api.timelines import set_engine as set_timelines_engine
+    from api.trolley_timelines import set_engine as set_trolley_timelines_engine
     from engine.playback import PlaybackEngine
     from engine.osc_receiver import OscReceiver
 
@@ -28,6 +30,8 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
     app.register_blueprint(export.bp, url_prefix="/api/v1/export")
     app.register_blueprint(settings.bp, url_prefix="/api/v1/settings")
     app.register_blueprint(health.bp, url_prefix="/api/v1/health")
+    app.register_blueprint(trolley_timelines.bp, url_prefix="/api/v1/trolley-timelines")
+    app.register_blueprint(trolley_control.bp, url_prefix="/api/v1/trolley-control")
 
     # Import endpoint is under /api/v1/import
     @app.route("/api/v1/import/timeline", methods=["POST"])
@@ -38,6 +42,7 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
     engine = PlaybackEngine()
     set_engine(engine)
     set_timelines_engine(engine)
+    set_trolley_timelines_engine(engine)
 
     # Initialize and start OSC Receiver
     receiver = OscReceiver(port=9001)

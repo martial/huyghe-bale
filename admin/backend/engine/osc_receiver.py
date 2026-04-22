@@ -23,6 +23,7 @@ class OscReceiver:
         self.port = port
         self.last_seen = {}  # ip_address -> timestamp
         self.device_info = {}  # ip_address -> {"type": str, "hardware_id": str}
+        self.trolley_status = {}  # ip_address -> {"position", "limit", "homed", "timestamp"}
         self.server = None
         self.thread = None
         self.running = False
@@ -30,6 +31,7 @@ class OscReceiver:
 
         self.dispatcher = Dispatcher()
         self.dispatcher.map("/sys/pong", self._handle_pong, needs_reply_address=True)
+        self.dispatcher.map("/trolley/status", self._handle_trolley_status, needs_reply_address=True)
 
     def _handle_pong(self, client_address, addr, *args):
         # client_address = (ip, port) of the UDP sender (the RPi)
@@ -52,6 +54,25 @@ class OscReceiver:
         self.device_info[ip] = info
         logger.debug("Received /sys/pong from %s (type=%s)", ip, device_type)
 
+    def _handle_trolley_status(self, client_address, addr, *args):
+        """Pi-pushed status for trolley controllers.
+        Args: (position_0_1, limit_int, homed_int).
+        """
+        ip = client_address[0]
+        self.last_seen[ip] = time.time()
+        try:
+            position = float(args[0]) if len(args) > 0 else 0.0
+            limit = int(args[1]) if len(args) > 1 else 0
+            homed = int(args[2]) if len(args) > 2 else 0
+        except (TypeError, ValueError):
+            return
+        self.trolley_status[ip] = {
+            "position": position,
+            "limit": limit,
+            "homed": homed,
+            "timestamp": time.time(),
+        }
+
     def get_status(self, ip: str, timeout: float = 6.0) -> bool:
         """Return True if we've seen a pong from this IP within the timeout."""
         last_time = self.last_seen.get(ip, 0)
@@ -60,6 +81,10 @@ class OscReceiver:
     def get_device_info(self, ip: str) -> dict:
         """Return {"type", "hardware_id"} last reported by the device at ip, or {} if unseen."""
         return dict(self.device_info.get(ip, {}))
+
+    def get_trolley_status(self, ip: str) -> dict:
+        """Return last {position, limit, homed, timestamp} for a trolley device, or {}."""
+        return dict(self.trolley_status.get(ip, {}))
 
     def start(self):
         # Stop any existing server first (handles Flask debug reloader)

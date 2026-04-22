@@ -7,14 +7,15 @@ from api.settings import _read as read_settings
 
 bp = Blueprint("playback", __name__)
 
-# Current timeline schema only supports vents (/gpio/a + /gpio/b OSC addresses).
-# Trolley devices are listed in the admin but cannot receive playback yet —
-# they'll get their own timeline/playback flow once the hardware spec lands.
+# Legacy timeline + orchestration playback use /gpio/a + /gpio/b (vents-only).
+# Trolley timelines go through a separate schema and /trolley/position.
 PLAYBACK_DEVICE_TYPE = "vents"
+TROLLEY_DEVICE_TYPE = "trolley"
 
 timeline_store = JsonStore(DATA_DIR, "timelines", "tl")
 device_store = JsonStore(DATA_DIR, "devices", "dev")
 orchestration_store = JsonStore(DATA_DIR, "orchestrations", "orch")
+trolley_timeline_store = JsonStore(DATA_DIR, "trolley_timelines", "trtl")
 
 # The playback engine is set by the app on startup
 _engine = None
@@ -35,20 +36,22 @@ def start_playback():
     if not playback_type or not playback_id:
         return jsonify({"error": "type and id required"}), 400
 
-    # Resolve devices, reject non-vents targets (trolley playback not supported yet)
+    # Which device type is required for this playback variant?
+    required_type = TROLLEY_DEVICE_TYPE if playback_type == "trolley-timeline" else PLAYBACK_DEVICE_TYPE
+
     devices = []
     wrong_type = []
     for did in device_ids:
         d = device_store.get(did)
         if not d:
             continue
-        if d.get("type", "vents") != PLAYBACK_DEVICE_TYPE:
+        if d.get("type", "vents") != required_type:
             wrong_type.append({"id": did, "name": d.get("name"), "type": d.get("type")})
             continue
         devices.append(d)
     if wrong_type:
         return jsonify({
-            "error": f"Playback is only supported for {PLAYBACK_DEVICE_TYPE} devices",
+            "error": f"{playback_type} playback requires {required_type} devices",
             "unsupported_devices": wrong_type,
         }), 400
     if not devices:
@@ -65,6 +68,13 @@ def start_playback():
             return jsonify({"error": "Timeline not found"}), 404
         _engine.start_timeline(timeline, devices)
         return jsonify({"ok": True, "message": "Timeline playback started"})
+
+    elif playback_type == "trolley-timeline":
+        timeline = trolley_timeline_store.get(playback_id)
+        if not timeline:
+            return jsonify({"error": "Trolley timeline not found"}), 404
+        _engine.start_trolley_timeline(timeline, devices)
+        return jsonify({"ok": True, "message": "Trolley timeline playback started"})
 
     elif playback_type == "orchestration":
         orch = orchestration_store.get(playback_id)
@@ -99,7 +109,7 @@ def start_playback():
         _engine.start_orchestration(orch, resolved_timelines, devices_map)
         return jsonify({"ok": True, "message": "Orchestration playback started"})
 
-    return jsonify({"error": "Invalid type (use 'timeline' or 'orchestration')"}), 400
+    return jsonify({"error": "Invalid type (use 'timeline', 'trolley-timeline', or 'orchestration')"}), 400
 
 
 @bp.route("/pause", methods=["POST"])

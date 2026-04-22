@@ -25,7 +25,7 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
 from pythonosc.udp_client import SimpleUDPClient
 
-from config import OSC_PORT, HTTP_PORT
+from config import OSC_PORT, HTTP_PORT, TROLLEY_STATUS_HZ
 import controllers
 import identity
 from webhooks import WebhookNotifier
@@ -40,6 +40,7 @@ webhooks = None
 controller = None
 IDENTITY: dict = {"type": "unknown", "id": ""}  # overwritten in main()
 shutdown_event = Event()
+last_pinger = None  # (ip, return_port) — used by the trolley status broadcaster
 
 
 def _service_name() -> str:
@@ -243,11 +244,13 @@ def run_http_server():
 
 def handle_ping(client_address, address, *args):
     """Reply to /sys/ping with (ip, type, hardware_id) so the backend can identify us."""
+    global last_pinger
     if not args:
         return
     try:
         return_port = int(args[0])
         origin_ip = client_address[0]
+        last_pinger = (origin_ip, return_port)
         logger.debug("Ping received from %s. Replying to port %d", origin_ip, return_port)
         client = SimpleUDPClient(origin_ip, return_port)
         client.send_message("/sys/pong", [origin_ip, IDENTITY["type"], IDENTITY["id"]])
@@ -255,6 +258,34 @@ def handle_ping(client_address, address, *args):
         logger.error("Handler error on /sys/ping: %s", e)
         if webhooks:
             webhooks.fire("error", {"source": "osc_handler", "error": str(e)})
+
+
+def run_trolley_status_broadcaster():
+    """Emit /trolley/status to the last admin that pinged us, at TROLLEY_STATUS_HZ.
+
+    Runs only when the loaded controller exposes get_status(); vents doesn't, so
+    the thread exits immediately on other personalities.
+    """
+    if controller is None or not hasattr(controller, "get_status"):
+        return
+    period = 1.0 / max(1, TROLLEY_STATUS_HZ)
+    while not shutdown_event.is_set():
+        try:
+            if last_pinger is not None:
+                ip, port = last_pinger
+                status = controller.get_status()
+                client = SimpleUDPClient(ip, port)
+                client.send_message(
+                    "/trolley/status",
+                    [
+                        float(status.get("position", 0.0)),
+                        int(status.get("limit", 0)),
+                        int(status.get("homed", 0)),
+                    ],
+                )
+        except Exception as e:
+            logger.debug("Trolley status broadcast error (non-fatal): %s", e)
+        shutdown_event.wait(period)
 
 
 def cleanup(*_):
@@ -316,6 +347,10 @@ def main():
     except Exception as e:
         webhooks.fire("error", {"source": "http_server", "error": str(e)})
         logger.error("Failed to start HTTP status server: %s", e)
+
+    if hasattr(controller, "get_status"):
+        Thread(target=run_trolley_status_broadcaster, daemon=True).start()
+        logger.info("Trolley status broadcaster started at %d Hz", TROLLEY_STATUS_HZ)
 
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)

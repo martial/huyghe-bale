@@ -2,7 +2,7 @@ import { get, post } from "./client";
 import type { PlaybackStatus } from "../types/playback";
 
 export function startPlayback(data: {
-  type: "timeline" | "orchestration";
+  type: "timeline" | "orchestration" | "trolley-timeline";
   id: string;
   device_ids: string[];
 }) {

@@ -14,6 +14,7 @@ interface Props {
   selectedPointId: string | null;
   color: string;
   timelineId: string;
+  playbackType?: "timeline" | "trolley-timeline";
   onSelectPoint: (id: string) => void;
   onAddPoint: (time: number, value: number, shiftKey: boolean) => void;
   onRemovePoint: (id: string) => void;
@@ -32,6 +33,7 @@ export default function TimelineLane({
   selectedPointId,
   color,
   timelineId,
+  playbackType = "timeline",
   onSelectPoint,
   onAddPoint,
   onRemovePoint,
@@ -41,7 +43,7 @@ export default function TimelineLane({
 }: Props) {
   const playbackStatus = usePlaybackStore((s) => s.status);
   const smoothElapsed = useSmoothedElapsed();
-  const showCursor = playbackStatus.playing && playbackStatus.id === timelineId && playbackStatus.type === "timeline";
+  const showCursor = playbackStatus.playing && playbackStatus.id === timelineId && playbackStatus.type === playbackType;
   const cursorX = showCursor ? tc.timeToX(canvas, smoothElapsed) : 0;
   const [hoveredPointId, setHoveredPointId] = useState<string | null>(null);
   const [dragPointId, setDragPointId] = useState<string | null>(null);

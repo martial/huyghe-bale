@@ -4,12 +4,15 @@ import AppLayout from "./components/layout/AppLayout";
 
 const TimelinesPage = lazy(() => import("./pages/TimelinesPage"));
 const TimelineEditPage = lazy(() => import("./pages/TimelineEditPage"));
+const TrolleysPage = lazy(() => import("./pages/TrolleysPage"));
+const TrolleyEditPage = lazy(() => import("./pages/TrolleyEditPage"));
 const DevicesPage = lazy(() => import("./pages/DevicesPage"));
 const OrchestrationsPage = lazy(() => import("./pages/OrchestrationsPage"));
 const OrchestrationEditPage = lazy(() => import("./pages/OrchestrationEditPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const AboutPage = lazy(() => import("./pages/AboutPage"));
 const FAQPage = lazy(() => import("./pages/FAQPage"));
+const DocsPage = lazy(() => import("./pages/DocsPage"));
 
 function Loading() {
   return (
@@ -37,6 +40,22 @@ export default function App() {
           element={
             <Suspense fallback={<Loading />}>
               <TimelineEditPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="trolleys"
+          element={
+            <Suspense fallback={<Loading />}>
+              <TrolleysPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="trolleys/:id"
+          element={
+            <Suspense fallback={<Loading />}>
+              <TrolleyEditPage />
             </Suspense>
           }
         />
@@ -85,6 +104,14 @@ export default function App() {
           element={
             <Suspense fallback={<Loading />}>
               <FAQPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="docs"
+          element={
+            <Suspense fallback={<Loading />}>
+              <DocsPage />
             </Suspense>
           }
         />

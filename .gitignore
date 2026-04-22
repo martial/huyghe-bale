@@ -27,6 +27,7 @@ Thumbs.db
 admin/backend/data/timelines/*.json
 admin/backend/data/devices/*.json
 admin/backend/data/orchestrations/*.json
+admin/backend/data/trolley_timelines/*.json
 admin/backend/data/settings.json
 
 # PyInstaller / build artifacts

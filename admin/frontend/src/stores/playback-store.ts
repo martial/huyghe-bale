@@ -7,7 +7,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 interface PlaybackState {
   status: PlaybackStatus;
   polling: boolean;
-  start: (type: "timeline" | "orchestration", id: string, device_ids: string[]) => Promise<void>;
+  start: (type: "timeline" | "orchestration" | "trolley-timeline", id: string, device_ids: string[]) => Promise<void>;
   stop: () => Promise<void>;
   pause: () => Promise<void>;
   resume: () => Promise<void>;
