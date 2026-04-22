@@ -66,12 +66,8 @@ def test_last_error_cleared_on_next_run(engine):
         assert _wait_stopped(engine)
     assert engine.last_error is not None
 
-    # New run (no crash this time) clears the error.
+    # New run clears the error synchronously, before the thread even spawns.
     engine.start_timeline(timeline, devices=[])
-    # Give the thread a tick to execute its top-level `self._last_error = None`.
-    deadline = time.time() + 1.0
-    while time.time() < deadline and engine.last_error is not None:
-        time.sleep(0.01)
     assert engine.last_error is None
 
 

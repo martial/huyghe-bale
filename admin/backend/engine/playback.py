@@ -71,6 +71,7 @@ class PlaybackEngine:
             self.total_duration = timeline.get("duration", 0.0)
             self.elapsed = 0.0
             self.playing = True
+            self._last_error = None
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_timeline, daemon=True)
         self._thread.start()
@@ -91,6 +92,7 @@ class PlaybackEngine:
             self.total_duration = timeline.get("duration", 0.0)
             self.elapsed = 0.0
             self.playing = True
+            self._last_error = None
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_trolley_timeline, daemon=True)
         self._thread.start()
@@ -123,6 +125,7 @@ class PlaybackEngine:
             self.total_duration = total
             self.elapsed = 0.0
             self.playing = True
+            self._last_error = None
 
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_orchestration, daemon=True)
@@ -265,9 +268,16 @@ class PlaybackEngine:
                 logger.warning("Trolley implicit-stop OSC error to %s: %s",
                                device.get("id"), e)
 
+    def _clear_run_state(self) -> None:
+        """Called from every run-loop finally so the UI reflects that the
+        thread has exited, regardless of whether it finished cleanly or
+        crashed. `_last_error` is preserved so the banner can still show it."""
+        with self._lock:
+            self.playing = False
+            self.paused = False
+
     def _run_trolley_timeline(self):
         """Event-based trolley playback: fire each bang at its scheduled time."""
-        self._last_error = None
         try:
             interval = 1.0 / max(1, self.tick_rate)
             start_time = time.monotonic()
@@ -317,13 +327,10 @@ class PlaybackEngine:
             logger.exception("playback _run_trolley_timeline crashed")
             self._last_error = f"trolley playback crashed: {e}"
         finally:
-            with self._lock:
-                self.playing = False
-                self.paused = False
+            self._clear_run_state()
 
     def _run_timeline(self):
         """Main timeline playback loop."""
-        self._last_error = None
         try:
             interval = 1.0 / self.tick_rate
             start_time = time.monotonic()
@@ -355,13 +362,10 @@ class PlaybackEngine:
             logger.exception("playback _run_timeline crashed")
             self._last_error = f"timeline playback crashed: {e}"
         finally:
-            with self._lock:
-                self.playing = False
-                self.paused = False
+            self._clear_run_state()
 
     def _run_orchestration(self):
         """Main orchestration playback loop."""
-        self._last_error = None
         try:
             interval = 1.0 / self.tick_rate
             global_start = time.monotonic()
@@ -425,9 +429,7 @@ class PlaybackEngine:
             logger.exception("playback _run_orchestration crashed")
             self._last_error = f"orchestration playback crashed: {e}"
         finally:
-            with self._lock:
-                self.playing = False
-                self.paused = False
+            self._clear_run_state()
 
     def _evaluate_and_send(self, timeline: dict, current_time: float):
         """Evaluate lanes and send OSC to all active devices."""
