@@ -272,16 +272,12 @@ class PlaybackEngine:
             elapsed = time.monotonic() - start_time + self._seek_offset
 
             with self._lock:
-                looped = False
                 if self.total_duration > 0 and elapsed >= self.total_duration:
-                    # Safety: implicit stop at end of a run, then either loop
-                    # or break. Loop is driven by the timeline's total duration
-                    # (not by a separate flag on trolley timelines).
+                    # Implicit stop at end of a run, then wrap to t=0.
                     self._send_trolley_stop()
                     elapsed = elapsed % self.total_duration
                     self._seek_offset -= self.total_duration
                     cursor = 0
-                    looped = True
                 self.elapsed = elapsed
 
                 # Seek support: if elapsed moved backwards (seek() or loop wrap),
@@ -296,8 +292,6 @@ class PlaybackEngine:
                     self._fire_trolley_event(events[cursor][2])
                     cursor += 1
 
-                _ = looped  # currently unused but kept for future per-loop hooks
-
             next_tick = start_time + (int((time.monotonic() - start_time) / interval) + 1) * interval
             sleep_time = next_tick - time.monotonic()
             if sleep_time > 0:
@@ -309,9 +303,6 @@ class PlaybackEngine:
             self.playing = False
         if not self._stop_event.is_set():
             self._send_trolley_stop()
-
-    # The old continuous /trolley/position per-tick follower is gone. The new
-    # trolley controller has a Pi-side follow loop; we only send bangs.
 
     def _run_timeline(self):
         """Main timeline playback loop."""

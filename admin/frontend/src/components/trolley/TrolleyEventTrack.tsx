@@ -90,9 +90,7 @@ export default function TrolleyEventTrack({
       if (!draggingId) return;
       onMove(draggingId, clientXToTime(e.clientX));
     },
-    // duration isn't listed because clientXToTime closes over latest via ref;
-    // but safer to depend on it so the handler uses the current duration.
-    [draggingId, duration, onMove],  // eslint-disable-line react-hooks/exhaustive-deps
+    [draggingId, duration, onMove],
   );
 
   const handleDragEnd = useCallback(() => setDraggingId(null), []);

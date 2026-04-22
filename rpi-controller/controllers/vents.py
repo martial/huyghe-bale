@@ -48,9 +48,8 @@ from config import (
     VENTS_DEFAULT_TARGET_C, VENTS_HYSTERESIS_C,
     VENTS_AUTO_FAN_LOW_PCT, VENTS_AUTO_FAN_HIGH_PCT, VENTS_AUTO_LOOP_HZ,
     VENTS_TEMP_POLL_HZ, VENTS_TACHO_MIN_DT_S,
+    VENTS_STATUS_HZ,
 )
-
-from config import VENTS_STATUS_HZ  # imported here for the broadcaster constants block
 
 logger = logging.getLogger(__name__)
 
