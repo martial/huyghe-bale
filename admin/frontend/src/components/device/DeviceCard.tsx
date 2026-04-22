@@ -37,7 +37,7 @@ function VentsHeroSlot({ device }: { device: Device }) {
   return (
     <>
       <VentsHero status={status} stale={stale} lastPushAgeS={lastPushAgeS} />
-      <DeviceCardDetails type="vents" device={device}>
+      <DeviceCardDetails device={device}>
         <VentsTestPanel device={device} status={status} />
       </DeviceCardDetails>
     </>
@@ -49,7 +49,7 @@ function TrolleyHeroSlot({ device }: { device: Device }) {
   return (
     <>
       <TrolleyHero status={status} stale={stale} lastPushAgeS={lastPushAgeS} />
-      <DeviceCardDetails type="trolley" device={device} />
+      <DeviceCardDetails device={device} />
     </>
   );
 }
@@ -61,7 +61,6 @@ function DeviceCardDetails({
   device,
   children,
 }: {
-  type: DeviceType;
   device: Device;
   children?: React.ReactNode;
 }) {
