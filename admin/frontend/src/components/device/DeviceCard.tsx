@@ -126,7 +126,7 @@ function DeviceCardDetails({
   );
 }
 
-export default function DeviceCard({ device }: { device: Device }) {
+export default function DeviceCard({ device, compact = false }: { device: Device; compact?: boolean }) {
   const update = useDeviceStore((s) => s.update);
   const remove = useDeviceStore((s) => s.remove);
   const updateSoftware = useDeviceStore((s) => s.updateSoftware);
@@ -203,6 +203,85 @@ export default function DeviceCard({ device }: { device: Device }) {
               Cancel
             </button>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (compact) {
+    return (
+      <div className="px-4 py-2.5 rounded-xl border border-zinc-800/50 bg-zinc-900/80 hover:border-zinc-700/40 transition-colors flex items-center gap-3">
+        <span
+          className={`inline-flex w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+            isOnline
+              ? "bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.5)]"
+              : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"
+          }`}
+          title={isOnline ? "online" : "offline"}
+        />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className={`text-sm font-medium leading-tight ${device.needs_repair ? "text-zinc-500 italic" : "text-zinc-100"}`}>
+              {device.name || "(unnamed device)"}
+            </p>
+            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${TYPE_BADGE[effectiveType]}`}>
+              {effectiveType}
+            </span>
+            {device.needs_repair && (
+              <span
+                className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border bg-yellow-500/10 text-yellow-300 border-yellow-500/30"
+                title={`Missing: ${(device.missing_fields || []).join(", ")}`}
+              >
+                needs repair
+              </span>
+            )}
+          </div>
+          <div className="mt-0.5 flex items-center gap-x-3 gap-y-0.5 flex-wrap text-[11px] text-zinc-500 font-mono">
+            <span>{device.ip_address || "—"}:{device.osc_port}</span>
+            {!isRestarting && isOnline && deviceVersion && (
+              isOutdated ? (
+                <span className="text-orange-400">update available</span>
+              ) : latestVersion && (
+                <span className="text-emerald-400/70">up to date</span>
+              )
+            )}
+            {isRestarting && (
+              <span className="inline-flex items-center gap-1">
+                <span className="inline-block w-2 h-2 border border-zinc-500 border-t-transparent rounded-full animate-spin" />
+                restarting
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-3 shrink-0 text-xs">
+          {(isOutdated || isUpdating) && (
+            <button
+              onClick={handleUpdate}
+              disabled={isUpdating}
+              className="text-orange-400 hover:text-orange-300 transition-colors disabled:opacity-50 inline-flex items-center gap-1"
+            >
+              {isUpdating && <span className="inline-block w-2.5 h-2.5 border border-orange-400 border-t-transparent rounded-full animate-spin" />}
+              {isUpdating ? "Updating..." : "Update"}
+            </button>
+          )}
+          <button
+            onClick={() => {
+              setForm({ ...device });
+              setEditing(true);
+            }}
+            className="text-zinc-400 hover:text-white transition-colors"
+          >
+            Edit
+          </button>
+          <button
+            onClick={() => {
+              remove(device.id);
+              notify("info", "Device deleted");
+            }}
+            className="text-red-400/60 hover:text-red-400 transition-colors"
+          >
+            Delete
+          </button>
         </div>
       </div>
     );

@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import { useDeviceStore } from "../stores/device-store";
+import type { DeviceType } from "../types/device";
 import DeviceCard from "../components/device/DeviceCard";
 import DeviceCardSkeleton from "../components/device/DeviceCardSkeleton";
 import DeviceForm from "../components/device/DeviceForm";
 import NetworkScanDialog from "../components/device/NetworkScanDialog";
+
+type FilterKey = "all" | DeviceType;
 
 export default function DevicesPage() {
   const list = useDeviceStore((s) => s.list);
@@ -18,12 +21,36 @@ export default function DevicesPage() {
   const [showForm, setShowForm] = useState(false);
   const [showScan, setShowScan] = useState(false);
 
+  const [filterType, setFilterType] = useState<FilterKey>(() => {
+    const v = localStorage.getItem("devices.filter");
+    return v === "vents" || v === "trolley" ? v : "all";
+  });
+  const [compact, setCompact] = useState<boolean>(
+    () => localStorage.getItem("devices.compact") === "1",
+  );
+
+  useEffect(() => {
+    localStorage.setItem("devices.filter", filterType);
+  }, [filterType]);
+  useEffect(() => {
+    localStorage.setItem("devices.compact", compact ? "1" : "0");
+  }, [compact]);
+
   useEffect(() => {
     fetchList();
     fetchLatestVersion();
     const interval = setInterval(fetchLatestVersion, 60_000);
     return () => clearInterval(interval);
   }, [fetchList, fetchLatestVersion]);
+
+  const counts = { vents: 0, trolley: 0 };
+  list.forEach((d) => {
+    counts[(d.type ?? "vents") as DeviceType]++;
+  });
+  const filtered =
+    filterType === "all"
+      ? list
+      : list.filter((d) => (d.type ?? "vents") === filterType);
 
   const outdatedCount = latestVersion
     ? Object.entries(deviceVersions).filter(
@@ -56,7 +83,46 @@ export default function DevicesPage() {
             </p>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="inline-flex rounded-xl border border-white/10 bg-white/5 p-0.5">
+            {(["all", "vents", "trolley"] as const).map((k) => {
+              const isActive = filterType === k;
+              const label =
+                k === "all"
+                  ? `All (${list.length})`
+                  : k === "vents"
+                  ? `Vents (${counts.vents})`
+                  : `Trolley (${counts.trolley})`;
+              return (
+                <button
+                  key={k}
+                  onClick={() => setFilterType(k)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                    isActive
+                      ? "bg-orange-500/20 text-orange-300"
+                      : "text-zinc-400 hover:text-white"
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            onClick={() => setCompact(!compact)}
+            className="p-2.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-white transition-all duration-300"
+            title={compact ? "Switch to grid view" : "Switch to compact list"}
+          >
+            {compact ? (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h6v6H4zM14 6h6v6h-6zM4 16h6v4H4zM14 16h6v4h-6z" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            )}
+          </button>
           <button
             onClick={handleRefresh}
             disabled={refreshing}
@@ -97,19 +163,31 @@ export default function DevicesPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div
+        className={
+          compact
+            ? "grid grid-cols-1 gap-2"
+            : "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+        }
+      >
         {loading && list.length === 0
           ? Array.from({ length: 3 }).map((_, i) => (
               <div key={`skel-${i}`} className="animate-in fade-in duration-300" style={{ animationDelay: `${i * 60}ms` }}>
                 <DeviceCardSkeleton />
               </div>
             ))
-          : list.map((device, index) => (
+          : filtered.map((device, index) => (
               <div key={device.id} className="animate-in fade-in zoom-in-95 duration-500 fill-mode-both" style={{ animationDelay: `${index * 50}ms` }}>
-                <DeviceCard device={device} />
+                <DeviceCard device={device} compact={compact} />
               </div>
             ))}
       </div>
+
+      {!loading && list.length > 0 && filtered.length === 0 && (
+        <div className="flex flex-col items-center justify-center p-10 border border-white/5 border-dashed rounded-2xl bg-zinc-900/20 mt-6 text-zinc-500 text-sm">
+          No {filterType} devices.
+        </div>
+      )}
 
       {!loading && !list.length && !showForm && (
         <div className="flex flex-col items-center justify-center p-16 border border-white/5 border-dashed rounded-3xl bg-zinc-900/20 mt-8">
