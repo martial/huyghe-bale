@@ -56,10 +56,13 @@ export default function SystemWarnings() {
     const poll = () => {
       getHealth()
         .then(setHealth)
-        .catch(() => setHealth(null));
+        .catch(() => {
+          // Keep the last-known state on a transient fetch failure so the
+          // banner doesn't flicker in/out every poll.
+        });
     };
     poll();
-    const timer = setInterval(poll, 5_000);
+    const timer = setInterval(poll, 10_000);
     return () => clearInterval(timer);
   }, []);
 

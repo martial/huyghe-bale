@@ -104,6 +104,7 @@ export function monitorDeviceStatus(
     statuses: Record<string, DeviceStatus>,
     versions: Record<string, DeviceVersion>,
     systemInfo: Record<string, DeviceSystemInfo>,
+    lastSeen: Record<string, number>,
   ) => void,
 ) {
   const eventSource = new EventSource("/api/v1/devices/status");
@@ -116,9 +117,9 @@ export function monitorDeviceStatus(
     try {
       const data = JSON.parse(event.data);
       if (data.statuses) {
-        onStatusUpdate(data.statuses, data.versions || {}, data.system_info || {});
+        onStatusUpdate(data.statuses, data.versions || {}, data.system_info || {}, data.last_seen || {});
       } else {
-        onStatusUpdate(data as Record<string, DeviceStatus>, {}, {});
+        onStatusUpdate(data as Record<string, DeviceStatus>, {}, {}, {});
       }
     } catch (e) {
       console.error("[HeartbeatSSE] Parse error:", e);

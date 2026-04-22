@@ -5,6 +5,7 @@ import { useDeviceStore } from "../../stores/device-store";
 import { useNotificationStore } from "../../stores/notification-store";
 import { useVentsStatus } from "../../hooks/use-vents-status";
 import { useTrolleyStatus } from "../../hooks/use-trolley-status";
+import { useNow, formatAgo } from "../../hooks/use-now";
 import VentsHero from "./VentsHero";
 import TrolleyHero from "./TrolleyHero";
 import VentsTestPanel from "./VentsTestPanel";
@@ -137,6 +138,9 @@ export default function DeviceCard({ device, compact = false }: { device: Device
   const isUpdating = useDeviceStore((s) => s.updatingDevices.has(device.id));
   const isRestarting = useDeviceStore((s) => s.restartingDevices.has(device.id));
   const updateLog = useDeviceStore((s) => s.updateLogs[device.id]);
+  const lastSeen = useDeviceStore((s) => s.deviceLastSeen[device.id]);
+  const now = useNow(1000);
+  const lastSeenLabel = formatAgo(lastSeen, now);
   const effectiveType: DeviceType = device.type || "vents";
 
   const isOutdated =
@@ -238,6 +242,9 @@ export default function DeviceCard({ device, compact = false }: { device: Device
           </div>
           <div className="mt-0.5 flex items-center gap-x-3 gap-y-0.5 flex-wrap text-[11px] text-zinc-500 font-mono">
             <span>{device.ip_address || "—"}:{device.osc_port}</span>
+            <span className={isOnline ? "text-zinc-400" : "text-zinc-600"} title="Last OSC message received">
+              {lastSeenLabel}
+            </span>
             {!isRestarting && isOnline && deviceVersion && (
               isOutdated ? (
                 <span className="text-orange-400">update available</span>
@@ -319,6 +326,9 @@ export default function DeviceCard({ device, compact = false }: { device: Device
           <div className="mt-0.5 flex items-center gap-x-3 gap-y-0.5 flex-wrap text-[11px] text-zinc-500 font-mono">
             <span>{device.ip_address || "—"}:{device.osc_port}</span>
             {device.hardware_id && <span className="text-zinc-600">{device.hardware_id}</span>}
+            <span className={isOnline ? "text-zinc-400" : "text-zinc-600"} title="Last OSC message received">
+              seen {lastSeenLabel}
+            </span>
 
             {/* Version state: show restarting spinner, version hash, or update pill */}
             {(isRestarting || (isOnline && !deviceVersion)) && (

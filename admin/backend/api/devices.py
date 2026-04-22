@@ -239,8 +239,19 @@ def device_status_stream():
                     except Exception:
                         pass
 
+            # Map device.id → unix seconds of the last OSC message we got
+            # from that IP. Frontend uses this to render a live "Xs ago".
+            last_seen_map = {}
+            for device in devices:
+                ip = device.get("ip_address")
+                if not ip:
+                    continue
+                ts = receiver.last_seen.get(ip, 0)
+                if ts:
+                    last_seen_map[device["id"]] = ts
+
             logger.debug("Device statuses: %s (last_seen: %s)", statuses, receiver.last_seen)
-            yield f"data: {json.dumps({'statuses': statuses, 'versions': cached_versions, 'system_info': cached_system_info})}\n\n"
+            yield f"data: {json.dumps({'statuses': statuses, 'versions': cached_versions, 'system_info': cached_system_info, 'last_seen': last_seen_map})}\n\n"
             time.sleep(1.0)
 
     return Response(generate(), mimetype="text/event-stream")

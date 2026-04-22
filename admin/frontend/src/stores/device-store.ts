@@ -7,6 +7,8 @@ interface DeviceState {
   deviceStatuses: Record<string, DeviceStatus>;
   deviceVersions: Record<string, DeviceVersion>;
   deviceSystemInfo: Record<string, DeviceSystemInfo>;
+  /** Unix-seconds timestamp of the last OSC message we received from each device. */
+  deviceLastSeen: Record<string, number>;
   latestVersion: LatestVersion | null;
   updatingDevices: Set<string>;
   restartingDevices: Set<string>;
@@ -32,6 +34,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   deviceStatuses: {},
   deviceVersions: {},
   deviceSystemInfo: {},
+  deviceLastSeen: {},
   latestVersion: null,
   updatingDevices: new Set(),
   restartingDevices: new Set(),
@@ -155,10 +158,11 @@ let cleanupStatusStream: (() => void) | null = null;
 
 function startStatusStream() {
   cleanupStatusStream?.();
-  cleanupStatusStream = api.monitorDeviceStatus((statuses, versions, systemInfo) => {
+  cleanupStatusStream = api.monitorDeviceStatus((statuses, versions, systemInfo, lastSeen) => {
     const state = useDeviceStore.getState();
     const prevStatuses = state.deviceStatuses;
     const prevVersions = state.deviceVersions;
+    const prevLastSeen = state.deviceLastSeen;
 
     let statusChanged = false;
     for (const id in statuses) {
@@ -172,6 +176,18 @@ function startStatusStream() {
 
     const versionChanged = JSON.stringify(versions) !== JSON.stringify(prevVersions);
     const sysInfoChanged = JSON.stringify(systemInfo) !== JSON.stringify(state.deviceSystemInfo);
+
+    // last_seen ticks every second on the backend — only update the store
+    // when a device actually moves so the rest of the UI doesn't churn.
+    let lastSeenChanged = false;
+    for (const id in lastSeen) {
+      if (prevLastSeen[id] !== lastSeen[id]) { lastSeenChanged = true; break; }
+    }
+    if (!lastSeenChanged) {
+      for (const id in prevLastSeen) {
+        if (!(id in lastSeen)) { lastSeenChanged = true; break; }
+      }
+    }
 
     // Clear restarting flag once we get a fresh version for that device
     const restarting = state.restartingDevices;
@@ -187,11 +203,12 @@ function startStatusStream() {
       }
     }
 
-    if (statusChanged || versionChanged || sysInfoChanged) {
+    if (statusChanged || versionChanged || sysInfoChanged || lastSeenChanged) {
       const update: Record<string, unknown> = {};
       if (statusChanged) update.deviceStatuses = statuses;
       if (versionChanged) update.deviceVersions = versions;
       if (sysInfoChanged) update.deviceSystemInfo = systemInfo;
+      if (lastSeenChanged) update.deviceLastSeen = lastSeen;
       useDeviceStore.setState(update);
     }
   });

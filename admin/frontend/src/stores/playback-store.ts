@@ -61,7 +61,21 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
 
   async fetchStatus() {
     const status = await api.getPlaybackStatus();
-    console.log("[Playback] status:", status);
+    // Background poll runs every 2s — skip the setState (and the cascade of
+    // re-renders into the sidebar) when nothing actually changed.
+    const prev = get().status;
+    if (
+      prev.playing === status.playing &&
+      prev.paused === status.paused &&
+      prev.elapsed === status.elapsed &&
+      prev.total_duration === status.total_duration &&
+      prev.current_values.a === status.current_values.a &&
+      prev.current_values.b === status.current_values.b &&
+      prev.type === status.type &&
+      prev.id === status.id
+    ) {
+      return;
+    }
     set({ status });
   },
 
