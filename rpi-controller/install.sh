@@ -65,10 +65,14 @@ VENV_OPTS=""
 PIP_EXTRA=""
 EXTRA_DEPS=""
 SKIP_PIP_UPGRADE=0
+APT_DEPS=""
 
 case "$PI_MODEL" in
     *"Pi 5"*)
         EXTRA_DEPS="rpi-lgpio>=0.4"
+        # rpi-lgpio pulls in lgpio; on recent RPi OS the piwheels wheel is
+        # source-only for Python 3.13, so we need swig + liblgpio-dev to build it.
+        APT_DEPS="swig liblgpio-dev"
         ;;
     *"Pi 3"*|*"Pi 2"*)
         VENV_OPTS="--system-site-packages"
@@ -79,6 +83,18 @@ case "$PI_MODEL" in
         VENV_OPTS="--system-site-packages"
         ;;
 esac
+
+if [ -n "$APT_DEPS" ]; then
+    # shellcheck disable=SC2086
+    missing=$(for pkg in $APT_DEPS; do dpkg -s "$pkg" >/dev/null 2>&1 || echo "$pkg"; done)
+    if [ -n "$missing" ]; then
+        echo "Installation des paquets systeme manquants : $missing"
+        # shellcheck disable=SC2086
+        sudo apt-get update -qq
+        # shellcheck disable=SC2086
+        sudo apt-get install -y $missing
+    fi
+fi
 
 echo "Creation de l'environnement virtuel..."
 if [ -d "$APP_DIR/venv" ] && [ -n "$VENV_OPTS" ]; then
