@@ -196,12 +196,73 @@ class PlaybackEngine:
             self._seek_offset = elapsed - (time.monotonic() - self._start_time)
             self.elapsed = elapsed
 
+    # Order events at the same time deterministically. Safety-critical
+    # commands run last so "enable → do things → stop" reads correctly.
+    _TROLLEY_EVENT_ORDER = {
+        "enable": 0, "dir": 1, "speed": 2,
+        "position": 3, "step": 4,
+        "stop": 5, "home": 6,
+    }
+
+    def _trolley_events(self):
+        """Sorted (time, order, event) list for fast cursor traversal."""
+        tl = self._timeline or {}
+        events = tl.get("events") or []
+        decorated = sorted(
+            (
+                (float(ev.get("time", 0)),
+                 self._TROLLEY_EVENT_ORDER.get(ev.get("command", ""), 99),
+                 ev)
+                for ev in events
+                if isinstance(ev, dict) and ev.get("command") in self._TROLLEY_EVENT_ORDER
+            )
+        )
+        return decorated
+
+    def _fire_trolley_event(self, ev):
+        """Send one /trolley/<command> OSC message per active device."""
+        cmd = ev.get("command")
+        value = ev.get("value")
+        address = f"/trolley/{cmd}"
+        # Commands without a value still need some OSC arg — pythonosc won't
+        # send an empty payload. `0` is conventional.
+        if cmd in ("stop", "home"):
+            osc_value = 0
+        elif cmd in ("enable", "dir", "step"):
+            osc_value = int(value) if value is not None else 0
+        else:  # speed, position
+            osc_value = float(value) if value is not None else 0.0
+        for device in self._devices:
+            try:
+                self.osc.send(
+                    device["ip_address"],
+                    device.get("osc_port", 9000),
+                    address,
+                    osc_value,
+                )
+            except Exception as e:
+                logger.warning("Trolley event OSC send error to %s: %s",
+                               device.get("id"), e)
+
+    def _send_trolley_stop(self):
+        """Fire /trolley/stop to every playback target. Used at timeline end."""
+        for device in self._devices:
+            try:
+                self.osc.send(device["ip_address"],
+                              device.get("osc_port", 9000),
+                              "/trolley/stop", 0)
+            except Exception as e:
+                logger.warning("Trolley implicit-stop OSC error to %s: %s",
+                               device.get("id"), e)
+
     def _run_trolley_timeline(self):
-        """Trolley timeline playback loop — single lane, /trolley/position target."""
-        interval = 1.0 / self.tick_rate
+        """Event-based trolley playback: fire each bang at its scheduled time."""
+        interval = 1.0 / max(1, self.tick_rate)
         start_time = time.monotonic()
         self._start_time = start_time
         self._seek_offset = 0.0
+        cursor = 0
+        events = self._trolley_events()
 
         while not self._stop_event.is_set():
             self._pause_event.wait()
@@ -211,37 +272,46 @@ class PlaybackEngine:
             elapsed = time.monotonic() - start_time + self._seek_offset
 
             with self._lock:
-                if elapsed >= self.total_duration:
+                looped = False
+                if self.total_duration > 0 and elapsed >= self.total_duration:
+                    # Safety: implicit stop at end of a run, then either loop
+                    # or break. Loop is driven by the timeline's total duration
+                    # (not by a separate flag on trolley timelines).
+                    self._send_trolley_stop()
                     elapsed = elapsed % self.total_duration
                     self._seek_offset -= self.total_duration
+                    cursor = 0
+                    looped = True
                 self.elapsed = elapsed
-                self._evaluate_and_send_trolley(self._timeline, elapsed)
+
+                # Seek support: if elapsed moved backwards (seek() or loop wrap),
+                # re-find cursor.
+                if cursor > 0 and cursor <= len(events):
+                    prev_ev_time = events[cursor - 1][0]
+                    if elapsed < prev_ev_time:
+                        cursor = 0
+
+                # Fire every event whose time has arrived.
+                while cursor < len(events) and events[cursor][0] <= elapsed:
+                    self._fire_trolley_event(events[cursor][2])
+                    cursor += 1
+
+                _ = looped  # currently unused but kept for future per-loop hooks
 
             next_tick = start_time + (int((time.monotonic() - start_time) / interval) + 1) * interval
             sleep_time = next_tick - time.monotonic()
             if sleep_time > 0:
                 self._stop_event.wait(sleep_time)
 
+        # Exit path: make sure the trolley stops cleanly, whether we were
+        # stopped externally or ran off the end.
         with self._lock:
             self.playing = False
+        if not self._stop_event.is_set():
+            self._send_trolley_stop()
 
-    def _evaluate_and_send_trolley(self, timeline: dict, current_time: float):
-        """Evaluate the single-lane trolley timeline and push /trolley/position."""
-        lane = timeline.get("lane") or {}
-        points = lane.get("points", []) or []
-        value = evaluate_lane(points, current_time)
-        # Clamp to [0, 1] — output_cap intentionally not applied; position is
-        # physical, not brightness.
-        value = max(0.0, min(1.0, value))
-        self.current_values["position"] = value
-
-        for device in self._devices:
-            try:
-                ip = device["ip_address"]
-                port = device.get("osc_port", 9000)
-                self.osc.send(ip, port, "/trolley/position", value)
-            except Exception as e:
-                logger.warning("Trolley OSC send error to %s: %s", device.get("id"), e)
+    # The old continuous /trolley/position per-tick follower is gone. The new
+    # trolley controller has a Pi-side follow loop; we only send bangs.
 
     def _run_timeline(self):
         """Main timeline playback loop."""
@@ -351,7 +421,10 @@ class PlaybackEngine:
             try:
                 ip = device["ip_address"]
                 port = device.get("osc_port", 9000)
-                self.osc.send(ip, port, "/gpio/a", self.current_values["a"])
-                self.osc.send(ip, port, "/gpio/b", self.current_values["b"])
+                # Vents are Peltier-based now: lane A → fan 1 PWM, lane B → fan 2 PWM.
+                # Peltiers and target temperature are controlled via the panel,
+                # not via timelines. Timeline plays fan curves only.
+                self.osc.send(ip, port, "/vents/fan/1", self.current_values["a"])
+                self.osc.send(ip, port, "/vents/fan/2", self.current_values["b"])
             except Exception as e:
                 logger.warning("OSC send error to %s: %s", device.get("id"), e)

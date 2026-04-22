@@ -1,28 +1,21 @@
 import { useNavigate } from "react-router";
-import type { Point, CurveType } from "../../types/timeline";
-import type { TrolleyTimeline } from "../../types/trolley";
+import type { TrolleyTimeline, TrolleyEvent } from "../../types/trolley";
 import { usePlaybackStore } from "../../stores/playback-store";
 import { useDeviceStore } from "../../stores/device-store";
 
-const curveTypes: CurveType[] = [
-  "linear", "step", "ease-in", "ease-out", "ease-in-out", "sine", "exponential", "bezier",
-];
-
 interface Props {
   timeline: TrolleyTimeline;
-  selectedPoint: Point | null;
+  selectedEvent: TrolleyEvent | null;
   onNameChange: (name: string) => void;
   onDurationChange: (duration: number) => void;
-  onCurveTypeChange: (curveType: CurveType) => void;
   onSave: () => void;
 }
 
 export default function TrolleyToolbar({
   timeline,
-  selectedPoint,
+  selectedEvent,
   onNameChange,
   onDurationChange,
-  onCurveTypeChange,
   onSave,
 }: Props) {
   const navigate = useNavigate();
@@ -70,23 +63,17 @@ export default function TrolleyToolbar({
           <span>s</span>
         </label>
 
-        {selectedPoint && (
-          <div className="flex items-center gap-2 ml-4 pl-4 border-l border-zinc-800/60">
-            <span className="text-xs text-zinc-500">Curve:</span>
-            <select
-              value={selectedPoint.curve_type}
-              onChange={(e) => onCurveTypeChange(e.target.value as CurveType)}
-              className="bg-zinc-800 border border-zinc-700/50 rounded-lg px-2 py-0.5 text-xs text-zinc-200 focus:outline-none focus:border-sky-500/50 transition-colors"
-            >
-              {curveTypes.map((ct) => (
-                <option key={ct} value={ct}>
-                  {ct === "bezier" ? "custom" : ct}
-                </option>
-              ))}
-            </select>
-            <span className="text-xs text-zinc-600 font-mono">
-              t={selectedPoint.time.toFixed(1)}s pos={selectedPoint.value.toFixed(3)}
+        {selectedEvent && (
+          <div className="flex items-center gap-2 ml-4 pl-4 border-l border-zinc-800/60 text-xs text-zinc-500">
+            <span className="font-medium text-zinc-300">{selectedEvent.command}</span>
+            <span className="font-mono">
+              t={selectedEvent.time.toFixed(2)}s
             </span>
+            {selectedEvent.value !== undefined && (
+              <span className="font-mono">
+                v={selectedEvent.value}
+              </span>
+            )}
           </div>
         )}
 

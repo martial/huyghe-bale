@@ -34,7 +34,7 @@ export default function TrolleyTimelineList() {
                 {tl.duration}s
               </span>
               <span className="text-zinc-600">&bull;</span>
-              <span>{tl.points} position points</span>
+              <span>{tl.events} events</span>
               {tl.created_at && (
                 <>
                   <span className="text-zinc-600">&bull;</span>
