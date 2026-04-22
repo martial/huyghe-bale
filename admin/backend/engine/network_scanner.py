@@ -8,6 +8,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pythonosc.udp_client import SimpleUDPClient
 
+# On Windows, every subprocess without this flag pops a transient cmd.exe
+# window — harmless in a console app but VERY visible in the PyInstaller
+# --windowed bundle, and a ping sweep runs ~254 of them in parallel.
+_SUBPROCESS_NO_WINDOW = (
+    {"creationflags": 0x08000000} if platform.system() == "Windows" else {}
+)
+
 
 def detect_local_subnet() -> str:
     """Detect the local /24 subnet by finding this machine's LAN IP."""
@@ -18,6 +25,7 @@ def detect_local_subnet() -> str:
                 ["ip", "-4", "-o", "addr", "show"],
                 timeout=5,
                 text=True,
+                **_SUBPROCESS_NO_WINDOW,
             )
             for line in out.splitlines():
                 parts = line.split()
@@ -64,16 +72,24 @@ def _get_local_ip() -> str:
 
 
 def ping_host(ip: str) -> bool:
-    """Ping a host with 1s timeout. Returns True if reachable."""
+    """Ping a host with ~1s timeout. Returns True if reachable."""
     system = platform.system()
-    # macOS: -W is milliseconds; Linux: -W is seconds
-    timeout_flag = ["-W", "1000"] if system == "Darwin" else ["-W", "1"]
+    if system == "Windows":
+        # Windows: -n count, -w timeout_ms
+        cmd = ["ping", "-n", "1", "-w", "1000", ip]
+    elif system == "Darwin":
+        # macOS: -c count, -W timeout_ms
+        cmd = ["ping", "-c", "1", "-W", "1000", ip]
+    else:
+        # Linux: -c count, -W timeout_s
+        cmd = ["ping", "-c", "1", "-W", "1", ip]
     try:
         result = subprocess.run(
-            ["ping", "-c", "1"] + timeout_flag + [ip],
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=3,
+            **_SUBPROCESS_NO_WINDOW,
         )
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):
