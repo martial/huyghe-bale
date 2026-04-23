@@ -160,4 +160,6 @@ else:
         js_api=Api(),
     )
 
-webview.start()
+# debug=True exposes the WebView2 / WKWebView DevTools (right-click →
+# "Inspect element") so on-site diagnostics don't require a source checkout.
+webview.start(debug=True)
