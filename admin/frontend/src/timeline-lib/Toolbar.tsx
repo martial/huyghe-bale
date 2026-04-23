@@ -33,9 +33,14 @@ export default function Toolbar({
   const navigate = useNavigate();
   const isPlaying = usePlaybackStore((s) => s.status.playing);
   const isPaused = usePlaybackStore((s) => s.status.paused);
+  const playingId = usePlaybackStore((s) => s.status.id);
   const start = usePlaybackStore((s) => s.start);
   const pause = usePlaybackStore((s) => s.pause);
   const resume = usePlaybackStore((s) => s.resume);
+  // Only treat the play/pause toggle as "ours" when this exact timeline is
+  // what's currently playing. Otherwise the button must act as "start this
+  // one" (handlePlay) — the backend's start handler stops any prior run.
+  const isOurs = isPlaying && playingId === timeline.id;
   const devices = useDeviceStore((s) => s.list);
   const fetchDevices = useDeviceStore((s) => s.fetchList);
 
@@ -68,27 +73,9 @@ export default function Toolbar({
       selectedIds.length > 0
         ? selectedIds.filter((id) => eligible.some((d) => d.id === id))
         : eligible.map((d) => d.id);
-    console.log("[Toolbar] handlePlay", {
-      deviceType,
-      timelineId: timeline.id,
-      eligibleCount: eligible.length,
-      selectedIds,
-      idsToSend: ids,
-    });
-    if (ids.length === 0) {
-      console.warn("[Toolbar] handlePlay aborted — no eligible device ids");
-      return;
-    }
+    if (ids.length === 0) return;
     const serverType = deviceType === "vents" ? "timeline" : "trolley-timeline";
-    try {
-      await start(serverType, timeline.id, ids);
-      console.log(
-        "[Toolbar] start() resolved — store status:",
-        usePlaybackStore.getState().status,
-      );
-    } catch (e) {
-      console.error("[Toolbar] start() threw:", e);
-    }
+    await start(serverType, timeline.id, ids);
   }
 
   const isLooping = timeline.loop !== false;
@@ -159,17 +146,17 @@ export default function Toolbar({
           </button>
           <button
             onClick={() => {
-              if (isPlaying && !isPaused) pause();
-              else if (isPlaying && isPaused) resume();
+              if (isOurs && !isPaused) pause();
+              else if (isOurs && isPaused) resume();
               else handlePlay();
             }}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
-              isPlaying && !isPaused
+              isOurs && !isPaused
                 ? "bg-yellow-600/80 hover:bg-yellow-500"
                 : "bg-green-600 hover:bg-green-500"
             }`}
           >
-            {isPlaying && !isPaused ? "Pause" : "Play"}
+            {isOurs && !isPaused ? "Pause" : "Play"}
           </button>
           {!readonly && (
             <button

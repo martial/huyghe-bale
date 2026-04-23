@@ -125,12 +125,6 @@ export default function Editor({ timeline, onChange, onSave, backPath }: Props) 
   // Subscribing via selectors so the Editor re-renders when status.id or
   // playing flips — a getState() read wouldn't notify React.
   const showCursor = isPlaying && playingTimelineId === local.id;
-  console.log("[Editor] render", {
-    isPlaying,
-    playingTimelineId,
-    localId: local.id,
-    showCursor,
-  });
 
   // Find selected curve point (for the inspector).
   const selectedPointInfo = (() => {

@@ -37,11 +37,6 @@ function PlaybackCursorImpl({
 
   useEffect(() => {
     const s = usePlaybackStore.getState().status;
-    console.log("[PlaybackCursor] mount — priming anchor", {
-      elapsed: s.elapsed,
-      playing: s.playing,
-      id: s.id,
-    });
     anchorRef.current = { elapsed: s.elapsed, time: performance.now() };
     write(s.elapsed);
 
