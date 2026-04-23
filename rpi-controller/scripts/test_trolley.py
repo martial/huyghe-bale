@@ -59,13 +59,13 @@ class TrolleyBench:
     def __init__(self) -> None:
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
-        GPIO.setup(PIN_STEP_DIR, GPIO.OUT)
-        GPIO.setup(PIN_STEP_PUL, GPIO.OUT)
-        GPIO.setup(PIN_STEP_ENA, GPIO.OUT)
+        # On Pi 5 / rpi-lgpio, GPIO.setup(OUT) without `initial=` reads the
+        # pin before claiming it and errors with 'GPIO not allocated'.
+        # Passing initial=… skips the read.
+        GPIO.setup(PIN_STEP_DIR, GPIO.OUT, initial=GPIO.HIGH)  # default forward
+        GPIO.setup(PIN_STEP_PUL, GPIO.OUT, initial=GPIO.LOW)
+        GPIO.setup(PIN_STEP_ENA, GPIO.OUT, initial=GPIO.HIGH)  # disabled (active LOW)
         GPIO.setup(PIN_LIM_SWITCH, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-        GPIO.output(PIN_STEP_PUL, GPIO.LOW)
-        GPIO.output(PIN_STEP_DIR, GPIO.HIGH)
-        GPIO.output(PIN_STEP_ENA, GPIO.HIGH)  # disabled
 
     def set_ena(self) -> None:
         state = ask_int("Driver enable (1=enabled/ENA LOW, 0=disabled)", 0, 1, 1)

@@ -72,12 +72,13 @@ class VentsBench:
     def __init__(self) -> None:
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
+        # On Pi 5 / rpi-lgpio, GPIO.setup(OUT) without `initial=` reads the
+        # pin before it's been claimed and errors with 'GPIO not allocated'.
         for pin in PEL:
-            GPIO.setup(pin, GPIO.OUT)
-            GPIO.output(pin, GPIO.LOW)
+            GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
         self.pwms = []
         for pin in FAN_PWM_PINS:
-            GPIO.setup(pin, GPIO.OUT)
+            GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
             p = GPIO.PWM(pin, VENTS_FAN_PWM_FREQ)
             p.start(0)
             self.pwms.append(p)
