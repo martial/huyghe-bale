@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import type { Timeline, Point, CurveType } from "../../types/timeline";
 import { usePlaybackStore } from "../../stores/playback-store";
 import { useDeviceStore } from "../../stores/device-store";
+import { useNotificationStore } from "../../stores/notification-store";
 import { downloadFromUrl } from "../../lib/download";
 import DeviceMultiSelect from "../playback/DeviceMultiSelect";
 
@@ -36,6 +37,7 @@ export default function TimelineToolbar({
   const pause = usePlaybackStore((s) => s.pause);
   const resume = usePlaybackStore((s) => s.resume);
   const { list: devices, fetchList: fetchDevices } = useDeviceStore();
+  const notify = useNotificationStore((s) => s.notify);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   // Default the selection to every vents device when the list first lands.
@@ -51,11 +53,24 @@ export default function TimelineToolbar({
       devs = useDeviceStore.getState().list;
     }
     const vents = devs.filter((d) => (d.type ?? "vents") === "vents");
+    if (vents.length === 0) {
+      notify("info", "No vents devices registered — add one on the Devices page.");
+      return;
+    }
     const ids = selectedIds.length > 0
       ? selectedIds.filter((id) => vents.some((d) => d.id === id))
       : vents.map((d) => d.id);
-    if (ids.length === 0) return;
-    await start("timeline", timeline.id, ids);
+    if (ids.length === 0) {
+      notify("info", "No vents targets selected — pick at least one device.");
+      return;
+    }
+    try {
+      await start("timeline", timeline.id, ids);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[play] vents timeline start failed:", e);
+      notify("error", `Failed to start playback: ${msg}`);
+    }
   }
 
   // Default to true to preserve historical behaviour.
