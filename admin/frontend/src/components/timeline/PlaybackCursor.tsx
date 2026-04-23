@@ -38,20 +38,33 @@ function PlaybackCursorImpl({
     anchorRef.current = { elapsed: s.elapsed, time: performance.now() };
     write(s.elapsed);
 
-    // Resync the anchor on every store status change (500 ms polls +
-    // seeks + pause/resume). Direct store.subscribe — no component re-render.
+    // The server's reported `elapsed` trails our client-side extrapolation by
+    // roughly one poll's worth of network / queuing latency. Resyncing on every
+    // poll snaps the cursor backward → sawtooth lag. Resync ONLY on explicit
+    // discontinuities (play/pause/stop/new-timeline/seek > 0.5 s), and let the
+    // smooth rAF extrapolation carry us between them.
+    const SEEK_THRESHOLD_S = 0.5;
     const unsubscribe = usePlaybackStore.subscribe((state, prev) => {
-      if (
-        state.status.elapsed !== prev.status.elapsed ||
-        state.status.playing !== prev.status.playing ||
-        state.status.paused !== prev.status.paused
-      ) {
-        anchorRef.current = { elapsed: state.status.elapsed, time: performance.now() };
+      const cur = state.status;
+      const old = prev.status;
+      const playingChanged = cur.playing !== old.playing;
+      const pausedChanged = cur.paused !== old.paused;
+      const idChanged = cur.id !== old.id;
+
+      const extrapolated =
+        anchorRef.current.elapsed +
+        (performance.now() - anchorRef.current.time) / 1000;
+      const drift = cur.elapsed - extrapolated;
+      const looksLikeSeek = Math.abs(drift) > SEEK_THRESHOLD_S;
+
+      if (playingChanged || pausedChanged || idChanged || looksLikeSeek) {
+        anchorRef.current = { elapsed: cur.elapsed, time: performance.now() };
         // Paint once on pause/stop/seek so the cursor lands on the authoritative frame.
-        if (!state.status.playing || state.status.paused) {
-          write(state.status.elapsed);
+        if (!cur.playing || cur.paused) {
+          write(cur.elapsed);
         }
       }
+      // else: ordinary 500 ms poll, server slightly behind us — keep drifting.
     });
 
     let raf = 0;
