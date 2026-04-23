@@ -18,24 +18,26 @@ export default function TrolleyEditor({ timeline }: { timeline: TrolleyTimeline 
   const notify = useNotificationStore((s) => s.notify);
   const [local, setLocal] = useState<TrolleyTimeline>(() => JSON.parse(JSON.stringify(timeline)));
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const isReadonly = !!timeline.readonly;
 
   useEffect(() => {
     setLocal(JSON.parse(JSON.stringify(timeline)));
     setSelectedId(null);
   }, [timeline]);
 
-  // Debounced auto-save
+  // Debounced auto-save — skipped for read-only examples.
   const isInitialMount = useRef(true);
   useEffect(() => {
     if (isInitialMount.current) {
       isInitialMount.current = false;
       return;
     }
+    if (isReadonly) return;
     const t = setTimeout(() => {
       saveSilent(local);
     }, 500);
     return () => clearTimeout(t);
-  }, [local, saveSilent]);
+  }, [local, saveSilent, isReadonly]);
 
   const isPlaying = usePlaybackStore((s) => s.status.playing);
   const isPaused = usePlaybackStore((s) => s.status.paused);
@@ -66,6 +68,7 @@ export default function TrolleyEditor({ timeline }: { timeline: TrolleyTimeline 
   );
 
   function addEvent(time: number, command: TrolleyCommand) {
+    if (isReadonly) return;
     const defaultValueFor = (c: TrolleyCommand): number | undefined => {
       switch (c) {
         case "position":
@@ -91,6 +94,7 @@ export default function TrolleyEditor({ timeline }: { timeline: TrolleyTimeline 
   }
 
   function moveEvent(id: string, time: number) {
+    if (isReadonly) return;
     setLocal((prev) => ({
       ...prev,
       events: prev.events.map((e) => (e.id === id ? { ...e, time } : e)),
@@ -98,6 +102,7 @@ export default function TrolleyEditor({ timeline }: { timeline: TrolleyTimeline 
   }
 
   function updateEvent(next: TrolleyEvent) {
+    if (isReadonly) return;
     setLocal((prev) => ({
       ...prev,
       events: prev.events.map((e) => (e.id === next.id ? next : e)),
@@ -105,6 +110,7 @@ export default function TrolleyEditor({ timeline }: { timeline: TrolleyTimeline 
   }
 
   function deleteEvent(id: string) {
+    if (isReadonly) return;
     setLocal((prev) => ({
       ...prev,
       events: prev.events.filter((e) => e.id !== id),
@@ -113,6 +119,7 @@ export default function TrolleyEditor({ timeline }: { timeline: TrolleyTimeline 
   }
 
   async function handleSave() {
+    if (isReadonly) return;
     await save(local);
     notify("success", "Trolley timeline saved");
   }
@@ -148,12 +155,22 @@ export default function TrolleyEditor({ timeline }: { timeline: TrolleyTimeline 
       <TrolleyToolbar
         timeline={local}
         selectedEvent={selectedEvent}
-        onNameChange={(name) => setLocal((prev) => ({ ...prev, name }))}
+        readonly={isReadonly}
+        onNameChange={(name) => !isReadonly && setLocal((prev) => ({ ...prev, name }))}
         onDurationChange={(duration) =>
+          !isReadonly &&
           setLocal((prev) => ({ ...prev, duration: Math.max(1, duration) }))
         }
         onSave={handleSave}
       />
+
+      {isReadonly && (
+        <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-[11px] text-amber-200">
+          This is a built-in example. Use{" "}
+          <span className="font-semibold">Duplicate</span> (from the Trolleys
+          list) to get an editable copy.
+        </div>
+      )}
 
       <TrolleyEventTrack
         timelineId={local.id}

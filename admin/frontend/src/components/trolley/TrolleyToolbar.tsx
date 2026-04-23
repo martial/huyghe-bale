@@ -8,6 +8,7 @@ import DeviceMultiSelect from "../playback/DeviceMultiSelect";
 interface Props {
   timeline: TrolleyTimeline;
   selectedEvent: TrolleyEvent | null;
+  readonly?: boolean;
   onNameChange: (name: string) => void;
   onDurationChange: (duration: number) => void;
   onSave: () => void;
@@ -16,6 +17,7 @@ interface Props {
 export default function TrolleyToolbar({
   timeline,
   selectedEvent,
+  readonly = false,
   onNameChange,
   onDurationChange,
   onSave,
@@ -60,19 +62,23 @@ export default function TrolleyToolbar({
 
         <input
           value={timeline.name}
+          readOnly={readonly}
+          disabled={readonly}
           onChange={(e) => onNameChange(e.target.value)}
-          className="bg-transparent border-b border-zinc-700 focus:border-sky-400 outline-none text-sm font-medium px-1 py-0.5 w-48 transition-colors"
+          className="bg-transparent border-b border-zinc-700 focus:border-sky-400 outline-none text-sm font-medium px-1 py-0.5 w-48 transition-colors disabled:opacity-60"
         />
 
         <label className="flex items-center gap-1 text-xs text-zinc-500">
           Duration
           <input
             value={timeline.duration}
+            readOnly={readonly}
+            disabled={readonly}
             onChange={(e) => onDurationChange(Number(e.target.value))}
             type="number"
             min={1}
             step={1}
-            className="bg-zinc-800 border border-zinc-700/50 rounded-lg px-2 py-0.5 w-16 text-sm text-zinc-200 font-mono focus:outline-none focus:border-sky-500/50 transition-colors"
+            className="bg-zinc-800 border border-zinc-700/50 rounded-lg px-2 py-0.5 w-16 text-sm text-zinc-200 font-mono focus:outline-none focus:border-sky-500/50 transition-colors disabled:opacity-60"
           />
           <span>s</span>
         </label>
@@ -111,12 +117,14 @@ export default function TrolleyToolbar({
           >
             {isPlaying && !isPaused ? "Pause" : "Play"}
           </button>
-          <button
-            onClick={onSave}
-            className="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 rounded-lg text-sm font-medium transition-all duration-200"
-          >
-            Save
-          </button>
+          {!readonly && (
+            <button
+              onClick={onSave}
+              className="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 rounded-lg text-sm font-medium transition-all duration-200"
+            >
+              Save
+            </button>
+          )}
         </div>
       </div>
     </div>

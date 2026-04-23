@@ -7,6 +7,9 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 interface PlaybackState {
   status: PlaybackStatus;
   polling: boolean;
+  /** Device IDs passed to the last successful start() call. Used by the
+   *  activity bar to enrich state transitions with names + IPs. */
+  lastDeviceIds: string[];
   start: (type: "timeline" | "orchestration" | "trolley-timeline", id: string, device_ids: string[]) => Promise<void>;
   stop: () => Promise<void>;
   pause: () => Promise<void>;
@@ -28,9 +31,11 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
     id: null,
   },
   polling: false,
+  lastDeviceIds: [],
 
   async start(type, id, device_ids) {
     await api.startPlayback({ type, id, device_ids });
+    set({ lastDeviceIds: device_ids });
     get().startPolling();
   },
 

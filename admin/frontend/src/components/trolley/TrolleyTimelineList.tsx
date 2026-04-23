@@ -26,8 +26,19 @@ export default function TrolleyTimelineList() {
           onClick={() => navigate(`/trolleys/${tl.id}`)}
         >
           <div className="flex-1 min-w-0">
-            <p className="text-xl font-medium text-white tracking-wide truncate group-hover:text-sky-50 transition-colors">
+            <p className="text-xl font-medium text-white tracking-wide truncate group-hover:text-sky-50 transition-colors flex items-center gap-2">
               {tl.name}
+              {tl.readonly && (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border bg-amber-500/10 text-amber-300 border-amber-500/30"
+                  title="Built-in example — duplicate to edit"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M12 11c.5 0 1-.2 1.4-.6.4-.4.6-.9.6-1.4 0-.5-.2-1-.6-1.4a2 2 0 00-2.8 0c-.4.4-.6.9-.6 1.4 0 .5.2 1 .6 1.4.4.4.9.6 1.4.6zM5 11V7a7 7 0 0114 0v4M5 11h14a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2z" />
+                  </svg>
+                  example
+                </span>
+              )}
             </p>
             <p className="text-sm text-zinc-400 mt-2 flex items-center gap-3">
               <span className="px-2.5 py-0.5 rounded-full bg-white/5 border border-white/10 text-xs font-medium text-sky-300/90 tracking-wider uppercase">
@@ -52,16 +63,18 @@ export default function TrolleyTimelineList() {
             >
               Duplicate
             </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                remove(tl.id);
-                notify("info", "Trolley timeline deleted");
-              }}
-              className="text-sm font-semibold text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 px-4 py-2.5 rounded-xl transition-all shadow-sm"
-            >
-              Delete
-            </button>
+            {!tl.readonly && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  remove(tl.id);
+                  notify("info", "Trolley timeline deleted");
+                }}
+                className="text-sm font-semibold text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 px-4 py-2.5 rounded-xl transition-all shadow-sm"
+              >
+                Delete
+              </button>
+            )}
           </div>
         </div>
       ))}

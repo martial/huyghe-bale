@@ -20,6 +20,8 @@ export interface TrolleyTimeline {
   duration: number;
   created_at?: string;
   events: TrolleyEvent[];
+  /** Built-in example — API rejects PUT/DELETE. Edit via Duplicate. */
+  readonly?: boolean;
 }
 
 export interface TrolleyTimelineSummary {
@@ -28,6 +30,7 @@ export interface TrolleyTimelineSummary {
   duration: number;
   events: number;
   created_at?: string;
+  readonly?: boolean;
 }
 
 export interface TrolleyStatus {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { usePlaybackStore } from "../../stores/playback-store";
+import { useDeviceStore } from "../../stores/device-store";
 import { getTrolleyTimeline } from "../../api/trolley";
 import type { TrolleyEvent } from "../../types/trolley";
 
@@ -60,10 +61,22 @@ export default function OscActivityBar() {
       const s = state.status;
       const p = prev.current;
 
+      // Resolve target device_ids → "name (ip)" for the log.
+      const formatTargets = (): string => {
+        const ids = state.lastDeviceIds;
+        if (!ids || ids.length === 0) return "";
+        const devices = useDeviceStore.getState().list;
+        const parts = ids
+          .map((id) => devices.find((d) => d.id === id))
+          .filter((d): d is NonNullable<typeof d> => !!d)
+          .map((d) => `${d.name || d.id} (${d.ip_address || "—"})`);
+        return parts.length ? ` → ${parts.join(", ")}` : "";
+      };
+
       // State transitions
       if (s.id !== p.id) {
         if (s.id) {
-          push("state", `▶ ${s.type ?? "playback"} · ${s.id}`);
+          push("state", `▶ ${s.type ?? "playback"} · ${s.id}${formatTargets()}`);
           // Pull the trolley event list so we can log each bang client-side.
           if (s.type === "trolley-timeline") {
             trolleyEvents.current = null;

@@ -22,15 +22,21 @@ Legacy `lane.points` schemas (continuous position curves) are translated
 to `position` events on load. No writable lane field remains.
 """
 
+import logging
+
 from flask import Blueprint, request, jsonify
 
 from storage.json_store import JsonStore
 from config import DATA_DIR
+from api.trolley_examples import EXAMPLES as BUILTIN_EXAMPLES
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint("trolley_timelines", __name__)
 store = JsonStore(DATA_DIR, "trolley_timelines", "trtl")
 
 _engine = None
+_examples_seeded = False
 
 VALID_COMMANDS = ("enable", "dir", "speed", "step", "stop", "home", "position")
 COMMANDS_WITH_VALUE = {"enable", "dir", "speed", "step", "position"}
@@ -39,6 +45,29 @@ COMMANDS_WITH_VALUE = {"enable", "dir", "speed", "step", "position"}
 def set_engine(engine):
     global _engine
     _engine = engine
+
+
+def _ensure_examples():
+    """Seed built-in example timelines on first list/get. Idempotent:
+    re-runs replace existing examples with the current code-defined
+    content (so shipping an updated example via git propagates), but
+    never touches user-created timelines."""
+    global _examples_seeded
+    if _examples_seeded:
+        return
+    for tl in BUILTIN_EXAMPLES:
+        # Normalise events through the same pipeline user data goes through.
+        payload = {
+            **tl,
+            "events": _normalize_events(tl.get("events", [])),
+        }
+        existing = store.get(tl["id"])
+        if existing:
+            store.update(tl["id"], payload)
+        else:
+            store.create(payload)
+            logger.info("Seeded example trolley timeline: %s", tl["id"])
+    _examples_seeded = True
 
 
 def _migrate_legacy(tl: dict) -> dict:
@@ -102,6 +131,7 @@ def _summary(tl: dict) -> dict:
         "duration": tl.get("duration", 0),
         "events": len(tl.get("events", [])),
         "created_at": tl.get("created_at"),
+        "readonly": bool(tl.get("readonly")),
     }
 
 
@@ -118,11 +148,13 @@ def _new(data: dict) -> dict:
 
 @bp.route("", methods=["GET"])
 def list_all():
+    _ensure_examples()
     return jsonify([_summary(tl) for tl in store.list_all()])
 
 
 @bp.route("/<tl_id>", methods=["GET"])
 def get_one(tl_id):
+    _ensure_examples()
     tl = store.get(tl_id)
     if not tl:
         return jsonify({"error": "Not found"}), 404
@@ -137,10 +169,14 @@ def create():
 
 @bp.route("/<tl_id>", methods=["PUT"])
 def update(tl_id):
+    existing = store.get(tl_id)
+    if existing and existing.get("readonly"):
+        return jsonify({"error": "This is a built-in example — duplicate it to edit."}), 403
     data = request.get_json() or {}
     # Clients always send `events` now; strip legacy `lane` if any.
     payload = dict(data)
     payload.pop("lane", None)
+    payload.pop("readonly", None)  # clients can't escalate themselves.
     if "events" in payload:
         payload["events"] = _normalize_events(payload["events"])
     updated = store.update(tl_id, payload)
@@ -156,6 +192,9 @@ def update(tl_id):
 
 @bp.route("/<tl_id>", methods=["DELETE"])
 def delete(tl_id):
+    existing = store.get(tl_id)
+    if existing and existing.get("readonly"):
+        return jsonify({"error": "This is a built-in example and can't be deleted."}), 403
     if store.delete(tl_id):
         return jsonify({"ok": True})
     return jsonify({"error": "Not found"}), 404
@@ -168,5 +207,6 @@ def duplicate(tl_id):
         return jsonify({"error": "Not found"}), 404
     copy = _migrate_legacy(dict(original))
     del copy["id"]
+    copy.pop("readonly", None)  # the copy is editable even if the original wasn't.
     copy["name"] = f"{copy.get('name', '')} (copy)"
     return jsonify(store.create(copy)), 201
