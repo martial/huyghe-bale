@@ -1,92 +1,138 @@
 #!/usr/bin/env python3
-"""Interactive bench test for the trolley controller, run DIRECTLY on the Pi.
+"""Interactive trolley hardware bench test — direct GPIO, no OSC, no controller.
 
-Bypasses OSC — calls the same `handle_*` functions the service uses.
-Stop the service first so it doesn't fight for the GPIO:
+Drives DIR / PUL / ENA and reads the limit switch directly.
 
-    sudo systemctl stop gpio-osc-trolley
-    sudo /opt/gpio-osc/venv/bin/python /opt/gpio-osc/scripts/test_trolley.py
+    sudo systemctl stop gpio-osc-trolley   # free up the GPIO
+    sudo .venv/bin/python rpi-controller/scripts/test_trolley.py
 
-(or from a git checkout: `sudo .venv/bin/python rpi-controller/scripts/test_trolley.py`).
+Menu:
+  e <0|1>               ENA pin (active LOW → 0 = driver enabled, 1 = disabled)
+  d <0|1>               DIR pin (0 = reverse toward home, 1 = forward)
+  pulse <n> [delay_ms]  send N step pulses, 2 ms between edges by default
+  lim                   read limit switch state (HIGH = at limit)
+  s                     print DIR / ENA / LIM state
+  h | ?                 help
+  q                     quit
 
-Heads-up: the stepper will move. Confirm the limit-switch wiring works
-before running `home` — a broken limit will drive the cart into the end.
+The `pulse` command stops early if the limit switch goes HIGH. For the
+trolley's typical Nema driver a 2 ms half-period ≈ 250 Hz pulse rate.
 """
 
 from __future__ import annotations
 
-import logging
 import os
+import shlex
 import sys
+import time
 from typing import Sequence
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
-sys.path.insert(0, _HERE)
 
 import RPi.GPIO as GPIO  # noqa: E402
-from _repl import run_repl  # noqa: E402
-from controllers import trolley  # noqa: E402
+
+from config import PIN_STEP_DIR, PIN_STEP_PUL, PIN_STEP_ENA, PIN_LIM_SWITCH  # noqa: E402
 
 
-MENU = """
-trolley bench test — commands:
-  e <0|1>               enable/disable driver (ENA active LOW)
-  d <0|1>               direction (0 = reverse toward home, 1 = forward)
-  v <0..1>              speed (0 stopped, 1 = MIN_PULSE_DELAY_S)
-  step <n>              burst N pulses at current speed/dir
-  pos <0..1>            target position (steps = value * TROLLEY_MAX_STEPS)
-  stop                  cancel any motion
-  home                  reverse until limit switch, position = 0
-  s                     print a status snapshot
-  m [interval]          live status monitor every N seconds (default 0.5)
-  m off                 stop the monitor
-  h | ?                 help
-  q                     quit
-"""
+def setup() -> None:
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    GPIO.setup(PIN_STEP_DIR, GPIO.OUT)
+    GPIO.setup(PIN_STEP_PUL, GPIO.OUT)
+    GPIO.setup(PIN_STEP_ENA, GPIO.OUT)
+    GPIO.setup(PIN_LIM_SWITCH, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    GPIO.output(PIN_STEP_PUL, GPIO.LOW)
+    GPIO.output(PIN_STEP_DIR, GPIO.HIGH)
+    GPIO.output(PIN_STEP_ENA, GPIO.HIGH)  # disabled
 
 
-def fmt_status(s: dict) -> str:
-    pos = float(s.get("position", 0.0))
-    return (
-        f"pos={pos * 100:5.1f}%  "
-        f"limit={'HIT' if int(s.get('limit', 0)) else ' · '}  "
-        f"homed={'yes' if int(s.get('homed', 0)) else 'no '}"
-    )
+def set_ena(enabled: int) -> None:
+    # Driver is active LOW: arg 1 = enabled (pin LOW), 0 = disabled (pin HIGH)
+    GPIO.output(PIN_STEP_ENA, GPIO.LOW if enabled else GPIO.HIGH)
+    print(f"ENA → {'enabled (LOW)' if enabled else 'disabled (HIGH)'}")
+
+
+def set_dir(direction: int) -> None:
+    GPIO.output(PIN_STEP_DIR, GPIO.HIGH if direction else GPIO.LOW)
+    print(f"DIR → {'forward (HIGH)' if direction else 'reverse (LOW)'}")
+
+
+def pulse(n: int, delay_ms: float) -> None:
+    """Send `n` pulses on PUL with `delay_ms` between each edge. Aborts
+    if the limit switch goes HIGH — the cart is at the end."""
+    if n <= 0:
+        print("n must be > 0")
+        return
+    half = delay_ms / 1000.0
+    start = time.monotonic()
+    sent = 0
+    for i in range(n):
+        if GPIO.input(PIN_LIM_SWITCH) == GPIO.HIGH:
+            print(f"limit hit after {sent} pulses")
+            return
+        GPIO.output(PIN_STEP_PUL, GPIO.HIGH)
+        time.sleep(half)
+        GPIO.output(PIN_STEP_PUL, GPIO.LOW)
+        time.sleep(half)
+        sent = i + 1
+    elapsed = time.monotonic() - start
+    print(f"sent {sent} pulses in {elapsed:.2f}s ({sent/elapsed:.0f} Hz)")
+
+
+def snapshot() -> None:
+    d = "forward" if GPIO.input(PIN_STEP_DIR) == GPIO.HIGH else "reverse"
+    e = "disabled" if GPIO.input(PIN_STEP_ENA) == GPIO.HIGH else "enabled"
+    lim = "HIT" if GPIO.input(PIN_LIM_SWITCH) == GPIO.HIGH else "open"
+    print(f"DIR={d}  ENA={e}  LIM={lim}")
 
 
 def handle(parts: Sequence[str]) -> None:
     cmd = parts[0].lower()
     if cmd == "e" and len(parts) == 2:
-        trolley.handle_enable("/trolley/enable", int(parts[1]))
+        set_ena(int(parts[1]))
     elif cmd == "d" and len(parts) == 2:
-        trolley.handle_dir("/trolley/dir", int(parts[1]))
-    elif cmd == "v" and len(parts) == 2:
-        trolley.handle_speed("/trolley/speed", float(parts[1]))
-    elif cmd == "step" and len(parts) == 2:
-        trolley.handle_step("/trolley/step", int(parts[1]))
-    elif cmd == "pos" and len(parts) == 2:
-        value = float(parts[1])
-        if not 0.0 <= value <= 1.0:
-            raise ValueError("pos must be between 0 and 1")
-        trolley.handle_position("/trolley/position", value)
-    elif cmd == "stop":
-        trolley.handle_stop("/trolley/stop")
-    elif cmd == "home":
-        trolley.handle_home("/trolley/home")
+        set_dir(int(parts[1]))
+    elif cmd == "pulse" and 2 <= len(parts) <= 3:
+        n = int(parts[1])
+        delay_ms = float(parts[2]) if len(parts) == 3 else 2.0
+        pulse(n, delay_ms)
+    elif cmd == "lim":
+        print("LIM", "HIT" if GPIO.input(PIN_LIM_SWITCH) == GPIO.HIGH else "open")
+    elif cmd == "s":
+        snapshot()
     else:
-        print(f"unknown command: {' '.join(parts)!r} — type 'h' for help")
+        print(f"unknown command: {' '.join(parts)!r}")
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    print("Initialising trolley hardware (stepper + limit switch)…")
-    trolley.setup(webhooks=None)
+    print(__doc__)
+    setup()
     try:
-        run_repl(MENU, handle, trolley.get_status, fmt_status)
+        while True:
+            try:
+                raw = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not raw:
+                continue
+            if raw in ("q", "quit", "exit"):
+                break
+            if raw in ("?", "h", "help"):
+                print(__doc__)
+                continue
+            try:
+                handle(shlex.split(raw))
+            except Exception as e:
+                print(f"error: {e}")
     finally:
-        print("Cleaning up — disabling driver and releasing GPIO…")
-        trolley.cleanup()
+        print("Cleaning up — disabling driver, releasing GPIO…")
+        try:
+            GPIO.output(PIN_STEP_PUL, GPIO.LOW)
+            GPIO.output(PIN_STEP_ENA, GPIO.HIGH)
+        except Exception:
+            pass
         GPIO.cleanup()
 
 
