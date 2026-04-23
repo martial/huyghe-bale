@@ -5,6 +5,7 @@ import DeviceHeartbeat from "./DeviceHeartbeat";
 import PlaybackControls from "../playback/PlaybackControls";
 import ToastContainer from "./ToastContainer";
 import SystemWarnings from "./SystemWarnings";
+import OscActivityBar from "./OscActivityBar";
 import { usePlaybackStore } from "../../stores/playback-store";
 import { useDeviceStore } from "../../stores/device-store";
 import { sendTestValue } from "../../api/devices";
@@ -185,6 +186,7 @@ export default function AppLayout() {
       </main>
       
       <ToastContainer />
+      <OscActivityBar />
     </div>
   );
 }
