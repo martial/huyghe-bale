@@ -4,7 +4,7 @@
 Pick a numbered action, the script prompts for any needed values.
 
     sudo systemctl stop gpio-osc-vents     # free up the GPIO
-    sudo .venv/bin/python rpi-controller/scripts/test_vents.py
+    sudo ./rpi-controller/venv/bin/python rpi-controller/scripts/test_vents.py
 """
 
 from __future__ import annotations

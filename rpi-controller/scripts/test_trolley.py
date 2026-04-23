@@ -4,7 +4,7 @@
 Pick a numbered action, the script prompts for any needed values.
 
     sudo systemctl stop gpio-osc-trolley   # free up the GPIO
-    sudo .venv/bin/python rpi-controller/scripts/test_trolley.py
+    sudo ./rpi-controller/venv/bin/python rpi-controller/scripts/test_trolley.py
 """
 
 from __future__ import annotations
