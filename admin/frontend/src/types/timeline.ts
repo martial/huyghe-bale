@@ -33,6 +33,9 @@ export interface Timeline {
   name: string;
   duration: number;
   created_at?: string;
+  /** When true (default), playback wraps to t=0 after the last point.
+   *  When false, playback stops cleanly once elapsed >= duration. */
+  loop?: boolean;
   lanes: {
     a: Lane;
     b: Lane;

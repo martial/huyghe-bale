@@ -49,7 +49,14 @@ export default function TimelineEditor({ timeline }: { timeline: Timeline }) {
     }
   }, []);
 
-  const { status: playbackStatus, start: startPlayback, pause: pausePlayback, resume: resumePlayback } = usePlaybackStore();
+  // Narrow scalar subscriptions — a full `usePlaybackStore()` destructure
+  // would re-render this editor on every 500 ms poll, dragging the whole
+  // timeline SVG tree down with it.
+  const isPlaying = usePlaybackStore((s) => s.status.playing);
+  const isPaused = usePlaybackStore((s) => s.status.paused);
+  const startPlayback = usePlaybackStore((s) => s.start);
+  const pausePlayback = usePlaybackStore((s) => s.pause);
+  const resumePlayback = usePlaybackStore((s) => s.resume);
   const { list: devices, fetchList: fetchDevices } = useDeviceStore();
 
   async function handlePlay() {
@@ -192,9 +199,9 @@ export default function TimelineEditor({ timeline }: { timeline: Timeline }) {
       const tag = (e.target as HTMLElement).tagName;
       if (e.key === " " && tag !== "INPUT" && tag !== "SELECT" && tag !== "TEXTAREA") {
         e.preventDefault();
-        if (playbackStatus.playing && !playbackStatus.paused) {
+        if (isPlaying && !isPaused) {
           pausePlayback();
-        } else if (playbackStatus.playing && playbackStatus.paused) {
+        } else if (isPlaying && isPaused) {
           resumePlayback();
         } else {
           handlePlay();
@@ -220,7 +227,7 @@ export default function TimelineEditor({ timeline }: { timeline: Timeline }) {
     }
     window.addEventListener("keydown", handleKeydown);
     return () => window.removeEventListener("keydown", handleKeydown);
-  }, [selectedPointId, local.lanes, removePoint, playbackStatus.playing, playbackStatus.paused, pausePlayback, resumePlayback]);
+  }, [selectedPointId, local.lanes, removePoint, isPlaying, isPaused, pausePlayback, resumePlayback]);
 
   return (
     <div className="flex flex-col h-full" ref={containerRef}>
@@ -229,6 +236,7 @@ export default function TimelineEditor({ timeline }: { timeline: Timeline }) {
         selectedPoint={selectedPoint}
         onNameChange={(name) => setLocal((prev) => ({ ...prev, name }))}
         onDurationChange={(duration) => setLocal((prev) => ({ ...prev, duration }))}
+        onLoopChange={(loop) => setLocal((prev) => ({ ...prev, loop }))}
         onCurveTypeChange={updatePointCurveType}
         onSave={handleSave}
       />

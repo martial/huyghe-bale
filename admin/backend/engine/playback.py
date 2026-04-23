@@ -75,7 +75,17 @@ class PlaybackEngine:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_timeline, daemon=True)
         self._thread.start()
-        logger.info("Playback started: timeline %s to %d device(s)", timeline.get("id"), len(devices))
+        # Log targets + curve shape so journalctl makes it obvious whether
+        # the timeline is actually carrying data and hitting the right IPs.
+        lanes = timeline.get("lanes", {})
+        a_pts = len((lanes.get("a") or {}).get("points", []))
+        b_pts = len((lanes.get("b") or {}).get("points", []))
+        ips = ", ".join(f"{d.get('ip_address')}:{d.get('osc_port', 9000)}" for d in devices)
+        logger.info(
+            "Playback started: timeline %s (%.1fs, a=%dpts b=%dpts, cap=%d%%, tick=%dHz) → %s",
+            timeline.get("id"), self.total_duration, a_pts, b_pts,
+            self.output_cap, self.tick_rate, ips or "(no devices)",
+        )
 
     def start_trolley_timeline(self, timeline: dict, devices: list[dict]):
         """Start playing a trolley position timeline.
@@ -96,7 +106,19 @@ class PlaybackEngine:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_trolley_timeline, daemon=True)
         self._thread.start()
-        logger.info("Playback started: trolley-timeline %s to %d device(s)", timeline.get("id"), len(devices))
+        raw_events = timeline.get("events") or []
+        valid = [ev for ev in raw_events if isinstance(ev, dict)
+                 and ev.get("command") in self._TROLLEY_EVENT_ORDER]
+        dropped = len(raw_events) - len(valid)
+        has_enable_1 = any(ev.get("command") == "enable" and int(ev.get("value") or 0) == 1 for ev in valid)
+        ips = ", ".join(f"{d.get('ip_address')}:{d.get('osc_port', 9000)}" for d in devices)
+        logger.info(
+            "Playback started: trolley-timeline %s (%.1fs, %d events%s%s) → %s",
+            timeline.get("id"), self.total_duration, len(valid),
+            f", {dropped} dropped (unknown command)" if dropped else "",
+            "" if has_enable_1 else " ⚠ no 'enable 1' event — driver stays disabled",
+            ips or "(no devices)",
+        )
 
     def start_orchestration(self, orchestration: dict, resolved_timelines: dict, devices_map: dict):
         """Start playing an orchestration (sequential steps).
@@ -336,6 +358,9 @@ class PlaybackEngine:
             start_time = time.monotonic()
             self._start_time = start_time
             self._seek_offset = 0.0
+            # Loop defaults to True so existing timelines keep their current
+            # behaviour. Set `loop: false` in the timeline to stop at the end.
+            loop_enabled = bool((self._timeline or {}).get("loop", True))
 
             while not self._stop_event.is_set():
                 # Block while paused
@@ -347,9 +372,15 @@ class PlaybackEngine:
 
                 with self._lock:
                     if elapsed >= self.total_duration:
-                        # Loop: reset time origin
-                        elapsed = elapsed % self.total_duration
-                        self._seek_offset -= self.total_duration
+                        if loop_enabled:
+                            # Loop: reset time origin
+                            elapsed = elapsed % self.total_duration
+                            self._seek_offset -= self.total_duration
+                        else:
+                            # One-shot: snap to the final value and exit.
+                            self.elapsed = self.total_duration
+                            self._evaluate_and_send(self._timeline, self.total_duration)
+                            break
                     self.elapsed = elapsed
                     self._evaluate_and_send(self._timeline, elapsed)
 

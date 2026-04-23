@@ -19,7 +19,11 @@ export default function TrolleyToolbar({
   onSave,
 }: Props) {
   const navigate = useNavigate();
-  const { status, start, pause, resume } = usePlaybackStore();
+  const isPlaying = usePlaybackStore((s) => s.isPlaying);
+  const isPaused = usePlaybackStore((s) => s.isPaused);
+  const start = usePlaybackStore((s) => s.start);
+  const pause = usePlaybackStore((s) => s.pause);
+  const resume = usePlaybackStore((s) => s.resume);
   const { list: devices, fetchList: fetchDevices } = useDeviceStore();
 
   async function handlePlay() {
@@ -80,21 +84,21 @@ export default function TrolleyToolbar({
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={() => {
-              if (status.playing && !status.paused) {
+              if (isPlaying && !isPaused) {
                 pause();
-              } else if (status.playing && status.paused) {
+              } else if (isPlaying && isPaused) {
                 resume();
               } else {
                 handlePlay();
               }
             }}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
-              status.playing && !status.paused
+              isPlaying && !isPaused
                 ? "bg-yellow-600/80 hover:bg-yellow-500"
                 : "bg-green-600 hover:bg-green-500"
             }`}
           >
-            {status.playing && !status.paused ? "Pause" : "Play"}
+            {isPlaying && !isPaused ? "Pause" : "Play"}
           </button>
           <button
             onClick={onSave}

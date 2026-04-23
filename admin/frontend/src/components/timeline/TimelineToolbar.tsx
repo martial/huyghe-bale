@@ -1,9 +1,7 @@
-import { useState } from "react";
 import { useNavigate } from "react-router";
 import type { Timeline, Point, CurveType } from "../../types/timeline";
 import { usePlaybackStore } from "../../stores/playback-store";
 import { useDeviceStore } from "../../stores/device-store";
-import { sendTestValue } from "../../api/devices";
 import { downloadFromUrl } from "../../lib/download";
 
 const curveTypes: CurveType[] = [
@@ -15,6 +13,7 @@ interface Props {
   selectedPoint: Point | null;
   onNameChange: (name: string) => void;
   onDurationChange: (duration: number) => void;
+  onLoopChange: (loop: boolean) => void;
   onCurveTypeChange: (curveType: CurveType) => void;
   onSave: () => void;
 }
@@ -24,11 +23,16 @@ export default function TimelineToolbar({
   selectedPoint,
   onNameChange,
   onDurationChange,
+  onLoopChange,
   onCurveTypeChange,
   onSave,
 }: Props) {
   const navigate = useNavigate();
-  const { status, start, pause, resume } = usePlaybackStore();
+  const isPlaying = usePlaybackStore((s) => s.status.playing);
+  const isPaused = usePlaybackStore((s) => s.status.paused);
+  const start = usePlaybackStore((s) => s.start);
+  const pause = usePlaybackStore((s) => s.pause);
+  const resume = usePlaybackStore((s) => s.resume);
   const { list: devices, fetchList: fetchDevices } = useDeviceStore();
 
   async function handlePlay() {
@@ -44,26 +48,8 @@ export default function TimelineToolbar({
     await start("timeline", timeline.id, vents.map((d) => d.id));
   }
 
-  const [testBusy, setTestBusy] = useState(false);
-
-  async function handleTest(method: "osc" | "http", valueA: number, valueB: number, label: string) {
-    let devs = devices;
-    if (devs.length === 0) {
-      await fetchDevices();
-      devs = useDeviceStore.getState().list;
-    }
-    if (devs.length === 0) return;
-    const ids = devs.map((d) => d.id);
-    setTestBusy(true);
-    try {
-      const result = await sendTestValue(ids, valueA, valueB, method);
-      console.log(`[Test] ${method.toUpperCase()} ${label} result:`, result);
-    } catch (e) {
-      console.error(`[Test] ${method.toUpperCase()} ${label} error:`, e);
-    } finally {
-      setTestBusy(false);
-    }
-  }
+  // Default to true to preserve historical behaviour.
+  const isLooping = timeline.loop !== false;
 
   return (
     <div className="border-b border-zinc-800/60 bg-zinc-900/50">
@@ -113,22 +99,35 @@ export default function TimelineToolbar({
 
         <div className="ml-auto flex items-center gap-2">
           <button
+            onClick={() => onLoopChange(!isLooping)}
+            title={isLooping ? "Loop is on — playback wraps at the end" : "Loop is off — playback stops at the end"}
+            className={`p-1.5 rounded-lg transition-all duration-200 ${
+              isLooping
+                ? "bg-orange-900/40 text-orange-300 hover:bg-orange-900/60"
+                : "bg-zinc-800 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700"
+            }`}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M4 4v5h.582M4.582 9A8.001 8.001 0 0119.418 11M20 20v-5h-.581M19.419 15A8.003 8.003 0 014.582 13" />
+            </svg>
+          </button>
+          <button
             onClick={() => {
-              if (status.playing && !status.paused) {
+              if (isPlaying && !isPaused) {
                 pause();
-              } else if (status.playing && status.paused) {
+              } else if (isPlaying && isPaused) {
                 resume();
               } else {
                 handlePlay();
               }
             }}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
-              status.playing && !status.paused
+              isPlaying && !isPaused
                 ? "bg-yellow-600/80 hover:bg-yellow-500"
                 : "bg-green-600 hover:bg-green-500"
             }`}
           >
-            {status.playing && !status.paused ? "Pause" : "Play"}
+            {isPlaying && !isPaused ? "Pause" : "Play"}
           </button>
           <button
             onClick={() => downloadFromUrl(
@@ -159,23 +158,6 @@ export default function TimelineToolbar({
         </div>
       </div>
 
-      {/* GPIO Test Panel */}
-      <div className="flex items-center gap-3 px-5 py-1.5 border-t border-zinc-800/40 bg-zinc-950/30">
-        <span className="text-[10px] text-zinc-600 uppercase tracking-wider font-medium">Test</span>
-        <div className="flex items-center gap-1">
-          <span className="text-[10px] text-zinc-500 mr-0.5">OSC</span>
-          <button disabled={testBusy} onClick={() => handleTest("osc", 1, 0, "A ON")} className="px-1.5 py-0.5 text-[10px] bg-orange-900/40 hover:bg-orange-800/60 text-orange-300/80 rounded disabled:opacity-30 transition-colors">A</button>
-          <button disabled={testBusy} onClick={() => handleTest("osc", 0, 1, "B ON")} className="px-1.5 py-0.5 text-[10px] bg-sky-900/40 hover:bg-sky-800/60 text-sky-300/80 rounded disabled:opacity-30 transition-colors">B</button>
-          <button disabled={testBusy} onClick={() => handleTest("osc", 0, 0, "ALL OFF")} className="px-1.5 py-0.5 text-[10px] bg-zinc-800/60 hover:bg-zinc-700/60 text-zinc-400 rounded disabled:opacity-30 transition-colors">OFF</button>
-        </div>
-        <div className="w-px h-3 bg-zinc-800/60" />
-        <div className="flex items-center gap-1">
-          <span className="text-[10px] text-zinc-500 mr-0.5">HTTP</span>
-          <button disabled={testBusy} onClick={() => handleTest("http", 1, 0, "A ON")} className="px-1.5 py-0.5 text-[10px] bg-orange-900/40 hover:bg-orange-800/60 text-orange-300/80 rounded disabled:opacity-30 transition-colors">A</button>
-          <button disabled={testBusy} onClick={() => handleTest("http", 0, 1, "B ON")} className="px-1.5 py-0.5 text-[10px] bg-sky-900/40 hover:bg-sky-800/60 text-sky-300/80 rounded disabled:opacity-30 transition-colors">B</button>
-          <button disabled={testBusy} onClick={() => handleTest("http", 0, 0, "ALL OFF")} className="px-1.5 py-0.5 text-[10px] bg-zinc-800/60 hover:bg-zinc-700/60 text-zinc-400 rounded disabled:opacity-30 transition-colors">OFF</button>
-        </div>
-      </div>
     </div>
   );
 }

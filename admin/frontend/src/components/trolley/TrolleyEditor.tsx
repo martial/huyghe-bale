@@ -37,7 +37,11 @@ export default function TrolleyEditor({ timeline }: { timeline: TrolleyTimeline 
     return () => clearTimeout(t);
   }, [local, saveSilent]);
 
-  const { status: playbackStatus, start, pause, resume } = usePlaybackStore();
+  const isPlaying = usePlaybackStore((s) => s.status.playing);
+  const isPaused = usePlaybackStore((s) => s.status.paused);
+  const start = usePlaybackStore((s) => s.start);
+  const pause = usePlaybackStore((s) => s.pause);
+  const resume = usePlaybackStore((s) => s.resume);
   const { list: devices, fetchList: fetchDevices } = useDeviceStore();
 
   async function handlePlay() {
@@ -119,8 +123,8 @@ export default function TrolleyEditor({ timeline }: { timeline: TrolleyTimeline 
       const tag = (e.target as HTMLElement).tagName;
       if (e.key === " " && tag !== "INPUT" && tag !== "SELECT" && tag !== "TEXTAREA") {
         e.preventDefault();
-        if (playbackStatus.playing && !playbackStatus.paused) pause();
-        else if (playbackStatus.playing && playbackStatus.paused) resume();
+        if (isPlaying && !isPaused) pause();
+        else if (isPlaying && isPaused) resume();
         else handlePlay();
         return;
       }
@@ -137,7 +141,7 @@ export default function TrolleyEditor({ timeline }: { timeline: TrolleyTimeline 
     }
     window.addEventListener("keydown", handleKeydown);
     return () => window.removeEventListener("keydown", handleKeydown);
-  }, [selectedId, playbackStatus.playing, playbackStatus.paused, pause, resume]);
+  }, [selectedId, isPlaying, isPaused, pause, resume]);
 
   return (
     <div className="flex flex-col h-full">
