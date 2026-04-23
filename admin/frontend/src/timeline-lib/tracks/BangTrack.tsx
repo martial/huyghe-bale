@@ -51,6 +51,7 @@ export default function BangTrack({
 
   const commands = track.commands;
   const events = track.events;
+  void activeCommand; // reserved for a future "paint" interaction
 
   const clientXToTime = useCallback(
     (clientX: number): number => {
@@ -105,8 +106,6 @@ export default function BangTrack({
     },
     [clientXToTime, events, onChange, onSelectEvent, readonly, track],
   );
-
-  const totalHeight = commands.length * LANE_HEIGHT;
 
   return (
     <div
@@ -192,8 +191,6 @@ export default function BangTrack({
           </div>
         );
       })}
-      {/* Force container height so absolutely-positioned cursor has a target. */}
-      <div style={{ height: 0, marginTop: -totalHeight, pointerEvents: "none" }} />
     </div>
   );
 }
