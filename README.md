@@ -116,7 +116,51 @@ cd admin/frontend && npx tsc --noEmit
 ./release.sh
 ```
 
-CI also runs on pushes to `main` (see [`.github/workflows/build.yml`](.github/workflows/build.yml)).
+CI also runs on pushes to `main` (see [`.github/workflows/build.yml`](.github/workflows/build.yml)). Artifacts are downloadable from the Actions tab.
+
+#### Windows local build
+
+Prerequisites: **Python 3.10+** (from [python.org](https://www.python.org/downloads/) — the Microsoft Store "python" stub is auto-detected and skipped), **Node.js 18+**, and **Git**.
+
+```powershell
+# From the repo root, in PowerShell:
+powershell -ExecutionPolicy Bypass -File compile_app_windows.ps1
+```
+
+The script:
+1. Resolves a real Python install (falls back through `%LOCALAPPDATA%\Programs\Python\Python31x`, `C:\Python31x`, then the `py` launcher).
+2. Installs backend requirements + `Pillow` / `pywebview` / `pyinstaller`.
+3. Generates the icon + `VERSION` file from current git state.
+4. Builds the frontend (`npm run build`).
+5. Packages with PyInstaller.
+
+Output:
+
+```
+apps\PIERRE HUYGHE BALE\
+  PIERRE HUYGHE BALE.exe
+  install.bat
+  MicrosoftEdgeWebview2Setup.exe
+  ndp48-web.exe
+  _internal\
+```
+
+Distribute the folder as-is or zip it.
+
+#### Installing on a fresh Windows machine
+
+The app needs **.NET Framework 4.7.2+** (for Python.Runtime / pywebview interop) and the **Edge WebView2 Runtime** (for the UI shell). Both ship with recent Windows, but older or unpatched machines are often missing one or both, and files extracted from a downloaded zip carry Mark-of-the-Web which blocks the CLR from loading bundled DLLs.
+
+To prep a fresh machine:
+
+1. Copy the `PIERRE HUYGHE BALE` folder to the target PC.
+2. Right-click **`install.bat`** → *Run as administrator* once. It:
+   - `Unblock-Files` the folder (strip MOTW so the CLR loads `Python.Runtime.dll`).
+   - Checks the .NET Framework registry key and installs 4.8 if the Release value is below `461808`.
+   - Checks the WebView2 registry key and runs the Evergreen bootstrapper if missing.
+3. Double-click **`PIERRE HUYGHE BALE.exe`**. SmartScreen may warn on first run (the `.exe` is unsigned) — click *More info → Run anyway*.
+
+Subsequent launches don't need the .bat.
 
 When running as a bundle, persistent data lives at:
 
