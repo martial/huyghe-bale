@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, useCallback } from "react";
-import type { CurveTrack as CurveTrackData, CurvePoint, CurveType, BezierHandles } from "../types";
+import type { CurveTrack as CurveTrackData, CurvePoint, CurveType } from "../types";
 import type { CanvasState } from "../lib/canvas-math";
 import * as tc from "../lib/canvas-math";
 import { sampleCurve } from "../lib/interpolation";
@@ -21,10 +21,6 @@ const gridLines = [0, 0.25, 0.5, 0.75, 1.0];
 
 function genId(): string {
   return "pt_" + Math.random().toString(36).substring(2, 10);
-}
-
-function defaultBezier(): BezierHandles {
-  return { x1: 0.25, y1: 0, x2: 0.75, y2: 1 };
 }
 
 export default function CurveTrack({

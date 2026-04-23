@@ -3,7 +3,7 @@
  * MUST produce identical results for consistent frontend preview.
  */
 
-import type { CurveType, BezierHandles } from "../types/timeline";
+import type { CurveType, BezierHandles } from "../types";
 
 function linear(t: number): number {
   return t;

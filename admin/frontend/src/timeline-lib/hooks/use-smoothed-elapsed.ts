@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { usePlaybackStore } from "../stores/playback-store";
+import { usePlaybackStore } from "../../stores/playback-store";
 
 /**
  * Returns a smoothly-interpolated elapsed time (60fps via rAF)
