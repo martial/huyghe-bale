@@ -4,7 +4,7 @@ import type { CanvasState } from "../../lib/timeline-canvas";
 import * as tc from "../../lib/timeline-canvas";
 import { sampleCurve } from "../../lib/interpolation";
 import { usePlaybackStore } from "../../stores/playback-store";
-import { useSmoothedElapsed } from "../../hooks/use-smoothed-elapsed";
+import { PlaybackCursor } from "./PlaybackCursor";
 
 interface Props {
   lane: Lane;
@@ -41,10 +41,11 @@ export default function TimelineLane({
   onDragBezierHandle,
   onWheel,
 }: Props) {
-  const playbackStatus = usePlaybackStore((s) => s.status);
-  const smoothElapsed = useSmoothedElapsed();
-  const showCursor = playbackStatus.playing && playbackStatus.id === timelineId && playbackStatus.type === playbackType;
-  const cursorX = showCursor ? tc.timeToX(canvas, smoothElapsed) : 0;
+  // Subscribe only to the booleans that decide whether to mount the cursor —
+  // 60 Hz rAF updates happen inside the cursor component, not here.
+  const showCursor = usePlaybackStore(
+    (s) => s.status.playing && s.status.id === timelineId && s.status.type === playbackType,
+  );
   const [hoveredPointId, setHoveredPointId] = useState<string | null>(null);
   const [dragPointId, setDragPointId] = useState<string | null>(null);
   const [dragHandleId, setDragHandleId] = useState<string | null>(null);
@@ -271,19 +272,7 @@ export default function TimelineLane({
           />
         ))}
 
-        {/* Playback cursor */}
-        {showCursor && (
-          <line
-            x1={cursorX}
-            y1={0}
-            x2={cursorX}
-            y2={height}
-            stroke="#facc15"
-            strokeWidth={1.5}
-            opacity={0.8}
-            pointerEvents="none"
-          />
-        )}
+        {showCursor && <PlaybackCursor canvas={canvas} height={height} />}
 
         {/* Control points */}
         {lane.points.map((point) => (

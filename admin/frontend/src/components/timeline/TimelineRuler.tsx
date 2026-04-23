@@ -2,7 +2,7 @@ import { useMemo, useRef, useCallback } from "react";
 import type { CanvasState } from "../../lib/timeline-canvas";
 import * as tc from "../../lib/timeline-canvas";
 import { usePlaybackStore } from "../../stores/playback-store";
-import { useSmoothedElapsed } from "../../hooks/use-smoothed-elapsed";
+import { PlaybackCursor } from "./PlaybackCursor";
 
 interface Props {
   width: number;
@@ -13,11 +13,13 @@ interface Props {
 }
 
 export default function TimelineRuler({ width, height, duration, canvas, timelineId }: Props) {
-  const playbackStatus = usePlaybackStore((s) => s.status);
+  // Only subscribe to the scalar booleans/ids that matter for mounting the
+  // cursor. Reading the whole status object here would force this component
+  // to re-render on every 500 ms poll.
+  const showCursor = usePlaybackStore(
+    (s) => s.status.playing && s.status.id === timelineId && s.status.type === "timeline",
+  );
   const seek = usePlaybackStore((s) => s.seek);
-  const smoothElapsed = useSmoothedElapsed();
-  const showCursor = playbackStatus.playing && playbackStatus.id === timelineId && playbackStatus.type === "timeline";
-  const cursorX = showCursor ? tc.timeToX(canvas, smoothElapsed) : 0;
   const svgRef = useRef<SVGSVGElement>(null);
 
   const seekToX = useCallback(
@@ -102,26 +104,7 @@ export default function TimelineRuler({ width, height, duration, canvas, timelin
         </g>
       ))}
 
-      {/* Playback cursor */}
-      {showCursor && (
-        <g>
-          <line
-            x1={cursorX}
-            y1={0}
-            x2={cursorX}
-            y2={height}
-            stroke="#facc15"
-            strokeWidth={1.5}
-            opacity={0.8}
-          />
-          <polygon
-            points={`${cursorX - 4},0 ${cursorX + 4},0 ${cursorX},6`}
-            fill="#facc15"
-            opacity={0.9}
-            className="cursor-col-resize"
-          />
-        </g>
-      )}
+      {showCursor && <PlaybackCursor canvas={canvas} height={height} withHandle />}
     </svg>
   );
 }
