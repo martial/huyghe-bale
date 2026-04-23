@@ -3,8 +3,12 @@
 The bridge's /to/<name>/<rest> targeting relies on names being exact-match
 friendly. Slashes in names would break path parsing; leading/trailing
 whitespace would silently fail match.
+
+Export: GET /api/v1/devices/export downloads the device list (CSV default).
 """
 
+import csv
+import io
 import json
 import os
 
@@ -75,6 +79,53 @@ def test_put_rejects_slash_in_name(client):
     c, _ = client
     created = _post(c, {"name": "ok", "ip_address": "10.0.0.1", "osc_port": 9000, "type": "vents"}).get_json()
     resp = _put(c, created["id"], {"name": "cold/vents"})
+    assert resp.status_code == 400
+
+
+def test_export_devices_csv_headers_and_rows(client):
+    c, devices_mod = client
+    devices_mod.store.create({
+        "name": "Alpha",
+        "ip_address": "192.168.1.10",
+        "osc_port": 9000,
+        "type": "vents",
+        "hardware_id": "vents_deadbeef",
+    })
+    resp = c.get("/api/v1/devices/export")
+    assert resp.status_code == 200
+    assert "text/csv" in resp.headers.get("Content-Type", "")
+    assert 'attachment; filename=' in resp.headers.get("Content-Disposition", "").lower()
+
+    decoded = resp.data.decode("utf-8")
+    reader = csv.DictReader(io.StringIO(decoded))
+    rows = list(reader)
+    assert reader.fieldnames == ["id", "name", "type", "ip_address", "osc_port", "hardware_id"]
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Alpha"
+    assert rows[0]["hardware_id"] == "vents_deadbeef"
+
+
+def test_export_devices_json(client):
+    c, devices_mod = client
+    devices_mod.store.create({
+        "name": "Beta",
+        "ip_address": "192.168.1.11",
+        "osc_port": 9000,
+        "type": "trolley",
+    })
+    resp = c.get("/api/v1/devices/export?format=json")
+    assert resp.status_code == 200
+    assert "application/json" in resp.headers.get("Content-Type", "")
+    body = resp.get_json()
+    assert isinstance(body, list)
+    assert len(body) == 1
+    assert body[0]["name"] == "Beta"
+    assert body[0]["type"] == "trolley"
+
+
+def test_export_devices_invalid_format(client):
+    c, _ = client
+    resp = c.get("/api/v1/devices/export?format=xml")
     assert resp.status_code == 400
 
 

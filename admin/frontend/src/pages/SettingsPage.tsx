@@ -16,6 +16,7 @@ export default function SettingsPage() {
   const [bridgeEnabled, setBridgeEnabled] = useState(false);
   const [bridgePort, setBridgePort] = useState(9002);
   const [bridgeRouting, setBridgeRouting] = useState<BridgeRouting>("type-match");
+  const [ventsMaxTemp, setVentsMaxTemp] = useState(80);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -34,7 +35,8 @@ export default function SettingsPage() {
     setBridgeEnabled(settings.bridge_enabled);
     setBridgePort(settings.bridge_port);
     setBridgeRouting(settings.bridge_routing);
-  }, [settings.bridge_enabled, settings.bridge_port, settings.bridge_routing]);
+    setVentsMaxTemp(settings.vents_max_temp_c ?? 80);
+  }, [settings.bridge_enabled, settings.bridge_port, settings.bridge_routing, settings.vents_max_temp_c]);
 
   async function handleSave() {
     setSaving(true);
@@ -45,6 +47,7 @@ export default function SettingsPage() {
         bridge_enabled: bridgeEnabled,
         bridge_port: bridgePort,
         bridge_routing: bridgeRouting,
+        vents_max_temp_c: ventsMaxTemp,
       });
       notify("success", "Settings saved successfully");
     } finally {
@@ -108,6 +111,32 @@ export default function SettingsPage() {
               className="w-24 bg-zinc-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-orange-500/50 transition-colors"
             />
             <span className="text-sm text-zinc-400">%</span>
+          </div>
+        </div>
+
+        {/* Vents max temperature (persisted on each Pi) */}
+        <div className="bg-zinc-900/40 backdrop-blur-sm border border-white/5 rounded-2xl p-6 shadow-lg">
+          <label className="block text-sm font-medium text-zinc-300 mb-1">
+            Vents — max temperature
+          </label>
+          <p className="text-xs text-zinc-500 mb-3">
+            Safety limit only — independent of the regulation target you set on each device (/vents/target). When
+            average chamber temperature exceeds this value (°C), the Pi turns all Peltiers off (over-temp); it does not
+            change fan speed in auto. Auto does not use fans to reach the target; it uses Peltiers. Saved to each vents Pi at{" "}
+            <span className="font-mono text-zinc-400">~/.config/gpio-osc/vents_prefs.json</span> (survives reboot; Pi
+            ensures max stays above target ± hysteresis).
+          </p>
+          <div className="flex items-center gap-3">
+            <input
+              value={ventsMaxTemp}
+              onChange={(e) => setVentsMaxTemp(Number(e.target.value))}
+              type="number"
+              min={-55}
+              max={125}
+              step={0.1}
+              className="w-28 bg-zinc-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-orange-500/50 transition-colors"
+            />
+            <span className="text-sm text-zinc-400">°C</span>
           </div>
         </div>
 

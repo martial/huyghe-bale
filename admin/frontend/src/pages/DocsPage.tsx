@@ -1,4 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { listDevices } from "../api/devices";
+import { getSettings } from "../api/settings";
+import type { Settings } from "../api/settings";
+import {
+  filterDevicesForOscAddress,
+  protocolTestBridge,
+  protocolTestHttp,
+  protocolTestOsc,
+} from "../api/protocol-test";
+import type { Device } from "../types/device";
+import { formatQuickTestPreview, resolveQuickTest, type QuickTestSpec } from "./docsQuickTest";
 
 /**
  * Protocol reference for every OSC address and HTTP endpoint the system speaks.
@@ -33,7 +44,7 @@ const VENTS: Section = {
   id: "vents",
   title: "Vents",
   subtitle:
-    "3 Peltier cells (digital on/off) + 2 PWM fans + 4 tachos + 2 DS18B20 temperature probes. Auto-regulation is bang-bang with hysteresis around a target temperature.",
+    "Thermoelectric stacks (3 cells on GPIO 26/25/24): each module has a cold face and a hot face — powered, heat is pumped from one side to the other. Fan 1 (GPIO 20) serves the cold-side heat exchanger, fan 2 (GPIO 18) the hot-side box (see tachos A/B per fan). Two DS18B20 probes read those air paths (temp1 / temp2 in status). Auto mode compares the average of both readings to /vents/target with bang‑bang Peltier power (states heating = all cells on, cooling = all off, holding = deadband); it does not PWM fans for regulation. Max (persisted on the Pi) is a separate safety ceiling — above max, over_temp (Peltiers off; fan duty unchanged) and the admin banner.",
   transport: { osc: "UDP 9000 (admin → Pi) · UDP 9001 (Pi → admin)", http: "http://<ip>:9001" },
   groups: [
     {
@@ -44,26 +55,29 @@ const VENTS: Section = {
           address: "/vents/peltier/1",
           direction: "admin-to-pi",
           args: "int 0|1",
-          description: "Cell 1 on/off (BCM GPIO 26, active HIGH). Sending any value forces mode=raw.",
+          description:
+            "Cell 1 on/off (BCM GPIO 26, active HIGH). Sending any value forces mode=raw unless blocked: while average temp exceeds the safety max (see /vents/max_temp), turning on is ignored (cells stay off).",
         },
         {
           address: "/vents/peltier/2",
           direction: "admin-to-pi",
           args: "int 0|1",
-          description: "Cell 2 on/off (BCM GPIO 25, active HIGH). Forces mode=raw.",
+          description:
+            "Cell 2 on/off (BCM GPIO 25, active HIGH). Forces mode=raw unless over-temperature interlock applies (same as cell 1).",
         },
         {
           address: "/vents/peltier/3",
           direction: "admin-to-pi",
           args: "int 0|1",
-          description: "Cell 3 on/off (BCM GPIO 24, active HIGH). Forces mode=raw.",
+          description:
+            "Cell 3 on/off (BCM GPIO 24, active HIGH). Forces mode=raw unless over-temperature interlock applies (same as cell 1).",
         },
         {
           address: "/vents/peltier",
           direction: "admin-to-pi",
           args: "int mask 0..7",
           description:
-            "Set all three cells at once as a bitmask (bit 0 = P1, bit 1 = P2, bit 2 = P3). Forces mode=raw.",
+            "Set all three cells at once as a bitmask (bit 0 = P1, bit 1 = P2, bit 2 = P3). Forces mode=raw; non-zero masks are clamped to off while over-temperature interlock applies.",
           example: "/vents/peltier 5   # P1 + P3",
         },
         {
@@ -80,23 +94,30 @@ const VENTS: Section = {
         },
       ],
     },
-    {
-      label: "OSC — admin → Pi (auto-regulation)",
-      direction: "admin-to-pi",
-      items: [
         {
-          address: "/vents/mode",
+          label: "OSC — admin → Pi (auto-regulation)",
+          direction: "admin-to-pi",
+          items: [
+            {
+              address: "/vents/max_temp",
+              direction: "admin-to-pi",
+              args: "float °C",
+              description:
+                "Safety ceiling (°C): independent of target. If average temp exceeds this value, over_temp — all Peltiers off; auto does not change fan PWM. Persisted at ~/.config/gpio-osc/vents_prefs.json; must stay above the regulation band (Pi may bump the value). Also set from Admin → Settings.",
+            },
+            {
+              address: "/vents/mode",
           direction: "admin-to-pi",
           args: "string raw|auto",
           description:
-            "'raw' = manual control via the addresses above. 'auto' = bang-bang loop drives peltiers + fans toward /vents/target.",
+            "'raw' = manual Peltiers and fans. 'auto' = bang‑bang uses Peltiers only toward /vents/target (±0.5°C band); fans are not driven for thermoregulation — switching to auto zeros fan PWM once. Use /vents/fan/* or raw mode for airflow.",
         },
         {
           address: "/vents/target",
           direction: "admin-to-pi",
           args: "float °C",
           description:
-            "Target temperature for auto mode. Hysteresis ±0.5°C: above → peltiers on + fans high, below → peltiers off + fans low, deadband → hold.",
+            "Regulation setpoint (°C): auto bang-bang on cell power — below target−0.5°C all cells on (state heating: thermoelectric heat pump active); above target+0.5°C and under max all off (state cooling: no pumping). Deadband holds the previous mask. Labels refer to control action, not which physical face is hot/cold. Fans unchanged by auto. Safety max separate (Settings, /vents/max_temp). Pi clamps target/max so the band stays below max.",
         },
       ],
     },
@@ -108,9 +129,9 @@ const VENTS: Section = {
           address: "/vents/status",
           direction: "pi-to-admin",
           args:
-            "float temp1_c, float temp2_c, float fan1, float fan2, int peltier_mask, int rpm1A, int rpm1B, int rpm2A, int rpm2B, float target_c, string mode, string state",
+            "float temp1_c, float temp2_c, float fan1, float fan2, int peltier_mask, int rpm1A, int rpm1B, int rpm2A, int rpm2B, float target_c, string mode, string state, float max_temp_c",
           description:
-            "Broadcast at 5 Hz to the last admin that pinged. Missing DS18B20 sensors report -1.0. state ∈ {idle, cooling, holding, coasting, sensor_error}. Exposed via GET /api/v1/vents-control/<id>/status.",
+            "Broadcast at 5 Hz to the last admin that pinged. Missing DS18B20 sensors report -1.0. state ∈ {idle, heating, cooling, holding, sensor_error, over_temp}. Older firmware omits the final max_temp_c arg. GET /health lists vents in over_temp for the banner.",
         },
       ],
     },
@@ -128,7 +149,7 @@ const VENTS: Section = {
           address: "POST /gpio/test",
           direction: "http",
           args:
-            '{command: "peltier"|"peltier_mask"|"fan"|"mode"|"target", index?: 1..3, value: …}',
+            '{command: "peltier"|"peltier_mask"|"fan"|"mode"|"target"|"max_temp", index?: 1..3, value: …}',
           description:
             "Runs the same handler as the matching OSC address, bypassing UDP. Returns {ok, …current status snapshot}.",
           example:
@@ -367,6 +388,89 @@ const BRIDGE: Section = {
 
 const SECTIONS: Section[] = [VENTS, TROLLEY, SYSTEM, BRIDGE];
 
+const DIR_MD: Record<Direction, string> = {
+  "admin-to-pi": "admin → Pi",
+  "pi-to-admin": "Pi → admin",
+  http: "HTTP (on the Pi)",
+};
+
+function flowLabelForMarkdown(section: Section, groupLabel: string, item: Endpoint): string {
+  if (section.id === "bridge" && groupLabel.includes("external → admin")) {
+    return "External → admin";
+  }
+  return DIR_MD[item.direction];
+}
+
+/** Markdown technical sheet: single source of truth is SECTIONS (same data as the Protocol UI). */
+function sectionsToMarkdown(sections: Section[]): string {
+  const date = new Date().toISOString().slice(0, 10);
+  const lines: string[] = [
+    "# OSC technical sheet — Huyghe Bale",
+    "",
+    `Generated: ${date}`,
+    "",
+    "OSC and HTTP reference for the Pi controllers and the admin OSC Bridge (including routing and per-device targeting).",
+    "Ports: UDP from admin to Pi is typically 9000; Pi replies to the admin on 9001; the Bridge listens on the admin host (default 9002, configurable in Settings).",
+    "",
+  ];
+
+  for (const sec of sections) {
+    lines.push(`## ${sec.title}`);
+    lines.push("");
+    lines.push(sec.subtitle);
+    lines.push("");
+    const t: string[] = [];
+    if (sec.transport.osc) t.push(`**OSC:** ${sec.transport.osc}`);
+    if (sec.transport.http) t.push(`**HTTP:** ${sec.transport.http}`);
+    if (t.length) {
+      lines.push(t.join("  \n"));
+      lines.push("");
+    }
+
+    for (const g of sec.groups) {
+      lines.push(`### ${g.label}`);
+      lines.push("");
+      for (const item of g.items) {
+        const addr = item.address.includes("`") ? item.address.replace(/`/g, "'") : item.address;
+        lines.push(`#### \`${addr}\``);
+        lines.push("");
+        lines.push(`- **Flow:** ${flowLabelForMarkdown(sec, g.label, item)}`);
+        if (item.args) lines.push(`- **Args:** ${item.args}`);
+        lines.push(`- **Description:** ${item.description}`);
+        if (item.example) {
+          lines.push("");
+          lines.push("Example:");
+          lines.push("");
+          lines.push("```");
+          lines.push(item.example);
+          lines.push("```");
+        }
+        lines.push("");
+      }
+    }
+  }
+
+  lines.push("---");
+  lines.push("");
+  lines.push(
+    "*Source of truth in repo:* `rpi-controller/controllers/*.py`, `rpi-controller/gpio_osc.py`, `admin/backend/api/*.py`, `admin/backend/engine/osc_receiver.py`, `admin/backend/engine/osc_bridge.py`."
+  );
+  return lines.join("\n");
+}
+
+function downloadOscTechnicalSheet(): void {
+  const md = sectionsToMarkdown(SECTIONS);
+  const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `huyghe-bale-osc-protocol-${new Date().toISOString().slice(0, 10)}.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 const DIR_BADGE: Record<Direction, { label: string; cls: string }> = {
   "admin-to-pi": {
     label: "admin → Pi",
@@ -480,37 +584,192 @@ function CodeBlock({ code }: { code: string }) {
   );
 }
 
-function EndpointRow({ item }: { item: Endpoint }) {
+function ProtocolQuickTestInner({
+  qt,
+  item,
+  devices,
+  bridgeEnabled,
+}: {
+  qt: QuickTestSpec;
+  item: Endpoint;
+  devices: Device[];
+  bridgeEnabled: boolean;
+}) {
+  const [deviceId, setDeviceId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [hint, setHint] = useState<string | null>(null);
+  const preview = formatQuickTestPreview(qt);
+
+  const needsDevice =
+    qt.kind === "osc" ||
+    qt.kind === "http" ||
+    (qt.kind === "bridge" && qt.variant === "to");
+
+  const candidates =
+    qt.kind === "osc"
+      ? filterDevicesForOscAddress(devices, item.address)
+      : qt.kind === "http"
+        ? devices.filter((d) => d.ip_address)
+        : qt.kind === "bridge" && qt.variant === "to"
+          ? devices.filter((d) => d.ip_address)
+          : [];
+
+  async function run() {
+    setHint(null);
+    if (qt.kind === "bridge" && !bridgeEnabled) {
+      setHint("Enable Bridge in Settings");
+      return;
+    }
+    if (needsDevice && !deviceId) {
+      setHint("Select a device");
+      return;
+    }
+    setBusy(true);
+    try {
+      if (qt.kind === "osc") {
+        await protocolTestOsc({ device_id: deviceId, address: item.address, values: qt.values });
+        setHint("Sent");
+      } else if (qt.kind === "http") {
+        await protocolTestHttp({
+          device_id: deviceId,
+          method: qt.method,
+          path: qt.path,
+          json: qt.json,
+        });
+        setHint("OK");
+      } else if (qt.kind === "bridge" && qt.variant === "direct") {
+        await protocolTestBridge({ address: qt.address, values: qt.values });
+        setHint("Sent");
+      } else if (qt.kind === "bridge" && qt.variant === "to") {
+        await protocolTestBridge({
+          inner_address: qt.innerAddress,
+          device_id: deviceId,
+          values: qt.values,
+        });
+        setHint("Sent");
+      }
+    } catch (e) {
+      setHint(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-white/[0.07] bg-black/30 px-3 py-2.5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="text-[10px] uppercase tracking-wider font-medium text-zinc-500">Quick test payload</p>
+          <code className="block text-[11px] font-mono text-zinc-300/95 leading-relaxed break-all">{preview}</code>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {needsDevice && (
+            <select
+              value={deviceId}
+              onChange={(e) => setDeviceId(e.target.value)}
+              className="text-xs rounded-lg border border-white/12 bg-zinc-950 text-zinc-200 px-2.5 py-2 min-h-[36px] max-w-[min(100%,240px)] focus:outline-none focus:ring-2 focus:ring-orange-500/25 focus:border-orange-500/30"
+            >
+              <option value="">Choose device…</option>
+              {candidates.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name} · {d.ip_address || "—"}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            type="button"
+            onClick={run}
+            disabled={busy}
+            className="text-xs font-semibold rounded-lg bg-orange-500/15 border border-orange-500/25 text-orange-300 px-3 py-2 min-h-[36px] hover:bg-orange-500/25 disabled:opacity-45 transition-colors"
+          >
+            {busy ? "Sending…" : "Send test"}
+          </button>
+          {hint && (
+            <span
+              className={`text-[11px] tabular-nums ${hint === "Sent" || hint === "OK" ? "text-emerald-400/95" : "text-amber-400/90"}`}
+            >
+              {hint}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProtocolQuickTest({
+  sectionId,
+  item,
+  devices,
+  bridgeEnabled,
+}: {
+  sectionId: string;
+  item: Endpoint;
+  devices: Device[];
+  bridgeEnabled: boolean;
+}) {
+  const qt = resolveQuickTest(sectionId, item.direction, item.address);
+  if (!qt) return null;
+  return (
+    <ProtocolQuickTestInner qt={qt} item={item} devices={devices} bridgeEnabled={bridgeEnabled} />
+  );
+}
+
+function EndpointRow({
+  item,
+  sectionId,
+  devices,
+  bridgeEnabled,
+}: {
+  item: Endpoint;
+  sectionId: string;
+  devices: Device[];
+  bridgeEnabled: boolean;
+}) {
   const isHttp = item.direction === "http";
+  const isPiInbound = item.direction === "pi-to-admin";
   const addrCls = isHttp
     ? "text-emerald-200/90"
-    : item.direction === "pi-to-admin"
-    ? "text-sky-200/90"
-    : "text-orange-200/90";
+    : isPiInbound
+      ? "text-sky-200/90"
+      : "text-orange-200/90";
   return (
-    <div className="group p-3 rounded-xl border border-white/5 bg-zinc-950/40 hover:bg-zinc-950/70 transition-colors">
-      <div className="flex items-center gap-3 flex-wrap">
-        <code className={`text-sm font-mono bg-black/40 border border-white/5 rounded px-2 py-0.5 ${addrCls}`}>
-          {item.address}
-        </code>
-        {!isHttp && (
-          <span
-            className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${DIR_BADGE[item.direction].cls}`}
-          >
-            {DIR_BADGE[item.direction].label}
-          </span>
-        )}
-        {item.args && (
-          <code className="text-[11px] font-mono text-zinc-400">{item.args}</code>
-        )}
-        <CopyButton text={item.address} />
-      </div>
-      <p className="mt-2 text-xs text-zinc-400 leading-relaxed">{item.description}</p>
-      {item.example && (
-        <div className="mt-2">
-          <CodeBlock code={item.example} />
+    <div className="group rounded-xl border border-white/[0.07] bg-zinc-950/35 hover:border-white/[0.12] transition-colors overflow-hidden">
+      <div className="px-4 pt-4 pb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <code className={`text-[13px] font-mono font-medium tracking-tight bg-black/35 border border-white/[0.08] rounded-md px-2.5 py-1 ${addrCls}`}>
+            {item.address}
+          </code>
+          {!isHttp && (
+            <span
+              className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium border ${DIR_BADGE[item.direction].cls}`}
+            >
+              {DIR_BADGE[item.direction].label}
+            </span>
+          )}
+          {item.args && (
+            <code className="text-[11px] font-mono text-zinc-500">{item.args}</code>
+          )}
+          <CopyButton text={item.address} />
         </div>
-      )}
+        {isPiInbound && (
+          <p className="mt-3 text-[11px] text-zinc-500 leading-relaxed border-l-2 border-sky-500/25 pl-3">
+            Sent by the Pi toward the admin — nothing to fire from here. Use device status or the Bridge feed to observe.
+          </p>
+        )}
+        {!isPiInbound && (
+          <ProtocolQuickTest sectionId={sectionId} item={item} devices={devices} bridgeEnabled={bridgeEnabled} />
+        )}
+      </div>
+      <div className="border-t border-white/[0.05] px-4 py-3 bg-black/15">
+        <p className="text-[13px] text-zinc-400 leading-relaxed">{item.description}</p>
+        {item.example && (
+          <div className="mt-3">
+            <CodeBlock code={item.example} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -519,16 +778,21 @@ function SectionBlock({
   section,
   open,
   onToggle,
+  devices,
+  bridgeEnabled,
 }: {
   section: Section;
   open: boolean;
   onToggle: () => void;
+  devices: Device[];
+  bridgeEnabled: boolean;
 }) {
   return (
-    <div className="rounded-2xl border border-white/5 bg-zinc-900/40 backdrop-blur-sm overflow-hidden">
+    <div className="rounded-2xl border border-white/[0.07] bg-zinc-900/50 backdrop-blur-sm overflow-hidden shadow-sm shadow-black/20">
       <button
+        type="button"
         onClick={onToggle}
-        className="w-full flex items-start gap-3 px-5 py-4 text-left hover:bg-white/5 transition-all"
+        className="w-full flex items-start gap-3 px-5 py-4 text-left hover:bg-white/[0.03] transition-all"
       >
         <div className="pt-1">
           <ChevronIcon open={open} />
@@ -547,16 +811,13 @@ function SectionBlock({
             return (
               <>
                 {oscGroups.length > 0 && (
-                  <div className="rounded-xl border border-orange-500/20 bg-orange-500/[0.03] border-l-4 border-l-orange-400/60 overflow-hidden">
-                    <div className="flex items-center gap-2 px-4 py-2 border-b border-orange-500/10 bg-orange-500/[0.04]">
-                      <svg className="w-3.5 h-3.5 text-orange-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
-                      </svg>
-                      <span className="text-[11px] uppercase tracking-wider font-semibold text-orange-300">
+                  <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] overflow-hidden">
+                    <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-white/[0.06] bg-black/20">
+                      <span className="inline-flex items-center rounded-md bg-orange-500/15 border border-orange-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-orange-300">
                         OSC
                       </span>
                       {section.transport.osc && (
-                        <span className="text-[10px] font-mono text-orange-300/60">· {section.transport.osc}</span>
+                        <span className="text-[11px] font-mono text-zinc-500">{section.transport.osc}</span>
                       )}
                     </div>
                     <div className="p-4 space-y-4">
@@ -565,9 +826,15 @@ function SectionBlock({
                           <h4 className="text-[10px] uppercase tracking-wider font-medium text-zinc-500 mb-2">
                             {g.label}
                           </h4>
-                          <div className="space-y-2">
+                          <div className="space-y-3">
                             {g.items.map((item) => (
-                              <EndpointRow key={item.address} item={item} />
+                              <EndpointRow
+                                key={`${section.id}-${g.label}-${item.address}`}
+                                item={item}
+                                sectionId={section.id}
+                                devices={devices}
+                                bridgeEnabled={bridgeEnabled}
+                              />
                             ))}
                           </div>
                         </div>
@@ -576,16 +843,13 @@ function SectionBlock({
                   </div>
                 )}
                 {httpGroups.length > 0 && (
-                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.03] border-l-4 border-l-emerald-400/60 overflow-hidden">
-                    <div className="flex items-center gap-2 px-4 py-2 border-b border-emerald-500/10 bg-emerald-500/[0.04]">
-                      <svg className="w-3.5 h-3.5 text-emerald-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0zM3.6 9h16.8M3.6 15h16.8M11.5 3a17 17 0 000 18M12.5 3a17 17 0 010 18" />
-                      </svg>
-                      <span className="text-[11px] uppercase tracking-wider font-semibold text-emerald-300">
+                  <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] overflow-hidden">
+                    <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-white/[0.06] bg-black/20">
+                      <span className="inline-flex items-center rounded-md bg-emerald-500/12 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
                         HTTP
                       </span>
                       {section.transport.http && (
-                        <span className="text-[10px] font-mono text-emerald-300/60">· {section.transport.http}</span>
+                        <span className="text-[11px] font-mono text-zinc-500">{section.transport.http}</span>
                       )}
                     </div>
                     <div className="p-4 space-y-4">
@@ -594,9 +858,15 @@ function SectionBlock({
                           <h4 className="text-[10px] uppercase tracking-wider font-medium text-zinc-500 mb-2">
                             {g.label}
                           </h4>
-                          <div className="space-y-2">
+                          <div className="space-y-3">
                             {g.items.map((item) => (
-                              <EndpointRow key={item.address} item={item} />
+                              <EndpointRow
+                                key={`${section.id}-${g.label}-${item.address}`}
+                                item={item}
+                                sectionId={section.id}
+                                devices={devices}
+                                bridgeEnabled={bridgeEnabled}
+                              />
                             ))}
                           </div>
                         </div>
@@ -725,10 +995,24 @@ export default function DocsPage() {
     trolley: true,
     system: false,
   });
+  const [docDevices, setDocDevices] = useState<Device[]>([]);
+  const [docSettings, setDocSettings] = useState<Settings | null>(null);
+
+  useEffect(() => {
+    if (tab !== "protocol") return;
+    listDevices()
+      .then(setDocDevices)
+      .catch(() => setDocDevices([]));
+    getSettings()
+      .then(setDocSettings)
+      .catch(() => setDocSettings(null));
+  }, [tab]);
 
   function toggle(id: string) {
     setOpenIds((s) => ({ ...s, [id]: !s[id] }));
   }
+
+  const bridgeEnabled = docSettings?.bridge_enabled ?? false;
 
   return (
     <div className="p-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
@@ -740,25 +1024,39 @@ export default function DocsPage() {
         </p>
       </div>
 
-      <div role="tablist" className="flex gap-1 border-b border-white/10 mb-6">
-        {TABS.map((t) => {
-          const isActive = t.id === tab;
-          return (
-            <button
-              key={t.id}
-              role="tab"
-              aria-selected={isActive}
-              onClick={() => setTab(t.id)}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
-                isActive
-                  ? "text-white border-sky-400"
-                  : "text-zinc-400 border-transparent hover:text-zinc-200"
-              }`}
-            >
-              {t.label}
-            </button>
-          );
-        })}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between border-b border-white/10 mb-6 pb-4">
+        <div role="tablist" className="flex gap-1">
+          {TABS.map((t) => {
+            const isActive = t.id === tab;
+            return (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => setTab(t.id)}
+                className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                  isActive
+                    ? "text-white border-sky-400"
+                    : "text-zinc-400 border-transparent hover:text-zinc-200"
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+        {tab === "protocol" && (
+          <button
+            type="button"
+            onClick={downloadOscTechnicalSheet}
+            className="shrink-0 inline-flex items-center gap-2 self-start sm:self-auto rounded-lg border border-white/15 bg-white/[0.03] px-3 py-2 text-sm font-medium text-zinc-200 hover:bg-white/[0.06] hover:border-white/25 transition-colors"
+          >
+            <svg className="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 10v11m0-11l3 3m-3-3l-3 3M4 5h16" />
+            </svg>
+            Download OSC technical sheet (.md)
+          </button>
+        )}
       </div>
 
       {tab === "install" && <InstallGuide />}
@@ -771,6 +1069,8 @@ export default function DocsPage() {
               section={s}
               open={!!openIds[s.id]}
               onToggle={() => toggle(s.id)}
+              devices={docDevices}
+              bridgeEnabled={bridgeEnabled}
             />
           ))}
           <p className="mt-8 text-[11px] text-zinc-600 font-mono">

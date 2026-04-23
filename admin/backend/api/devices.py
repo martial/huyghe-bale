@@ -1,9 +1,12 @@
 """Device API routes."""
 
+import csv
 import json
-import time
 import logging
+import time
 import urllib.request
+from datetime import datetime, timezone
+from io import StringIO
 
 from flask import Blueprint, request, jsonify, Response
 from storage.json_store import JsonStore
@@ -261,6 +264,49 @@ def device_status_stream():
 def latest_version():
     """Return latest commit info from GitHub."""
     return jsonify(get_latest_version())
+
+
+def _export_filename_stem() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+@bp.route("/export", methods=["GET"])
+def export_devices():
+    """Download registered devices as CSV (default) or JSON file.
+
+    Query: format=csv | json
+    """
+    fmt = (request.args.get("format") or "csv").strip().lower()
+    devices = [_decorate(d) for d in store.list_all()]
+    stem = _export_filename_stem()
+
+    if fmt == "json":
+        payload = json.dumps(devices, indent=2, ensure_ascii=False)
+        return Response(
+            payload + "\n",
+            mimetype="application/json; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="devices-{stem}.json"',
+            },
+        )
+
+    if fmt != "csv":
+        return jsonify({"error": 'format must be "csv" or "json"'}), 400
+
+    fieldnames = ("id", "name", "type", "ip_address", "osc_port", "hardware_id")
+    buf = StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for d in devices:
+        writer.writerow({k: (d.get(k) if d.get(k) is not None else "") for k in fieldnames})
+
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="devices-{stem}.csv"',
+        },
+    )
 
 
 @bp.route("/<device_id>", methods=["GET"])

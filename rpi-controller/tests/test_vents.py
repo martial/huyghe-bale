@@ -21,6 +21,7 @@ def _reset():
     vents.temp_c[:] = [None, None]
     vents._temp_files[:] = [None, None]
     vents.target_temp_c = 25.0
+    vents.max_temp_c = 80.0
     vents.mode = "raw"
     vents.state = "idle"
     vents.last_osc_time = 0.0
@@ -186,7 +187,7 @@ class TestStatus:
         s = vents.get_status()
         for k in (
             "temp1_c", "temp2_c", "fan1", "fan2", "peltier_mask", "peltier",
-            "rpm1A", "rpm1B", "rpm2A", "rpm2B", "target_c", "mode", "state",
+            "rpm1A", "rpm1B", "rpm2A", "rpm2B", "target_c", "max_temp_c", "mode", "state",
             "sensors_ok",
         ):
             assert k in s
@@ -196,9 +197,9 @@ class TestStatus:
         # temp1 and temp2 are the first two args; both None → -1.0
         assert args[0] == -1.0
         assert args[1] == -1.0
-        # mode and state are strings at the tail
+        assert isinstance(args[-3], str)
         assert isinstance(args[-2], str)
-        assert isinstance(args[-1], str)
+        assert isinstance(args[-1], float)
 
     def test_osc_args_encode_present_temp(self):
         vents.temp_c[0] = 22.5
@@ -232,6 +233,12 @@ class TestHttpTest:
         r = vents.handle_http_test({"command": "target", "value": 21.5})
         assert r["ok"] is True
         assert r["target_c"] == 21.5
+
+    def test_max_temp_via_http(self):
+        with patch.object(vents, "_save_prefs"):
+            r = vents.handle_http_test({"command": "max_temp", "value": 30.0})
+        assert r["ok"] is True
+        assert r["max_temp_c"] == 30.0
 
     def test_unknown_command(self):
         r = vents.handle_http_test({"command": "teleport"})

@@ -3,13 +3,13 @@
 Mirrors api/trolley_control.py. Commands map directly to /vents/<address>:
 
   POST /api/v1/vents-control/<device_id>/command
-       {command: "peltier" | "peltier_mask" | "fan" | "mode" | "target",
+       {command: "peltier" | "peltier_mask" | "fan" | "mode" | "target" | "max_temp",
         index?: 1|2|3 (peltier) or 1|2 (fan),
         value: ...}
 
   GET  /api/v1/vents-control/<device_id>/status
        → {temp1_c, temp2_c, fan1, fan2, peltier_mask, peltier,
-          rpm1A..rpm2B, target_c, mode, state, online, timestamp}
+          rpm1A..rpm2B, target_c, max_temp_c?, mode, state, online, timestamp}
 """
 
 import logging
@@ -26,7 +26,7 @@ bp = Blueprint("vents_control", __name__)
 _osc = OscSender()
 _receiver = OscReceiver(port=9001)
 
-_VALID_COMMANDS = ("peltier", "peltier_mask", "fan", "mode", "target")
+_VALID_COMMANDS = ("peltier", "peltier_mask", "fan", "mode", "target", "max_temp")
 
 
 def _route(command, body):
@@ -51,6 +51,8 @@ def _route(command, body):
         return "/vents/mode", v
     if command == "target":
         return "/vents/target", float(value)
+    if command == "max_temp":
+        return "/vents/max_temp", float(value)
     raise ValueError(f"unknown command: {command!r}")
 
 

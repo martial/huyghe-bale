@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useDeviceStore } from "../stores/device-store";
 import type { DeviceType } from "../types/device";
+import { downloadDeviceListExport } from "../api/devices";
 import DeviceCard from "../components/device/DeviceCard";
 import DeviceCardSkeleton from "../components/device/DeviceCardSkeleton";
 import DeviceForm from "../components/device/DeviceForm";
@@ -60,6 +61,23 @@ export default function DevicesPage() {
 
   const isUpdatingAny = updatingDevices.size > 0;
   const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState<false | "csv" | "json">(false);
+
+  async function handleExport(format: "csv" | "json") {
+    setExporting(format);
+    try {
+      await downloadDeviceListExport(format);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  const adminHost =
+    typeof window !== "undefined" ? window.location.hostname : "localhost";
+  const sampleVents = list.find((d) => (d.type ?? "vents") === "vents");
+  const sampleTrolley = list.find((d) => d.type === "trolley");
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -143,6 +161,24 @@ export default function DevicesPage() {
             </button>
           )}
           <button
+            type="button"
+            onClick={() => handleExport("csv")}
+            disabled={!!exporting}
+            className="px-5 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-sm font-semibold text-white transition-all duration-300 shadow-sm hover:shadow-md disabled:opacity-50"
+            title="Download device list as CSV"
+          >
+            {exporting === "csv" ? "Exporting…" : "Export CSV"}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleExport("json")}
+            disabled={!!exporting}
+            className="px-5 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-sm font-semibold text-zinc-300 transition-all duration-300 shadow-sm hover:shadow-md disabled:opacity-50"
+            title="Download device list as JSON"
+          >
+            {exporting === "json" ? "Exporting…" : "Export JSON"}
+          </button>
+          <button
             onClick={() => setShowScan(true)}
             className="px-5 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl text-sm font-semibold text-white transition-all duration-300 shadow-sm hover:shadow-md"
           >
@@ -154,6 +190,35 @@ export default function DevicesPage() {
           >
             {showForm ? "Cancel" : "Add Device"}
           </button>
+        </div>
+      </div>
+
+      <div className="mb-8 rounded-2xl border border-white/10 bg-zinc-900/40 backdrop-blur-sm overflow-hidden">
+        <div className="px-5 py-3 border-b border-white/5 bg-white/[0.02]">
+          <h3 className="text-sm font-medium text-zinc-200">OSC Bridge — targeting devices</h3>
+          <p className="text-xs text-zinc-500 mt-1">
+            From Max, TouchDesigner, or another machine, send OSC to this admin&apos;s{" "}
+            <strong className="text-zinc-400 font-normal">bridge UDP port</strong> (default{" "}
+            <code className="text-zinc-400">9002</code>, changeable in Settings). Prefix the real
+            address with <code className="text-orange-300/90">/to/&lt;identifier&gt;/</code> where
+            identifier is a device <strong className="text-zinc-400 font-normal">id</strong>,{" "}
+            <strong className="text-zinc-400 font-normal">name</strong>,{" "}
+            <strong className="text-zinc-400 font-normal">IP</strong>, or{" "}
+            <strong className="text-zinc-400 font-normal">hardware_id</strong> from the export.
+          </p>
+        </div>
+        <div className="px-5 py-4 space-y-3 text-[11px] leading-relaxed">
+          <p className="text-zinc-500 uppercase tracking-wider font-semibold">Examples</p>
+          <pre className="rounded-lg border border-white/10 bg-zinc-950/80 px-4 py-3 font-mono text-zinc-200 overflow-x-auto whitespace-pre-wrap">
+            {sampleVents
+              ? `# vents (fan 1 on device ${sampleVents.id})\noscsend ${adminHost} 9002 /to/${sampleVents.id}/vents/fan/1 f 0.5`
+              : `# vents\noscsend ${adminHost} 9002 /to/<device-id>/vents/fan/1 f 0.5`}
+          </pre>
+          <pre className="rounded-lg border border-white/10 bg-zinc-950/80 px-4 py-3 font-mono text-zinc-200 overflow-x-auto whitespace-pre-wrap">
+            {sampleTrolley
+              ? `# trolley (position on ${sampleTrolley.id})\noscsend ${adminHost} 9002 /to/${sampleTrolley.id}/trolley/position f 0.42`
+              : `# trolley\noscsend ${adminHost} 9002 /to/<device-id>/trolley/position f 0.42`}
+          </pre>
         </div>
       </div>
 

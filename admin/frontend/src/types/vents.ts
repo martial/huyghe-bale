@@ -1,10 +1,11 @@
 export type VentsMode = "raw" | "auto";
 export type VentsState =
   | "idle"
+  | "heating"
   | "cooling"
   | "holding"
-  | "coasting"
-  | "sensor_error";
+  | "sensor_error"
+  | "over_temp";
 
 export type VentsCommand = "peltier" | "peltier_mask" | "fan" | "mode" | "target";
 
@@ -20,6 +21,7 @@ export interface VentsStatus {
   rpm2A: number;
   rpm2B: number;
   target_c: number;
+  max_temp_c?: number | null;
   mode: VentsMode;
   state: VentsState;
   timestamp?: number;

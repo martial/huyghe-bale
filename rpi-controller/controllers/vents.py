@@ -1,12 +1,28 @@
 """Vents controller: 3 Peltier cells + 2 PWM fans + 4 tachos + 2 DS18B20 temps.
 
 Hardware:
-  - Peltier 1/2/3 on GPIO {26, 25, 24}, digital on/off (active HIGH).
-  - Fan 1 (cold side) PWM on GPIO 20; fan 2 (hot side) PWM on GPIO 18.
+  - Three Peltier stacks on GPIO {26, 25, 24}, digital on/off (active HIGH).
+    Each thermoelectric module has a cold face and a hot face; when ON, heat is
+    pumped from one side to the other (physics of the install determines which
+    face faces the conditioned volume).
+  - Fan 1 — cold-side ventilation PWM on GPIO 20; fan 2 — hot-side PWM on GPIO 18.
   - Tachos on GPIO {27, 17, 23, 22} (pair A/B per fan), falling-edge ISR
     → period → RPM.
-  - Two DS18B20 probes on the 1-wire bus (needs `dtoverlay=w1-gpio` in
-    /boot/firmware/config.txt — default data pin is GPIO 4).
+  - Two DS18B20 probes on 1-wire (`dtoverlay=w1-gpio` in config.txt). Typically
+    one probe tracks the cold path and one the hot path; discovery order maps to
+    temp1_c / temp2_c. Auto regulation uses their average unless both are missing.
+
+Temperature control — two independent concepts:
+
+  - **target** (+ hysteresis): regulation setpoint vs **average** probe temperature.
+    Bang-bang: below target − H → all cells **ON** (heat pumping active); above
+    target + H (and under max) → all **OFF**; in band → **holding**. State names
+    heating/cooling describe whether cells are driven, not which Peltier face is
+    physically hot or cold. Fans are not used for this loop (use raw or /vents/fan/*).
+  - **max_temp_c**: **safety** ceiling (persisted on the Pi). If avg temp exceeds
+    max, state is "over_temp": all Peltiers off; fan PWM is left unchanged (auto
+    does not touch fans for over_temp either).
+    Peltier "on" commands are ignored while above max (interlock).
 
 OSC protocol:
 
@@ -18,23 +34,25 @@ OSC protocol:
     /vents/fan/1      float 0..1
     /vents/fan/2      float 0..1
     /vents/mode       string "raw" | "auto"
-    /vents/target     float target temperature in °C
+    /vents/target     float target temperature in °C (setpoint for Peltier regulation)
+    /vents/max_temp   float safety max °C (stored in ~/.config/gpio-osc/vents_prefs.json)
 
   Status broadcast (Pi → admin on port 9001) every VENTS_STATUS_HZ ticks:
     /vents/status temp1, temp2, fan1_0_1, fan2_0_1, peltier_mask,
-                  rpm1A, rpm1B, rpm2A, rpm2B, target_c, mode, state
+                  rpm1A, rpm1B, rpm2A, rpm2B, target_c, mode, state, max_temp_c
 
-Auto mode: bang-bang with hysteresis. If avg(temp) > target + H → all
-peltiers ON + fans to VENTS_AUTO_FAN_HIGH_PCT. If avg(temp) < target - H
-→ peltiers OFF + fans to VENTS_AUTO_FAN_LOW_PCT. Deadband: hold previous
-output. If DS18B20 sensors are unavailable, auto mode refuses to run.
+Auto loop: avg > max → over_temp (Peltiers off only). avg < target − H → heating
+(mask 0b111). avg > target + H (and ≤ max) → cooling (mask 0). else → holding.
+Missing sensors → sensor_error (Peltiers + fans off).
 """
 
 import glob
+import json
 import logging
 import os
 import threading
 import time
+from pathlib import Path
 
 import RPi.GPIO as GPIO
 
@@ -45,8 +63,8 @@ from config import (
     PIN_TACHO_FAN_2A, PIN_TACHO_FAN_2B,
     VENTS_FAN_PWM_FREQ,
     VENTS_FAN_PWM_MIN_PCT, VENTS_FAN_PWM_MAX_PCT,
-    VENTS_DEFAULT_TARGET_C, VENTS_HYSTERESIS_C,
-    VENTS_AUTO_FAN_LOW_PCT, VENTS_AUTO_FAN_HIGH_PCT, VENTS_AUTO_LOOP_HZ,
+    VENTS_DEFAULT_TARGET_C, VENTS_HYSTERESIS_C, VENTS_DEFAULT_MAX_TEMP_C,
+    VENTS_AUTO_LOOP_HZ,
     VENTS_TEMP_POLL_HZ, VENTS_TACHO_MIN_DT_S,
     VENTS_STATUS_HZ,
 )
@@ -58,6 +76,10 @@ STATUS_BROADCAST_ADDRESS = "/vents/status"
 STATUS_BROADCAST_HZ = VENTS_STATUS_HZ
 
 PELTIER_PINS = (PIN_PELTIER_1, PIN_PELTIER_2, PIN_PELTIER_3)
+
+_PREFS_PATH = Path(os.path.expanduser("~/.config/gpio-osc/vents_prefs.json"))
+# Keep max_temp_c strictly above the upper regulation edge (target + H).
+_BAND_MARGIN_C = 0.05
 
 # ── state (module-level, read by OSC/HTTP handlers + status broadcaster) ──
 
@@ -73,8 +95,9 @@ temp_c = [None, None]  # temp1, temp2
 _temp_files = [None, None]  # paths to DS18B20 w1_slave files, None if sensor missing
 
 target_temp_c = float(VENTS_DEFAULT_TARGET_C)
+max_temp_c = float(VENTS_DEFAULT_MAX_TEMP_C)  # over-temp threshold; persisted in _PREFS_PATH
 mode = "raw"          # "raw" or "auto"
-state = "idle"        # "idle"|"cooling"|"holding"|"coasting"|"sensor_error"
+state = "idle"        # idle|heating|cooling|holding|sensor_error|over_temp
 
 last_osc_time = 0.0
 _webhooks = None
@@ -88,6 +111,76 @@ _temp_thread = None
 
 def _clamp(value, lo, hi):
     return max(lo, min(hi, value))
+
+
+def _regulation_band_high():
+    return target_temp_c + VENTS_HYSTERESIS_C
+
+
+def _min_allowed_max_temp_c():
+    return _regulation_band_high() + _BAND_MARGIN_C
+
+
+def _clamp_target_vs_max():
+    """Ensure target band stays strictly below max_temp_c."""
+    global target_temp_c
+    ceiling = max_temp_c - VENTS_HYSTERESIS_C - _BAND_MARGIN_C
+    if target_temp_c > ceiling:
+        logger.warning(
+            "target clamped from %.2f °C to %.2f °C so band stays below max_temp_c (%.2f)",
+            target_temp_c,
+            ceiling,
+            max_temp_c,
+        )
+        target_temp_c = ceiling
+
+
+def _clamp_max_vs_target():
+    """Ensure max_temp_c stays strictly above regulation band upper edge."""
+    global max_temp_c
+    lo = _min_allowed_max_temp_c()
+    if max_temp_c <= lo:
+        logger.warning(
+            "max_temp_c raised from %.2f °C to %.2f °C (must exceed target + hysteresis)",
+            max_temp_c,
+            lo,
+        )
+        max_temp_c = lo
+
+
+def _load_prefs():
+    """Load max_temp_c from disk (called from setup)."""
+    global max_temp_c
+    try:
+        data = json.loads(_PREFS_PATH.read_text())
+        v = float(data.get("max_temp_c", VENTS_DEFAULT_MAX_TEMP_C))
+        max_temp_c = _clamp(v, -55.0, 125.0)
+        _clamp_max_vs_target()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning("Failed to load vents prefs from %s: %s", _PREFS_PATH, e)
+
+
+def _save_prefs():
+    """Persist max_temp_c for reboot."""
+    try:
+        _PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _PREFS_PATH.with_suffix(".json.tmp")
+        payload = json.dumps({"max_temp_c": max_temp_c}, indent=2) + "\n"
+        tmp.write_text(payload)
+        tmp.replace(_PREFS_PATH)
+    except Exception as e:
+        logger.error("Failed to save vents prefs to %s: %s", _PREFS_PATH, e)
+
+
+def _set_max_temp_c(value):
+    """Set absolute over-temperature threshold (°C) and persist."""
+    global max_temp_c
+    max_temp_c = _clamp(float(value), -55.0, 125.0)
+    _clamp_max_vs_target()
+    _save_prefs()
+    logger.info("Vents max temperature threshold → %.2f °C (saved)", max_temp_c)
 
 
 def _set_peltier(index, on):
@@ -193,6 +286,14 @@ def _avg_temp():
     return sum(vals) / len(vals) if vals else None
 
 
+def _over_temp_interlock():
+    """True when average temp is above max_temp_c (same test as auto hot branch)."""
+    avg = _avg_temp()
+    if avg is None:
+        return False
+    return avg > max_temp_c
+
+
 def _auto_loop():
     global state
     period = 1.0 / max(1, VENTS_AUTO_LOOP_HZ)
@@ -206,19 +307,18 @@ def _auto_loop():
                 _apply_peltier_mask(0)
                 _set_fan(0, 0.0)
                 _set_fan(1, 0.0)
+            elif avg > max_temp_c:
+                state = "over_temp"
+                _apply_peltier_mask(0)
+            elif avg < target_temp_c - VENTS_HYSTERESIS_C:
+                state = "heating"
+                _apply_peltier_mask(0b111)
             elif avg > target_temp_c + VENTS_HYSTERESIS_C:
                 state = "cooling"
-                _apply_peltier_mask(0b111)
-                _set_fan(0, VENTS_AUTO_FAN_HIGH_PCT / 100.0)
-                _set_fan(1, VENTS_AUTO_FAN_HIGH_PCT / 100.0)
-            elif avg < target_temp_c - VENTS_HYSTERESIS_C:
-                state = "coasting"
                 _apply_peltier_mask(0)
-                _set_fan(0, VENTS_AUTO_FAN_LOW_PCT / 100.0)
-                _set_fan(1, VENTS_AUTO_FAN_LOW_PCT / 100.0)
             else:
                 state = "holding"
-                # keep previous outputs
+                # deadband — keep previous Peltier outputs; fans unchanged by auto
         else:
             state = "idle"
         _tacho_decay_tick()
@@ -232,6 +332,8 @@ def setup(webhooks):
     _webhooks = webhooks
 
     _shutdown_event.clear()
+    _load_prefs()
+    _clamp_max_vs_target()
 
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
@@ -328,12 +430,18 @@ def _safe(handler_name):
 
 
 def _handle_peltier_one(index, value):
-    """Raw auto-mode-disabling: user wants manual peltier control, override mode."""
+    """Manual peltier control; switches auto → raw unless over-temperature interlock applies."""
     global mode
+    want_on = bool(int(value))
+    if _over_temp_interlock():
+        if want_on:
+            logger.info("Peltier on suppressed (over temperature interlock)")
+        _set_peltier(index, False)
+        return
     if mode == "auto":
         logger.info("Peltier override → switching mode to raw")
         mode = "raw"
-    _set_peltier(index, bool(int(value)))
+    _set_peltier(index, want_on)
 
 
 @_safe("peltier_1")
@@ -359,10 +467,16 @@ def handle_peltier_mask(address, *args):
     global mode
     if not args:
         return
+    mask = int(args[0]) & 0b111
+    if _over_temp_interlock():
+        if mask != 0:
+            logger.info("Peltier mask suppressed (over temperature interlock)")
+        _apply_peltier_mask(0)
+        return
     if mode == "auto":
         logger.info("Peltier mask override → switching mode to raw")
         mode = "raw"
-    _apply_peltier_mask(int(args[0]) & 0b111)
+    _apply_peltier_mask(mask)
 
 
 @_safe("fan_1")
@@ -396,6 +510,9 @@ def handle_mode(address, *args):
     if requested not in ("raw", "auto"):
         raise ValueError(f"mode must be 'raw' or 'auto', got {requested!r}")
     mode = requested
+    if mode == "auto":
+        _set_fan(0, 0.0)
+        _set_fan(1, 0.0)
     logger.info("Vents mode → %s", mode)
 
 
@@ -405,7 +522,15 @@ def handle_target(address, *args):
     if not args:
         return
     target_temp_c = float(args[0])
+    _clamp_target_vs_max()
     logger.info("Vents target temperature → %.2f °C", target_temp_c)
+
+
+@_safe("max_temp")
+def handle_max_temp(address, *args):
+    if not args:
+        return
+    _set_max_temp_c(args[0])
 
 
 def register_osc(dispatcher):
@@ -417,13 +542,14 @@ def register_osc(dispatcher):
     dispatcher.map("/vents/fan/2", handle_fan_2)
     dispatcher.map("/vents/mode", handle_mode)
     dispatcher.map("/vents/target", handle_target)
+    dispatcher.map("/vents/max_temp", handle_max_temp)
 
 
 # ── HTTP test surface ─────────────────────────────────────────────────────
 
 def handle_http_test(body):
     """Direct probe mirroring the OSC surface. Body:
-        {command: "peltier"|"peltier_mask"|"fan"|"mode"|"target",
+        {command: "peltier"|"peltier_mask"|"fan"|"mode"|"target"|"max_temp",
          index?: 1|2|3 (peltier) or 1|2 (fan),
          value: ...}
     Returns current readings.
@@ -448,6 +574,8 @@ def handle_http_test(body):
             handle_mode("/http", str(value))
         elif cmd == "target":
             handle_target("/http", float(value))
+        elif cmd == "max_temp":
+            handle_max_temp("/http", float(value))
         else:
             return {"ok": False, "error": f"unknown command: {cmd!r}"}
     except Exception as e:
@@ -475,6 +603,7 @@ def get_status():
         "rpm2A": tacho_rpm[2],
         "rpm2B": tacho_rpm[3],
         "target_c": target_temp_c,
+        "max_temp_c": max_temp_c,
         "mode": mode,
         "state": state,
         "sensors_ok": any(t is not None for t in temp_c),
@@ -498,6 +627,7 @@ def get_status_osc_args():
         float(s["target_c"]),
         str(s["mode"]),
         str(s["state"]),
+        float(s["max_temp_c"]),
     ]
 
 
@@ -516,4 +646,5 @@ def describe():
         "mode": mode,
         "state": state,
         "target_c": target_temp_c,
+        "max_temp_c": max_temp_c,
     }

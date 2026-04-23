@@ -79,8 +79,9 @@ class OscReceiver:
         """Pi-pushed status for vents controllers. Arg layout matches
         controllers.vents.get_status_osc_args():
           (temp1, temp2, fan1, fan2, peltier_mask,
-           rpm1A, rpm1B, rpm2A, rpm2B, target_c, mode, state)
+           rpm1A, rpm1B, rpm2A, rpm2B, target_c, mode, state [, max_temp_c])
         Missing temperatures arrive encoded as -1.0 and are exposed as None.
+        Older firmware sends 12 payload args (no max_temp_c).
         """
         ip = client_address[0]
         self.last_seen[ip] = time.time()
@@ -97,9 +98,10 @@ class OscReceiver:
             target_c = float(args[9])
             mode = str(args[10])
             state = str(args[11])
+            max_tc = float(args[12]) if len(args) > 12 else None
         except (IndexError, TypeError, ValueError):
             return
-        self.vents_status[ip] = {
+        row = {
             "temp1_c": temp1 if temp1 >= 0 else None,
             "temp2_c": temp2 if temp2 >= 0 else None,
             "fan1": fan1,
@@ -115,6 +117,9 @@ class OscReceiver:
             "state": state,
             "timestamp": time.time(),
         }
+        if max_tc is not None:
+            row["max_temp_c"] = max_tc
+        self.vents_status[ip] = row
 
     def get_status(self, ip: str, timeout: float = 6.0) -> bool:
         """Return True if we've seen a pong from this IP within the timeout."""

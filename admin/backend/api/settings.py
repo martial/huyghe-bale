@@ -3,9 +3,12 @@
 import json
 import logging
 import os
+import urllib.error
+import urllib.request
 
 from flask import Blueprint, jsonify, request
 
+from api.devices import store as device_store
 from config import DATA_DIR
 from storage.json_store import _write_atomic
 
@@ -23,6 +26,8 @@ DEFAULTS = {
     "bridge_enabled": False,      # OSC bridge: listen on a new port and fan out to devices
     "bridge_port": 9002,          # Bridge UDP listen port (1024–65535, != 9001 admin receiver)
     "bridge_routing": "type-match",  # "passthrough" | "type-match" | "none"
+    # Absolute °C threshold for vents over-temp (persisted on each vents Pi when saved)
+    "vents_max_temp_c": 80.0,
 }
 
 # Listeners notified when specific settings change. Keys: setting name.
@@ -71,6 +76,27 @@ def _fire(key: str, old, new):
             pass
 
 
+def _push_vents_max_temp_to_devices(value: float):
+    """POST /gpio/test to every configured vents device so the Pi persists max_temp_c."""
+    payload = json.dumps({"command": "max_temp", "value": value}).encode("utf-8")
+    for dev in device_store.list_all():
+        if dev.get("type") != "vents":
+            continue
+        ip = dev.get("ip_address")
+        if not ip:
+            continue
+        req = urllib.request.Request(
+            f"http://{ip}:9001/gpio/test",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=4)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            logger.warning("Push vents_max_temp_c to %s failed: %s", ip, e)
+
+
 @bp.route("", methods=["GET"])
 def get_settings():
     return jsonify(_read())
@@ -113,7 +139,16 @@ def update_settings():
             }), 400
         current["bridge_routing"] = val
 
+    if "vents_max_temp_c" in body:
+        val = body["vents_max_temp_c"]
+        if not isinstance(val, (int, float)) or val < -55 or val > 125:
+            return jsonify({"error": "vents_max_temp_c must be between -55 and 125 °C"}), 400
+        current["vents_max_temp_c"] = round(float(val), 2)
+
     _write(current)
+
+    if "vents_max_temp_c" in body:
+        _push_vents_max_temp_to_devices(current["vents_max_temp_c"])
 
     for key in ("bridge_enabled", "bridge_port", "bridge_routing"):
         if before.get(key) != current.get(key):

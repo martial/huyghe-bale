@@ -2,10 +2,11 @@ import type { VentsStatus, VentsState } from "../../types/vents";
 
 const STATE_COLOR: Record<VentsState, { text: string; bg: string; label: string }> = {
   idle:          { text: "text-zinc-300",     bg: "from-zinc-800/40 to-zinc-900/60",     label: "idle" },
+  heating:       { text: "text-amber-300",    bg: "from-amber-500/20 to-amber-900/20",   label: "heating" },
   cooling:       { text: "text-sky-300",      bg: "from-sky-500/20 to-sky-900/20",       label: "cooling" },
   holding:       { text: "text-emerald-300",  bg: "from-emerald-500/20 to-emerald-900/20", label: "holding" },
-  coasting:      { text: "text-amber-300",    bg: "from-amber-500/20 to-amber-900/20",   label: "coasting" },
   sensor_error:  { text: "text-red-300",      bg: "from-red-500/20 to-red-900/20",       label: "no sensors" },
+  over_temp:     { text: "text-orange-300", bg: "from-orange-500/25 to-orange-950/30", label: "over temp" },
 };
 
 interface Props {
@@ -22,6 +23,7 @@ export default function VentsHero({ status, stale, lastPushAgeS }: Props) {
   const avg = [t1, t2].filter((v): v is number => typeof v === "number");
   const avgTemp = avg.length ? avg.reduce((a, b) => a + b, 0) / avg.length : null;
   const target = status?.target_c;
+  const maxCeiling = status?.max_temp_c;
   const mode = status?.mode ?? "raw";
 
   return (
@@ -52,9 +54,19 @@ export default function VentsHero({ status, stale, lastPushAgeS }: Props) {
           {avgTemp != null ? avgTemp.toFixed(1) : "—"}
         </span>
         <span className="text-xl text-zinc-500">°C</span>
-        {target != null && (
-          <span className="ml-auto text-[11px] font-mono text-zinc-400">
-            target <span className="text-zinc-200">{target.toFixed(1)}°C</span>
+        {(target != null || maxCeiling != null) && (
+          <span className="ml-auto text-[11px] font-mono text-zinc-400 text-right leading-tight">
+            {target != null && (
+              <>
+                target <span className="text-zinc-200">{target.toFixed(1)}°C</span>
+              </>
+            )}
+            {target != null && maxCeiling != null && <span className="text-zinc-600"> · </span>}
+            {maxCeiling != null && (
+              <>
+                max <span className="text-orange-300/90">{maxCeiling.toFixed(1)}°C</span>
+              </>
+            )}
           </span>
         )}
       </div>

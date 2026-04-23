@@ -12,7 +12,7 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
         config.DATA_DIR = data_dir
 
     from api import timelines, devices, orchestrations, playback, export, settings, health
-    from api import trolley_timelines, trolley_control, vents_control, bridge
+    from api import trolley_timelines, trolley_control, vents_control, bridge, protocol_test
     from api.playback import set_engine
     from api.timelines import set_engine as set_timelines_engine
     from api.trolley_timelines import set_engine as set_trolley_timelines_engine
@@ -38,6 +38,7 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
     app.register_blueprint(trolley_control.bp, url_prefix="/api/v1/trolley-control")
     app.register_blueprint(vents_control.bp, url_prefix="/api/v1/vents-control")
     app.register_blueprint(bridge.bp, url_prefix="/api/v1/bridge")
+    app.register_blueprint(protocol_test.bp, url_prefix="/api/v1/protocol-test")
 
     # Import endpoint is under /api/v1/import
     @app.route("/api/v1/import/timeline", methods=["POST"])

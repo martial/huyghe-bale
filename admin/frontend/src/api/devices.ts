@@ -21,6 +21,29 @@ export function deleteDevice(id: string) {
   return del(`/devices/${id}`);
 }
 
+/** Download registered devices from GET /devices/export (CSV default, JSON optional). */
+export async function downloadDeviceListExport(format: "csv" | "json" = "csv"): Promise<void> {
+  const qs = format === "json" ? "?format=json" : "";
+  const res = await fetch(`/api/v1/devices/export${qs}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(typeof err?.error === "string" ? err.error : `Export failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  const cd = res.headers.get("Content-Disposition");
+  let filename = format === "json" ? "devices.json" : "devices.csv";
+  const m = cd?.match(/filename="([^"]+)"/);
+  if (m?.[1]) filename = m[1];
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 export function getLatestVersion() {
   return get<LatestVersion>("/devices/version/latest");
 }

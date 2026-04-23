@@ -1,7 +1,11 @@
 """Thin OSC sender wrapper with lazy client creation."""
 
 import threading
+from typing import List, Optional, Union
+
 from pythonosc.udp_client import SimpleUDPClient
+
+Arg = Union[int, float, str, bool]
 
 
 class OscSender:
@@ -38,6 +42,22 @@ class OscSender:
         """
         client = self._get_client(ip, port)
         client.send_message(address, value)
+
+    def send_values(self, ip: str, port: int, address: str, values: Optional[List[Arg]] = None):
+        """Send an OSC message with zero (bang) or more typed arguments.
+
+        Args:
+            values: Empty or None → no arguments. One element → single-arg message.
+                Multiple elements → multiple OSC args (as a single list payload to pythonosc).
+        """
+        client = self._get_client(ip, port)
+        if not values:
+            client.send_message(address, None)
+            return
+        if len(values) == 1:
+            client.send_message(address, values[0])
+            return
+        client.send_message(address, values)
 
     def send_zero(self, ip: str, port: int):
         """Halt a vents device: drop both fan PWMs to 0 and clear peltiers.

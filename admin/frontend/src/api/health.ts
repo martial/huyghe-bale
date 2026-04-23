@@ -18,10 +18,20 @@ interface PlaybackStatus {
   last_error: string | null;
 }
 
+export interface VentsOverTempItem {
+  device_id: string;
+  name: string;
+  temp1_c?: number | null;
+  temp2_c?: number | null;
+  target_c?: number;
+  max_temp_c?: number | null;
+}
+
 export interface HealthStatus {
   osc_receiver: OscReceiverStatus;
   bridge: BridgeStatus;
   playback: PlaybackStatus;
+  vents_over_temp: VentsOverTempItem[];
   log_path: string | null;
   ok: boolean;
 }

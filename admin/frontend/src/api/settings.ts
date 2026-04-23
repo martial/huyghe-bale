@@ -8,6 +8,8 @@ export interface Settings {
   bridge_enabled: boolean;
   bridge_port: number;
   bridge_routing: BridgeRouting;
+  /** Absolute °C — over-temp threshold; saved to each vents Pi on Save */
+  vents_max_temp_c: number;
 }
 
 export function getSettings() {

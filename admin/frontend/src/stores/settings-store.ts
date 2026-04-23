@@ -16,6 +16,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     bridge_enabled: false,
     bridge_port: 9002,
     bridge_routing: "type-match",
+    vents_max_temp_c: 80,
   },
   loading: false,
 

@@ -4,9 +4,14 @@ subsystem liveness (OSC receiver, bridge, playback thread).
 The launcher sets `LOG_PATH` at startup so the UI can tell the operator
 where to find crash logs."""
 
+import logging
+
 from flask import Blueprint, jsonify
 
+from api.devices import store as device_store
 from engine.osc_receiver import OscReceiver
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint("health", __name__)
 
@@ -45,6 +50,30 @@ def get_health():
     except Exception as e:
         playback_state["last_error"] = f"playback introspection failed: {e}"
 
+    vents_over_temp = []
+    try:
+        for dev in device_store.list_all():
+            if dev.get("type") != "vents":
+                continue
+            ip = dev.get("ip_address")
+            if not ip:
+                continue
+            snap = receiver.get_vents_status(ip)
+            if snap.get("state") != "over_temp":
+                continue
+            vents_over_temp.append(
+                {
+                    "device_id": dev.get("id"),
+                    "name": dev.get("name") or dev.get("id"),
+                    "temp1_c": snap.get("temp1_c"),
+                    "temp2_c": snap.get("temp2_c"),
+                    "target_c": snap.get("target_c"),
+                    "max_temp_c": snap.get("max_temp_c"),
+                }
+            )
+    except Exception as e:
+        logger.warning("vents_over_temp aggregation failed: %s", e)
+
     payload = {
         "osc_receiver": {
             "running": receiver.running,
@@ -53,6 +82,7 @@ def get_health():
         },
         "bridge": bridge_state,
         "playback": playback_state,
+        "vents_over_temp": vents_over_temp,
         "log_path": LOG_PATH,
     }
     payload["ok"] = (

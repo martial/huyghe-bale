@@ -25,8 +25,10 @@ VENTS_FAN_PWM_MAX_PCT = 100.0 # duty ceiling
 # Bang-bang temperature control
 VENTS_DEFAULT_TARGET_C = 25.0
 VENTS_HYSTERESIS_C = 0.5       # +/- around target defines the deadband
-VENTS_AUTO_FAN_LOW_PCT = 20.0  # fan duty while holding / coasting
-VENTS_AUTO_FAN_HIGH_PCT = 80.0 # fan duty while actively cooling
+# Absolute ceiling (°C): above this → over_temp / interlock (persisted on Pi when changed).
+VENTS_DEFAULT_MAX_TEMP_C = 80.0
+VENTS_AUTO_FAN_LOW_PCT = 20.0  # PWM floor reference (raw/manual fans); unused by auto thermoregulation
+VENTS_AUTO_FAN_HIGH_PCT = 80.0 # PWM ceiling reference (raw/manual fans)
 VENTS_AUTO_LOOP_HZ = 4          # auto loop tick rate
 
 # Broadcast
