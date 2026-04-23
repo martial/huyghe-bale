@@ -36,6 +36,10 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   async start(type, id, device_ids) {
     await api.startPlayback({ type, id, device_ids });
     set({ lastDeviceIds: device_ids });
+    // Refresh status synchronously so the UI reflects playing=true
+    // without waiting 500 ms for the first poll. Otherwise the cursor
+    // + progress bar don't appear until half a second after the click.
+    await get().fetchStatus();
     get().startPolling();
   },
 
