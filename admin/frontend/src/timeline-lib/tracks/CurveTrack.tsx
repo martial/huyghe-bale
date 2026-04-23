@@ -199,6 +199,111 @@ export default function CurveTrack({
         <PlaybackCursor timeToX={(t) => tc.timeToX(canvas, t)} height={height} />
       )}
 
+      {/* Bezier handles for the selected "bezier" (custom) point */}
+      {(() => {
+        if (!selectedPointId) return null;
+        const idx = points.findIndex((p) => p.id === selectedPointId);
+        if (idx <= 0) return null; // first point has no incoming segment
+        const p1 = points[idx]!;
+        if (p1.curveType !== "bezier") return null;
+        const h = p1.bezierHandles ?? { x1: 0.25, y1: 0, x2: 0.75, y2: 1 };
+        const p0 = points[idx - 1]!;
+        const x0 = tc.timeToX(canvas, p0.time);
+        const y0 = tc.valueToY(canvas, p0.value);
+        const x1 = tc.timeToX(canvas, p1.time);
+        const y1 = tc.valueToY(canvas, p1.value);
+        const cp1x = x0 + (x1 - x0) * h.x1;
+        const cp1y = y0 - (y0 - y1) * h.y1;
+        const cp2x = x0 + (x1 - x0) * h.x2;
+        const cp2y = y0 - (y0 - y1) * h.y2;
+
+        function startHandleDrag(e: React.MouseEvent, which: 1 | 2) {
+          if (readonly) return;
+          e.stopPropagation();
+          e.preventDefault();
+          const svg = svgRef.current!;
+          function onMove(me: MouseEvent) {
+            const rect = svg.getBoundingClientRect();
+            const mx = me.clientX - rect.left;
+            const my = me.clientY - rect.top;
+            const dx = x1 - x0;
+            const dy = y0 - y1; // y0 > y1 when value rises
+            const nx = dx === 0 ? 0 : (mx - x0) / dx;
+            const ny = dy === 0 ? 0 : (y0 - my) / dy;
+            const next = {
+              ...h,
+              [which === 1 ? "x1" : "x2"]: Math.max(0, Math.min(1, nx)),
+              [which === 1 ? "y1" : "y2"]: ny,
+            };
+            onChange({
+              ...track,
+              points: points.map((p) =>
+                p.id === p1.id ? { ...p, bezierHandles: next } : p,
+              ),
+            });
+          }
+          function onUp() {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+          }
+          window.addEventListener("mousemove", onMove);
+          window.addEventListener("mouseup", onUp);
+        }
+
+        return (
+          <g pointerEvents="none">
+            {/* dashed leaders: prev → cp1, next → cp2 */}
+            <line
+              x1={x0}
+              y1={y0}
+              x2={cp1x}
+              y2={cp1y}
+              stroke={track.color}
+              strokeDasharray="3 3"
+              strokeWidth={1}
+              opacity={0.5}
+            />
+            <line
+              x1={x1}
+              y1={y1}
+              x2={cp2x}
+              y2={cp2y}
+              stroke={track.color}
+              strokeDasharray="3 3"
+              strokeWidth={1}
+              opacity={0.5}
+            />
+            {/* handles — pointerEvents:auto to receive drag */}
+            <circle
+              cx={cp1x}
+              cy={cp1y}
+              r={5}
+              fill="#1f2937"
+              stroke={track.color}
+              strokeWidth={2}
+              style={{ pointerEvents: readonly ? "none" : "auto" }}
+              className={readonly ? "" : "cursor-grab active:cursor-grabbing"}
+              onMouseDown={(e) => startHandleDrag(e, 1)}
+            >
+              <title>bezier handle 1 — drag to shape the in-ramp</title>
+            </circle>
+            <circle
+              cx={cp2x}
+              cy={cp2y}
+              r={5}
+              fill="#1f2937"
+              stroke={track.color}
+              strokeWidth={2}
+              style={{ pointerEvents: readonly ? "none" : "auto" }}
+              className={readonly ? "" : "cursor-grab active:cursor-grabbing"}
+              onMouseDown={(e) => startHandleDrag(e, 2)}
+            >
+              <title>bezier handle 2 — drag to shape the out-ramp</title>
+            </circle>
+          </g>
+        );
+      })()}
+
       {/* Point markers */}
       {points.map((pt) => {
         const cx = tc.timeToX(canvas, pt.time);
