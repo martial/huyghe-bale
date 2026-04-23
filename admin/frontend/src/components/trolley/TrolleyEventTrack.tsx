@@ -1,7 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import type { TrolleyEvent, TrolleyCommand } from "../../types/trolley";
 import { usePlaybackStore } from "../../stores/playback-store";
-import { useSmoothedElapsed } from "../../hooks/use-smoothed-elapsed";
+import { TrolleyPlaybackCursor } from "./TrolleyPlaybackCursor";
 
 const COMMAND_ROWS: { key: TrolleyCommand; label: string; color: string }[] = [
   { key: "position", label: "position", color: "bg-sky-400" },
@@ -52,8 +52,14 @@ export default function TrolleyEventTrack({
   const stripRef = useRef<HTMLDivElement>(null);
   const [stripWidth, setStripWidth] = useState(0);
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const playbackStatus = usePlaybackStore((s) => s.status);
-  const smoothElapsed = useSmoothedElapsed();
+  // Narrow boolean selector — otherwise this track re-renders on every
+  // 500 ms status poll and drags the whole lanes grid through React.
+  const showCursor = usePlaybackStore(
+    (s) =>
+      s.status.playing &&
+      s.status.id === timelineId &&
+      s.status.type === "trolley-timeline",
+  );
 
   // Measure the horizontal track so the ruler can pick a non-crowded tick step.
   useEffect(() => {
@@ -72,16 +78,18 @@ export default function TrolleyEventTrack({
   }, []);
 
   const tickStep = pickTickInterval(duration, stripWidth);
-  const showCursor =
-    playbackStatus.playing &&
-    playbackStatus.id === timelineId &&
-    playbackStatus.type === "trolley-timeline";
 
   function clientXToTime(clientX: number): number {
     const el = stripRef.current;
     if (!el) return 0;
     const rect = el.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    // The strip wrapper includes the label column; the event area starts
+    // LABEL_COL_PX in from the left. Factoring that out here is what was
+    // making clicks land ~72 px * (duration / totalWidth) early.
+    const xInEventArea = clientX - rect.left - LABEL_COL_PX;
+    const eventAreaWidth = rect.width - LABEL_COL_PX;
+    if (eventAreaWidth <= 0) return 0;
+    const pct = Math.max(0, Math.min(1, xInEventArea / eventAreaWidth));
     return Math.round(pct * duration * 100) / 100;
   }
 
@@ -104,10 +112,6 @@ export default function TrolleyEventTrack({
       window.removeEventListener("mouseup", handleDragEnd);
     };
   }, [draggingId, handleDragMove, handleDragEnd]);
-
-  const cursorPct = showCursor
-    ? Math.max(0, Math.min(1, smoothElapsed / duration)) * 100
-    : null;
 
   function handleLaneClick(e: React.MouseEvent, command: TrolleyCommand) {
     if (e.target !== e.currentTarget) return;
@@ -152,11 +156,12 @@ export default function TrolleyEventTrack({
         ref={stripRef}
         className="flex flex-col rounded-lg border border-white/5 bg-zinc-900/40 overflow-hidden relative"
       >
-        {/* Playback cursor spans all lanes */}
-        {cursorPct !== null && (
-          <div
-            className="absolute top-0 bottom-0 w-px bg-green-400/60 pointer-events-none"
-            style={{ left: `calc(${LABEL_COL_PX}px + ${cursorPct}% * (100% - ${LABEL_COL_PX}px) / 100)` }}
+        {/* Playback cursor spans all lanes — imperatively animated via refs. */}
+        {showCursor && stripWidth > 0 && (
+          <TrolleyPlaybackCursor
+            labelColPx={LABEL_COL_PX}
+            stripWidth={stripWidth}
+            duration={duration}
           />
         )}
 
