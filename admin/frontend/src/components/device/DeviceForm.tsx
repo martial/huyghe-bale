@@ -13,13 +13,19 @@ export default function DeviceForm({ onCreated }: { onCreated: () => void }) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    await createDevice({ name, ip_address: ip, osc_port: port, type });
-    notify("success", "Device added successfully");
-    setName("");
-    setIp("");
-    setPort(9000);
-    setType("vents");
-    onCreated();
+    try {
+      await createDevice({ name, ip_address: ip, osc_port: port, type });
+      notify("success", "Device added successfully");
+      setName("");
+      setIp("");
+      setPort(9000);
+      setType("vents");
+      onCreated();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[DeviceForm] createDevice failed:", err);
+      notify("error", `Add failed: ${msg}`);
+    }
   }
 
   return (
