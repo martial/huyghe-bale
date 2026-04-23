@@ -232,14 +232,13 @@ def setup(webhooks):
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
 
-    GPIO.setup(PIN_STEP_DIR, GPIO.OUT)
-    GPIO.setup(PIN_STEP_PUL, GPIO.OUT)
-    GPIO.setup(PIN_STEP_ENA, GPIO.OUT)
+    # Pass initial= so rpi-lgpio (Pi 5) doesn't try to read the pin
+    # before claiming it — that fails with 'GPIO not allocated' on a
+    # crash-restart where the previous process didn't run cleanup.
+    GPIO.setup(PIN_STEP_DIR, GPIO.OUT, initial=GPIO.HIGH)  # default forward
+    GPIO.setup(PIN_STEP_PUL, GPIO.OUT, initial=GPIO.LOW)
+    GPIO.setup(PIN_STEP_ENA, GPIO.OUT, initial=GPIO.HIGH)  # disabled (active LOW)
     GPIO.setup(PIN_LIM_SWITCH, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-
-    GPIO.output(PIN_STEP_PUL, GPIO.LOW)
-    GPIO.output(PIN_STEP_DIR, GPIO.HIGH)  # default forward
-    GPIO.output(PIN_STEP_ENA, GPIO.HIGH)  # disabled (active LOW)
 
     try:
         GPIO.add_event_detect(

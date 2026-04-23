@@ -338,12 +338,14 @@ def setup(webhooks):
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
 
+    # Pass initial= so rpi-lgpio (Pi 5) doesn't try to read the pin
+    # before claiming it — that fails with 'GPIO not allocated' on a
+    # crash-restart where the previous process didn't run cleanup.
     for pin in PELTIER_PINS:
-        GPIO.setup(pin, GPIO.OUT)
-        GPIO.output(pin, GPIO.LOW)
+        GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
 
-    GPIO.setup(PIN_PWM_FAN_1, GPIO.OUT)
-    GPIO.setup(PIN_PWM_FAN_2, GPIO.OUT)
+    GPIO.setup(PIN_PWM_FAN_1, GPIO.OUT, initial=GPIO.LOW)
+    GPIO.setup(PIN_PWM_FAN_2, GPIO.OUT, initial=GPIO.LOW)
     pwm_fan_1 = GPIO.PWM(PIN_PWM_FAN_1, VENTS_FAN_PWM_FREQ)
     pwm_fan_2 = GPIO.PWM(PIN_PWM_FAN_2, VENTS_FAN_PWM_FREQ)
     pwm_fan_1.start(VENTS_FAN_PWM_MIN_PCT)
