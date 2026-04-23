@@ -60,10 +60,22 @@ else:
 
 logger = logging.getLogger("launcher")
 
+# CRITICAL: override config.DATA_DIR BEFORE any `from api import …` runs.
+# Any api module (and their transitive imports like api.devices, which
+# api.health pulls at top level) captures DATA_DIR via `from config
+# import DATA_DIR` at module-load time. If that capture happens before
+# this override, the module's JsonStore ends up pointing at the bundle's
+# default `_internal/data` folder — which gets replaced on every rebuild,
+# so every new build looks like "all devices got wiped".
+if data_dir is not None:
+    import config  # noqa: E402
+    config.DATA_DIR = data_dir
+
 from app import create_app  # noqa: E402 — must import after path setup
 
 # Surface the resolved log path to the health endpoint so the UI / docs
-# can tell the operator where to look.
+# can tell the operator where to look. Safe to do now — the override
+# above propagated to api.devices / api.health at their first import.
 try:
     import api.health as _health_mod  # noqa: E402
     _health_mod.LOG_PATH = log_path

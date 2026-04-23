@@ -74,17 +74,12 @@ export default function Toolbar({
       : "bg-sky-600 hover:bg-sky-500";
 
   async function handlePlay() {
-    console.log("[Toolbar] Play clicked", {
-      timelineId: timeline.id,
-      deviceType,
-      deviceCount: devices.length,
-      selectedIds,
-    });
-    let devs = devices;
-    if (devs.length === 0) {
-      await fetchDevices();
-      devs = useDeviceStore.getState().list;
-    }
+    // Always pull the latest device list before sending — the frontend
+    // store can be stale (e.g. after a rebuild or a race with the
+    // corrupt-file quarantine, the backend may have pruned a device
+    // the store still remembers).
+    await fetchDevices();
+    const devs = useDeviceStore.getState().list;
     const eligible = devs.filter((d) => (d.type ?? "vents") === deviceType);
     if (eligible.length === 0) {
       notify(
@@ -93,34 +88,36 @@ export default function Toolbar({
       );
       return;
     }
-    // Always derive ids from the LIVE eligible list — any selectedIds
-    // that no longer match a registered device are stale (added then
-    // removed, or a fresh backend replaced the data-dir) and would
-    // cause the backend to 400 with "No valid devices specified".
     const liveIds = eligible.map((d) => d.id);
+    // Rebuild selection against the fresh list so a stale id from a
+    // previous session can't slip through. Empty after pruning → use all.
     const ids =
-      selectedIds.length > 0
+      selectedIds.filter((id) => liveIds.includes(id)).length > 0
         ? selectedIds.filter((id) => liveIds.includes(id))
         : liveIds;
-    if (ids.length === 0) {
-      // Fall back to every eligible device rather than silently no-op.
-      if (liveIds.length > 0) {
-        ids.push(...liveIds);
-      } else {
-        notify("info", `No ${deviceType} targets selected — pick at least one device.`);
-        return;
-      }
+    // If we pruned stale ids, reflect the new set in the multi-select.
+    if (
+      ids.length !== selectedIds.length ||
+      ids.some((id, i) => selectedIds[i] !== id)
+    ) {
+      setSelectedIds(ids);
     }
     const serverType = deviceType === "vents" ? "timeline" : "trolley-timeline";
     try {
       await start(serverType, timeline.id, ids);
-      console.log(
-        "[Toolbar] start() resolved — status:",
-        usePlaybackStore.getState().status,
-      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[Toolbar] start() threw:", e);
+      // If it's the stale-id flavour of 400, retry once with the real
+      // live list — the user almost certainly wants that.
+      if (msg.includes("No valid devices specified") && liveIds.length > 0) {
+        try {
+          await start(serverType, timeline.id, liveIds);
+          return;
+        } catch {
+          /* fall through to toast */
+        }
+      }
       notify("error", `Playback failed to start: ${msg}`);
     }
   }
