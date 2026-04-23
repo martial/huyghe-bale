@@ -48,11 +48,20 @@ export default function Toolbar({
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
+  // Seed selection to every eligible device, AND prune stale ids when
+  // the device list changes (e.g. after a rebuild wiped the backend's
+  // records and the user re-added a new device — we don't want to keep
+  // sending the old id forever).
   useEffect(() => {
-    const eligible = devices.filter((d) => (d.type ?? "vents") === deviceType);
-    setSelectedIds((prev) =>
-      prev.length === 0 ? eligible.map((d) => d.id) : prev,
-    );
+    const liveIds = devices
+      .filter((d) => (d.type ?? "vents") === deviceType)
+      .map((d) => d.id);
+    setSelectedIds((prev) => {
+      if (prev.length === 0) return liveIds;
+      const pruned = prev.filter((id) => liveIds.includes(id));
+      // Every previous selection is dead — assume the user wants all now.
+      return pruned.length > 0 ? pruned : liveIds;
+    });
   }, [devices, deviceType]);
 
   const accent =
