@@ -240,19 +240,26 @@ class PlaybackEngine:
     }
 
     def _trolley_events(self):
-        """Sorted (time, order, event) list for fast cursor traversal."""
+        """Sorted (time, order, index, event) list for fast cursor traversal.
+        The index is a tiebreaker so sorted() never falls through to
+        comparing dicts (which is a TypeError on Python 3)."""
         tl = self._timeline or {}
         events = tl.get("events") or []
-        decorated = sorted(
-            (
+        items = []
+        for i, ev in enumerate(events):
+            if not isinstance(ev, dict):
+                continue
+            cmd = ev.get("command", "")
+            if cmd not in self._TROLLEY_EVENT_ORDER:
+                continue
+            items.append(
                 (float(ev.get("time", 0)),
-                 self._TROLLEY_EVENT_ORDER.get(ev.get("command", ""), 99),
-                 ev)
-                for ev in events
-                if isinstance(ev, dict) and ev.get("command") in self._TROLLEY_EVENT_ORDER
+                 self._TROLLEY_EVENT_ORDER[cmd],
+                 i,
+                 ev),
             )
-        )
-        return decorated
+        items.sort()
+        return items
 
     def _fire_trolley_event(self, ev):
         """Send one /trolley/<command> OSC message per active device."""
@@ -333,7 +340,7 @@ class PlaybackEngine:
 
                     # Fire every event whose time has arrived.
                     while cursor < len(events) and events[cursor][0] <= elapsed:
-                        self._fire_trolley_event(events[cursor][2])
+                        self._fire_trolley_event(events[cursor][3])
                         cursor += 1
 
                 next_tick = start_time + (int((time.monotonic() - start_time) / interval) + 1) * interval
