@@ -116,7 +116,56 @@ cd admin/frontend && npx tsc --noEmit
 ./release.sh
 ```
 
-CI also runs on pushes to `main` (see [`.github/workflows/build.yml`](.github/workflows/build.yml)).
+CI also runs on pushes to `main` (see [`.github/workflows/build.yml`](.github/workflows/build.yml)). Artifacts are downloadable from the Actions tab.
+
+#### Windows local build
+
+Prerequisites: **Python 3.10+** (from [python.org](https://www.python.org/downloads/) — the Microsoft Store "python" stub is auto-detected and skipped), **Node.js 18+**, and **Git**.
+
+```powershell
+# From the repo root, in PowerShell:
+powershell -ExecutionPolicy Bypass -File compile_app_windows.ps1
+```
+
+The script:
+1. Resolves a real Python install (falls back through `%LOCALAPPDATA%\Programs\Python\Python31x`, `C:\Python31x`, then the `py` launcher).
+2. Installs backend requirements + `Pillow` / `pywebview` / `pyinstaller`.
+3. Generates the icon + `VERSION` file from current git state.
+4. Builds the frontend (`npm run build`).
+5. Packages with PyInstaller.
+
+Output:
+
+```
+apps\PIERRE HUYGHE BALE\
+  PIERRE HUYGHE BALE.exe
+  install.bat
+  MicrosoftEdgeWebview2Setup.exe
+  ndp48-web.exe
+  _internal\
+```
+
+Distribute the folder as-is or zip it.
+
+#### Installing on a fresh Windows machine
+
+The app has three runtime dependencies that may be missing on older/unpatched Windows:
+
+- **.NET Framework 4.7.2+** — `pythonnet` is compiled against `netstandard2.0` and fails at load time without it (`Failed to resolve Python.Runtime.Loader.Initialize...`).
+- **Edge WebView2 Runtime** — pywebview renders HTML through it; otherwise the app opens as a blank window.
+- **Mark-of-the-Web unblocking** — files extracted from an internet-downloaded zip carry a MOTW flag; the CLR refuses to load them, producing the same error as missing .NET.
+
+`install.bat` handles all three in one click:
+
+1. Copy the `PIERRE HUYGHE BALE` folder to the target PC.
+2. Right-click **`install.bat`** → *Run as administrator*. It:
+   - Runs `Unblock-File` over the folder (clears MOTW).
+   - Checks registry key `HKLM\...\NDP\v4\Full\Release` — if < 461808, installs .NET Framework 4.8 silently (~80 MB download, may require reboot).
+   - Installs the WebView2 Evergreen Runtime silently (~30 s).
+3. Reboot if .NET 4.8 was just installed.
+4. Double-click **`PIERRE HUYGHE BALE.exe`**. SmartScreen may warn on first run (the `.exe` is unsigned) — *More info → Run anyway*.
+
+Subsequent launches don't need the .bat.
 
 When running as a bundle, persistent data lives at:
 
