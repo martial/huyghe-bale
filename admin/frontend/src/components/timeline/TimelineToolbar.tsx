@@ -1,8 +1,10 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import type { Timeline, Point, CurveType } from "../../types/timeline";
 import { usePlaybackStore } from "../../stores/playback-store";
 import { useDeviceStore } from "../../stores/device-store";
 import { downloadFromUrl } from "../../lib/download";
+import DeviceMultiSelect from "../playback/DeviceMultiSelect";
 
 const curveTypes: CurveType[] = [
   "linear", "step", "ease-in", "ease-out", "ease-in-out", "sine", "exponential", "bezier",
@@ -35,17 +37,25 @@ export default function TimelineToolbar({
   const resume = usePlaybackStore((s) => s.resume);
   const { list: devices, fetchList: fetchDevices } = useDeviceStore();
 
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  // Default the selection to every vents device when the list first lands.
+  useEffect(() => {
+    const vents = devices.filter((d) => (d.type ?? "vents") === "vents");
+    setSelectedIds((prev) => (prev.length === 0 ? vents.map((d) => d.id) : prev));
+  }, [devices]);
+
   async function handlePlay() {
     let devs = devices;
     if (devs.length === 0) {
       await fetchDevices();
       devs = useDeviceStore.getState().list;
     }
-    // Timelines drive the vents lane; exclude trolleys (they run their own
-    // /trolley-timelines flow) so the backend's type-guard doesn't 400.
     const vents = devs.filter((d) => (d.type ?? "vents") === "vents");
-    if (vents.length === 0) return;
-    await start("timeline", timeline.id, vents.map((d) => d.id));
+    const ids = selectedIds.length > 0
+      ? selectedIds.filter((id) => vents.some((d) => d.id === id))
+      : vents.map((d) => d.id);
+    if (ids.length === 0) return;
+    await start("timeline", timeline.id, ids);
   }
 
   // Default to true to preserve historical behaviour.
@@ -98,6 +108,7 @@ export default function TimelineToolbar({
         )}
 
         <div className="ml-auto flex items-center gap-2">
+          <DeviceMultiSelect type="vents" selected={selectedIds} onChange={setSelectedIds} />
           <button
             onClick={() => onLoopChange(!isLooping)}
             title={isLooping ? "Loop is on — playback wraps at the end" : "Loop is off — playback stops at the end"}

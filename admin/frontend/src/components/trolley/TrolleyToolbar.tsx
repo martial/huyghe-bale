@@ -1,7 +1,9 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import type { TrolleyTimeline, TrolleyEvent } from "../../types/trolley";
 import { usePlaybackStore } from "../../stores/playback-store";
 import { useDeviceStore } from "../../stores/device-store";
+import DeviceMultiSelect from "../playback/DeviceMultiSelect";
 
 interface Props {
   timeline: TrolleyTimeline;
@@ -26,6 +28,12 @@ export default function TrolleyToolbar({
   const resume = usePlaybackStore((s) => s.resume);
   const { list: devices, fetchList: fetchDevices } = useDeviceStore();
 
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  useEffect(() => {
+    const trolleys = devices.filter((d) => d.type === "trolley");
+    setSelectedIds((prev) => (prev.length === 0 ? trolleys.map((d) => d.id) : prev));
+  }, [devices]);
+
   async function handlePlay() {
     let devs = devices;
     if (devs.length === 0) {
@@ -33,8 +41,10 @@ export default function TrolleyToolbar({
       devs = useDeviceStore.getState().list;
     }
     const trolleys = devs.filter((d) => d.type === "trolley");
-    if (trolleys.length === 0) return;
-    const ids = trolleys.map((d) => d.id);
+    const ids = selectedIds.length > 0
+      ? selectedIds.filter((id) => trolleys.some((d) => d.id === id))
+      : trolleys.map((d) => d.id);
+    if (ids.length === 0) return;
     await start("trolley-timeline", timeline.id, ids);
   }
 
@@ -82,6 +92,7 @@ export default function TrolleyToolbar({
         )}
 
         <div className="ml-auto flex items-center gap-2">
+          <DeviceMultiSelect type="trolley" selected={selectedIds} onChange={setSelectedIds} />
           <button
             onClick={() => {
               if (isPlaying && !isPaused) {
