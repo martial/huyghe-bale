@@ -50,6 +50,7 @@ export default function TrolleyEventTrack({
   onMove,
 }: Props) {
   const stripRef = useRef<HTMLDivElement>(null);
+  const rulerRef = useRef<HTMLDivElement>(null);
   const [stripWidth, setStripWidth] = useState(0);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   // Narrow boolean selector — otherwise this track re-renders on every
@@ -60,6 +61,7 @@ export default function TrolleyEventTrack({
       s.status.id === timelineId &&
       s.status.type === "trolley-timeline",
   );
+  const seek = usePlaybackStore((s) => s.seek);
 
   // Measure the horizontal track so the ruler can pick a non-crowded tick step.
   useEffect(() => {
@@ -118,12 +120,45 @@ export default function TrolleyEventTrack({
     onAdd(clientXToTime(e.clientX), command);
   }
 
+  function rulerClientXToTime(clientX: number): number {
+    const el = rulerRef.current;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return Math.round(pct * duration * 100) / 100;
+  }
+
+  function handleRulerSeek(clientX: number) {
+    if (!showCursor) return;
+    seek(rulerClientXToTime(clientX));
+  }
+
+  function handleRulerMouseDown(e: React.MouseEvent) {
+    if (!showCursor) return;
+    handleRulerSeek(e.clientX);
+    // Scrub while dragging.
+    const onMove = (me: MouseEvent) => handleRulerSeek(me.clientX);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   return (
     <div className="p-4 overflow-hidden">
-      {/* Ruler */}
+      {/* Ruler — click/drag to seek while playing. */}
       <div className="flex">
         <div style={{ width: LABEL_COL_PX }} />
-        <div className="relative flex-1 h-5 text-[10px] text-zinc-500 font-mono">
+        <div
+          ref={rulerRef}
+          onMouseDown={handleRulerMouseDown}
+          className={`relative flex-1 h-5 text-[10px] text-zinc-500 font-mono ${
+            showCursor ? "cursor-col-resize" : ""
+          }`}
+        >
           {(() => {
             const ticks: number[] = [];
             // Always include 0; always include duration as a right-edge tick.
