@@ -15,3 +15,5 @@ export { PlaybackCursor } from "./PlaybackCursor";
 export { PlaybackCursorDom } from "./PlaybackCursorDom";
 export { useTimelineCanvas } from "./hooks/use-timeline-canvas";
 export { useSmoothedElapsed } from "./hooks/use-smoothed-elapsed";
+export { default as List } from "./List";
+export { default as Preview } from "./Preview";
