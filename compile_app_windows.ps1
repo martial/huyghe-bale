@@ -173,14 +173,17 @@ if (Test-Path $DestPath) {
 }
 Copy-Item -Recurse (Join-Path $BackendDir "dist\$AppName") $DestPath
 
-# --- 8. Bundle WebView2 Evergreen bootstrapper + install helper ---
-# pywebview renders with Edge WebView2; on a fresh Windows the runtime is
-# missing and the app launches as a blank window. We ship a 1.7 MB
-# bootstrapper and a one-shot install.bat so the on-site crew can prep
-# the machine without manual downloads.
-Write-Host "=== Bundling WebView2 installer ==="
+# --- 8. Bundle prerequisite installers + first-run helper ---
+# On a fresh Windows machine the app can fail in three ways:
+#   1. Blank window  → Edge WebView2 Runtime is missing (pywebview's engine).
+#   2. CLR load fail → .NET Framework 4.7.2+ is missing (pythonnet needs it).
+#   3. CLR load fail → files carry "Mark-of-the-Web" after being extracted
+#      from an internet-downloaded zip; the CLR refuses to load them.
+# install.bat handles all three in one click.
+Write-Host "=== Bundling prerequisite installers ==="
 $CacheDir = Join-Path $BuildDir "cache"
 if (-not (Test-Path $CacheDir)) { New-Item -ItemType Directory -Path $CacheDir | Out-Null }
+
 $Wv2Cache = Join-Path $CacheDir "MicrosoftEdgeWebview2Setup.exe"
 if (-not (Test-Path $Wv2Cache)) {
     Write-Host "  downloading WebView2 bootstrapper..."
@@ -188,29 +191,65 @@ if (-not (Test-Path $Wv2Cache)) {
 }
 Copy-Item $Wv2Cache (Join-Path $DestPath "MicrosoftEdgeWebview2Setup.exe")
 
+$NetCache = Join-Path $CacheDir "ndp48-web.exe"
+if (-not (Test-Path $NetCache)) {
+    Write-Host "  downloading .NET Framework 4.8 web installer..."
+    Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?LinkId=2085155' -OutFile $NetCache -UseBasicParsing
+}
+Copy-Item $NetCache (Join-Path $DestPath "ndp48-web.exe")
+
 $InstallBat = @'
 @echo off
-REM One-shot WebView2 Evergreen installer.
-REM Run once on a fresh machine before launching "PIERRE HUYGHE BALE.exe".
-echo Installing Microsoft Edge WebView2 Runtime...
-"%~dp0MicrosoftEdgeWebview2Setup.exe" /silent /install
-if errorlevel 1 (
-    echo.
-    echo WebView2 installer reported errorlevel %errorlevel%.
-    echo If the runtime is already installed, this is harmless.
-) else (
-    echo Done.
-)
+setlocal
+
+REM =====================================================================
+REM  PIERRE HUYGHE BALE - first-run prerequisite installer
+REM  Run once on a fresh Windows PC, then launch "PIERRE HUYGHE BALE.exe".
+REM  Idempotent: skips each installer if the runtime is already present.
+REM =====================================================================
+
 echo.
-echo You can now double-click "PIERRE HUYGHE BALE.exe".
+echo [1/3] Unblocking files (Mark-of-the-Web)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path '%~dp0' -Recurse -File | Unblock-File"
+
+echo.
+echo [2/3] Checking .NET Framework 4.7.2+ ...
+for /f "tokens=3" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" /v Release 2^>nul ^| find "Release"') do set NETREL=%%a
+if not defined NETREL goto :installnet
+if %NETREL% GEQ 461808 (
+    echo   .NET Framework OK ^(Release=%NETREL%^).
+    goto :webview2
+)
+:installnet
+echo   Installing .NET Framework 4.8 ^(needs internet, ~80 MB download^)...
+"%~dp0ndp48-web.exe" /q /norestart
+if errorlevel 3010 echo   A reboot will be required after this script finishes.
+
+:webview2
+echo.
+echo [3/3] Checking Microsoft Edge WebView2 Runtime...
+set WV2=
+for /f "tokens=3" %%v in ('reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" /v pv 2^>nul ^| find "pv"') do set WV2=%%v
+if not defined WV2 for /f "tokens=3" %%v in ('reg query "HKLM\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" /v pv 2^>nul ^| find "pv"') do set WV2=%%v
+if defined WV2 (
+    echo   WebView2 Runtime already installed ^(version %WV2%^). Skipping.
+) else (
+    echo   Installing WebView2 Evergreen Runtime...
+    "%~dp0MicrosoftEdgeWebview2Setup.exe" /silent /install
+)
+
+echo.
+echo Done. You can now double-click "PIERRE HUYGHE BALE.exe".
+echo ^(If .NET 4.8 was just installed, please reboot first.^)
 pause
+endlocal
 '@
 [System.IO.File]::WriteAllText(
-    (Join-Path $DestPath "install-webview2.bat"),
+    (Join-Path $DestPath "install.bat"),
     $InstallBat,
     (New-Object System.Text.ASCIIEncoding)
 )
-Write-Host "  bundled MicrosoftEdgeWebview2Setup.exe + install-webview2.bat"
+Write-Host "  bundled MicrosoftEdgeWebview2Setup.exe + ndp48-web.exe + install.bat"
 
 Write-Host ""
 Write-Host "========================================"

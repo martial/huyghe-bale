@@ -149,16 +149,21 @@ Distribute the folder as-is or zip it.
 
 #### Installing on a fresh Windows machine
 
-The app needs **.NET Framework 4.7.2+** (for Python.Runtime / pywebview interop) and the **Edge WebView2 Runtime** (for the UI shell). Both ship with recent Windows, but older or unpatched machines are often missing one or both, and files extracted from a downloaded zip carry Mark-of-the-Web which blocks the CLR from loading bundled DLLs.
+The app has three runtime dependencies that may be missing on older/unpatched Windows:
 
-To prep a fresh machine:
+- **.NET Framework 4.7.2+** — `pythonnet` is compiled against `netstandard2.0` and fails at load time without it (`Failed to resolve Python.Runtime.Loader.Initialize...`).
+- **Edge WebView2 Runtime** — pywebview renders HTML through it; otherwise the app opens as a blank window.
+- **Mark-of-the-Web unblocking** — files extracted from an internet-downloaded zip carry a MOTW flag; the CLR refuses to load them, producing the same error as missing .NET.
+
+`install.bat` handles all three in one click:
 
 1. Copy the `PIERRE HUYGHE BALE` folder to the target PC.
-2. Right-click **`install.bat`** → *Run as administrator* once. It:
-   - `Unblock-Files` the folder (strip MOTW so the CLR loads `Python.Runtime.dll`).
-   - Checks the .NET Framework registry key and installs 4.8 if the Release value is below `461808`.
-   - Checks the WebView2 registry key and runs the Evergreen bootstrapper if missing.
-3. Double-click **`PIERRE HUYGHE BALE.exe`**. SmartScreen may warn on first run (the `.exe` is unsigned) — click *More info → Run anyway*.
+2. Right-click **`install.bat`** → *Run as administrator*. It:
+   - Runs `Unblock-File` over the folder (clears MOTW).
+   - Checks registry key `HKLM\...\NDP\v4\Full\Release` — if < 461808, installs .NET Framework 4.8 silently (~80 MB download, may require reboot).
+   - Installs the WebView2 Evergreen Runtime silently (~30 s).
+3. Reboot if .NET 4.8 was just installed.
+4. Double-click **`PIERRE HUYGHE BALE.exe`**. SmartScreen may warn on first run (the `.exe` is unsigned) — *More info → Run anyway*.
 
 Subsequent launches don't need the .bat.
 
