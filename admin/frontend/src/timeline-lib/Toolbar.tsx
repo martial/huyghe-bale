@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import type { UniversalTimeline, TimelineKind } from "./types";
 import { usePlaybackStore } from "../stores/playback-store";
 import { useDeviceStore } from "../stores/device-store";
+import { useNotificationStore } from "../stores/notification-store";
 import DeviceMultiSelect from "../components/playback/DeviceMultiSelect";
 
 interface Props {
@@ -43,6 +44,7 @@ export default function Toolbar({
   const isOurs = isPlaying && playingId === timeline.id;
   const devices = useDeviceStore((s) => s.list);
   const fetchDevices = useDeviceStore((s) => s.fetchList);
+  const notify = useNotificationStore((s) => s.notify);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
@@ -63,19 +65,45 @@ export default function Toolbar({
       : "bg-sky-600 hover:bg-sky-500";
 
   async function handlePlay() {
+    console.log("[Toolbar] Play clicked", {
+      timelineId: timeline.id,
+      deviceType,
+      deviceCount: devices.length,
+      selectedIds,
+    });
     let devs = devices;
     if (devs.length === 0) {
       await fetchDevices();
       devs = useDeviceStore.getState().list;
     }
     const eligible = devs.filter((d) => (d.type ?? "vents") === deviceType);
+    if (eligible.length === 0) {
+      notify(
+        "info",
+        `No ${deviceType} devices registered — add one on the Devices page.`,
+      );
+      return;
+    }
     const ids =
       selectedIds.length > 0
         ? selectedIds.filter((id) => eligible.some((d) => d.id === id))
         : eligible.map((d) => d.id);
-    if (ids.length === 0) return;
+    if (ids.length === 0) {
+      notify("info", `No ${deviceType} targets selected — pick at least one device.`);
+      return;
+    }
     const serverType = deviceType === "vents" ? "timeline" : "trolley-timeline";
-    await start(serverType, timeline.id, ids);
+    try {
+      await start(serverType, timeline.id, ids);
+      console.log(
+        "[Toolbar] start() resolved — status:",
+        usePlaybackStore.getState().status,
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[Toolbar] start() threw:", e);
+      notify("error", `Playback failed to start: ${msg}`);
+    }
   }
 
   const isLooping = timeline.loop !== false;
