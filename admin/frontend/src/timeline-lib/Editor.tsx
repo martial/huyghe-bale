@@ -67,6 +67,7 @@ export default function Editor({ timeline, onChange, onSave, backPath }: Props) 
 
   const isPlaying = usePlaybackStore((s) => s.status.playing);
   const isPaused = usePlaybackStore((s) => s.status.paused);
+  const playingTimelineId = usePlaybackStore((s) => s.status.id);
   const pausePlayback = usePlaybackStore((s) => s.pause);
   const resumePlayback = usePlaybackStore((s) => s.resume);
 
@@ -121,7 +122,9 @@ export default function Editor({ timeline, onChange, onSave, backPath }: Props) 
     setLocal((prev) => ({ ...prev, ...patch }));
   }
 
-  const showCursor = isPlaying && usePlaybackStore.getState().status.id === local.id;
+  // Subscribing via selectors so the Editor re-renders when status.id or
+  // playing flips — a getState() read wouldn't notify React.
+  const showCursor = isPlaying && playingTimelineId === local.id;
 
   // Find selected curve point (for the inspector).
   const selectedPointInfo = (() => {
