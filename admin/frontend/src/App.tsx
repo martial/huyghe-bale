@@ -2,7 +2,7 @@ import { Routes, Route, Navigate } from "react-router";
 import { lazy, Suspense } from "react";
 import AppLayout from "./components/layout/AppLayout";
 
-const TimelinesPage = lazy(() => import("./pages/TimelinesPage"));
+const VentsPage = lazy(() => import("./pages/VentsPage"));
 const TimelineEditPage = lazy(() => import("./pages/TimelineEditPage"));
 const TrolleysPage = lazy(() => import("./pages/TrolleysPage"));
 const TrolleyEditPage = lazy(() => import("./pages/TrolleyEditPage"));
@@ -27,15 +27,17 @@ export default function App() {
   return (
     <Routes>
       <Route element={<AppLayout />}>
-        <Route index element={<Navigate to="/timelines" replace />} />
+        <Route index element={<Navigate to="/vents" replace />} />
         <Route
-          path="timelines"
+          path="vents"
           element={
             <Suspense fallback={<Loading />}>
-              <TimelinesPage />
+              <VentsPage />
             </Suspense>
           }
         />
+        {/* Bookmark compat: /timelines used to be the vents landing. */}
+        <Route path="timelines" element={<Navigate to="/vents" replace />} />
         <Route
           path="timelines/:id"
           element={

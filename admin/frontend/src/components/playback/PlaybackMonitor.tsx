@@ -28,33 +28,36 @@ export default function PlaybackMonitor({ status }: { status: PlaybackStatus }) 
         <span>{formatTime(status.total_duration)}</span>
       </div>
 
-      {/* Value bars */}
-      <div className="space-y-1.5">
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-orange-400/70 w-3">A</span>
-          <div className="flex-1 h-2 bg-zinc-800 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-orange-500/60 rounded-full"
-              style={{ width: `${status.current_values.a * 100}%`, transition: "width 500ms linear" }}
-            />
+      {/* A/B lane values are vents-only. Trolley / orchestration playbacks
+          leave current_values at 0 which reads as "no output" — hide them. */}
+      {status.type === "timeline" && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-orange-400/70 w-3">A</span>
+            <div className="flex-1 h-2 bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-orange-500/60 rounded-full"
+                style={{ width: `${status.current_values.a * 100}%`, transition: "width 500ms linear" }}
+              />
+            </div>
+            <span className="text-[10px] text-zinc-500 font-mono w-8 text-right">
+              {(status.current_values.a * 100).toFixed(0)}%
+            </span>
           </div>
-          <span className="text-[10px] text-zinc-500 font-mono w-8 text-right">
-            {(status.current_values.a * 100).toFixed(0)}%
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-sky-400/70 w-3">B</span>
-          <div className="flex-1 h-2 bg-zinc-800 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-sky-500/60 rounded-full"
-              style={{ width: `${status.current_values.b * 100}%`, transition: "width 500ms linear" }}
-            />
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-sky-400/70 w-3">B</span>
+            <div className="flex-1 h-2 bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-sky-500/60 rounded-full"
+                style={{ width: `${status.current_values.b * 100}%`, transition: "width 500ms linear" }}
+              />
+            </div>
+            <span className="text-[10px] text-zinc-500 font-mono w-8 text-right">
+              {(status.current_values.b * 100).toFixed(0)}%
+            </span>
           </div>
-          <span className="text-[10px] text-zinc-500 font-mono w-8 text-right">
-            {(status.current_values.b * 100).toFixed(0)}%
-          </span>
         </div>
-      </div>
+      )}
     </div>
   );
 }
