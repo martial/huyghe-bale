@@ -1,5 +1,5 @@
 import type { PlaybackStatus } from "../../types/playback";
-import { useSmoothedElapsed } from "../../hooks/use-smoothed-elapsed";
+import { useSmoothedElapsed } from "../../timeline-lib/hooks/use-smoothed-elapsed";
 
 function formatTime(s: number): string {
   const m = Math.floor(s / 60);

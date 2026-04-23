@@ -1,7 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import type { TrolleyEvent, TrolleyCommand } from "../../types/trolley";
 import { usePlaybackStore } from "../../stores/playback-store";
-import { TrolleyPlaybackCursor } from "./TrolleyPlaybackCursor";
+import { PlaybackCursorDom } from "../../timeline-lib/PlaybackCursorDom";
 
 const COMMAND_ROWS: { key: TrolleyCommand; label: string; color: string }[] = [
   { key: "position", label: "position", color: "bg-sky-400" },
@@ -193,10 +193,12 @@ export default function TrolleyEventTrack({
       >
         {/* Playback cursor spans all lanes — imperatively animated via refs. */}
         {showCursor && stripWidth > 0 && (
-          <TrolleyPlaybackCursor
-            labelColPx={LABEL_COL_PX}
-            stripWidth={stripWidth}
-            duration={duration}
+          <PlaybackCursorDom
+            timeToX={(t) => {
+              if (duration <= 0) return LABEL_COL_PX;
+              const pct = Math.max(0, Math.min(1, t / duration));
+              return LABEL_COL_PX + pct * stripWidth;
+            }}
           />
         )}
 

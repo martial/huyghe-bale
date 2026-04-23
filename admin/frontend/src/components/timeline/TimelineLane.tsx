@@ -1,10 +1,10 @@
 import { useState, useRef, useMemo, useCallback } from "react";
 import type { Lane, Point } from "../../types/timeline";
-import type { CanvasState } from "../../lib/timeline-canvas";
-import * as tc from "../../lib/timeline-canvas";
-import { sampleCurve } from "../../lib/interpolation";
+import type { CanvasState } from "../../timeline-lib/lib/canvas-math";
+import * as tc from "../../timeline-lib/lib/canvas-math";
+import { sampleCurve } from "../../timeline-lib/lib/interpolation";
 import { usePlaybackStore } from "../../stores/playback-store";
-import { PlaybackCursor } from "./PlaybackCursor";
+import { PlaybackCursor } from "../../timeline-lib/PlaybackCursor";
 
 interface Props {
   lane: Lane;
@@ -272,7 +272,12 @@ export default function TimelineLane({
           />
         ))}
 
-        {showCursor && <PlaybackCursor canvas={canvas} height={height} />}
+        {showCursor && (
+          <PlaybackCursor
+            timeToX={(t) => tc.timeToX(canvas, t)}
+            height={height}
+          />
+        )}
 
         {/* Control points */}
         {lane.points.map((point) => (

@@ -1,21 +1,18 @@
 import { memo, useEffect, useRef } from "react";
-import { usePlaybackStore } from "../../stores/playback-store";
+import { usePlaybackStore } from "../stores/playback-store";
 
 /**
- * Trolley playback cursor animated imperatively via a ref — zero React
- * renders during playback. Mirrors the pattern used in the vents
- * PlaybackCursor: rAF + Zustand `.subscribe` + direct `style.left` write.
+ * DOM-based variant of PlaybackCursor for tracks laid out as absolute
+ * divs instead of SVGs. Writes `style.left` imperatively. Same rAF +
+ * anchor-resync pattern as the SVG cursor — no React rerenders at 60 Hz.
  */
 interface Props {
-  /** Pixel offset of the event area from the strip's left edge. */
-  labelColPx: number;
-  /** Measured width (px) of the event area. */
-  stripWidth: number;
-  /** Timeline duration in seconds. */
-  duration: number;
+  /** Convert elapsed time (seconds) → local pixel offset. */
+  timeToX: (elapsed: number) => number;
+  className?: string;
 }
 
-function TrolleyPlaybackCursorImpl({ labelColPx, stripWidth, duration }: Props) {
+function PlaybackCursorDomImpl({ timeToX, className }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const anchorRef = useRef({ elapsed: 0, time: performance.now() });
 
@@ -52,26 +49,29 @@ function TrolleyPlaybackCursorImpl({ labelColPx, stripWidth, duration }: Props) 
       raf = requestAnimationFrame(tick);
     }
     raf = requestAnimationFrame(tick);
+
     return () => {
       cancelAnimationFrame(raf);
       unsub();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labelColPx, stripWidth, duration]);
+  }, [timeToX]);
 
   function write(elapsed: number) {
-    if (!ref.current || duration <= 0 || stripWidth <= 0) return;
-    const pct = Math.max(0, Math.min(1, elapsed / duration));
-    ref.current.style.left = `${labelColPx + pct * stripWidth}px`;
+    if (!ref.current) return;
+    ref.current.style.left = `${timeToX(elapsed)}px`;
   }
 
   return (
     <div
       ref={ref}
-      className="absolute top-0 bottom-0 w-px bg-green-400/70 shadow-[0_0_6px_rgba(74,222,128,0.5)] pointer-events-none"
-      style={{ left: `${labelColPx}px` }}
+      className={
+        className ??
+        "absolute top-0 bottom-0 w-px bg-green-400/70 shadow-[0_0_6px_rgba(74,222,128,0.5)] pointer-events-none"
+      }
+      style={{ left: 0 }}
     />
   );
 }
 
-export const TrolleyPlaybackCursor = memo(TrolleyPlaybackCursorImpl);
+export const PlaybackCursorDom = memo(PlaybackCursorDomImpl);

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import type { Timeline } from "../../types/timeline";
 import { getTimeline } from "../../api/timelines";
-import { sampleCurve } from "../../lib/interpolation";
+import { sampleCurve } from "../../timeline-lib/lib/interpolation";
 
 function buildPath(
   points: Timeline["lanes"]["a"]["points"],

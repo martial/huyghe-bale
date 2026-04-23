@@ -1,8 +1,8 @@
 import { useMemo, useRef, useCallback } from "react";
-import type { CanvasState } from "../../lib/timeline-canvas";
-import * as tc from "../../lib/timeline-canvas";
+import type { CanvasState } from "../../timeline-lib/lib/canvas-math";
+import * as tc from "../../timeline-lib/lib/canvas-math";
 import { usePlaybackStore } from "../../stores/playback-store";
-import { PlaybackCursor } from "./PlaybackCursor";
+import { PlaybackCursor } from "../../timeline-lib/PlaybackCursor";
 
 interface Props {
   width: number;
@@ -104,7 +104,13 @@ export default function TimelineRuler({ width, height, duration, canvas, timelin
         </g>
       ))}
 
-      {showCursor && <PlaybackCursor canvas={canvas} height={height} withHandle />}
+      {showCursor && (
+        <PlaybackCursor
+          timeToX={(t) => tc.timeToX(canvas, t)}
+          height={height}
+          withHandle
+        />
+      )}
     </svg>
   );
 }

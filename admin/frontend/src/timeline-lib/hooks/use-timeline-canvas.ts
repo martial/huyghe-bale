@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from "react";
-import * as tc from "../lib/timeline-canvas";
-import type { CanvasState } from "../lib/timeline-canvas";
+import * as tc from "../lib/canvas-math";
+import type { CanvasState } from "../lib/canvas-math";
 
 export function useTimelineCanvas(
   width: number,

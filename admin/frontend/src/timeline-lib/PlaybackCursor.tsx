@@ -1,27 +1,31 @@
 import { memo, useEffect, useRef } from "react";
-import type { CanvasState } from "../../lib/timeline-canvas";
-import * as tc from "../../lib/timeline-canvas";
-import { usePlaybackStore } from "../../stores/playback-store";
+import { usePlaybackStore } from "../stores/playback-store";
 
 /**
- * Playback cursor animated imperatively via refs — no React state, no
- * re-renders during playback. The rAF tick reads the store directly
- * (bypassing Zustand subscriptions) and writes `x1`/`x2`/`points`
- * attributes straight onto the SVG nodes. Browser does a partial
- * repaint of the cursor region only; the enclosing lane paths and
- * ruler ticks never touch React's reconciler.
+ * Shared playback cursor — imperative refs, no React state, no rerenders
+ * during playback. The rAF tick reads the store directly (bypassing
+ * Zustand subscriptions) and writes `x1`/`x2`/`points` attributes
+ * straight onto the SVG nodes. Browser does a partial repaint of the
+ * cursor region only; the enclosing track paths / ticks never touch
+ * React's reconciler.
+ *
+ * Used by every track in the timeline library. The caller supplies a
+ * `timeToX(elapsed): px` mapping (continuous curve, event-track, etc.)
+ * so the cursor is agnostic to the track's layout maths.
  */
 interface Props {
-  canvas: CanvasState;
+  /** Convert elapsed time (seconds) to the cursor's x in local px. */
+  timeToX: (elapsed: number) => number;
+  /** SVG local height for the line. */
   height: number;
-  /** Show the little triangle handle at y=0 (ruler only, not lane). */
+  /** Show the little triangle handle at y=0 (ruler only). */
   withHandle?: boolean;
   color?: string;
   strokeWidth?: number;
 }
 
 function PlaybackCursorImpl({
-  canvas,
+  timeToX,
   height,
   withHandle = false,
   color = "#facc15",
@@ -32,17 +36,10 @@ function PlaybackCursorImpl({
   const anchorRef = useRef({ elapsed: 0, time: performance.now() });
 
   useEffect(() => {
-    // Prime the anchor + position synchronously from the current store
-    // state so the cursor doesn't flash at x=0 before the first rAF.
     const s = usePlaybackStore.getState().status;
     anchorRef.current = { elapsed: s.elapsed, time: performance.now() };
     write(s.elapsed);
 
-    // The server's reported `elapsed` trails our client-side extrapolation by
-    // roughly one poll's worth of network / queuing latency. Resyncing on every
-    // poll snaps the cursor backward → sawtooth lag. Resync ONLY on explicit
-    // discontinuities (play/pause/stop/new-timeline/seek > 0.5 s), and let the
-    // smooth rAF extrapolation carry us between them.
     const SEEK_THRESHOLD_S = 0.5;
     const unsubscribe = usePlaybackStore.subscribe((state, prev) => {
       const cur = state.status;
@@ -50,21 +47,15 @@ function PlaybackCursorImpl({
       const playingChanged = cur.playing !== old.playing;
       const pausedChanged = cur.paused !== old.paused;
       const idChanged = cur.id !== old.id;
-
       const extrapolated =
         anchorRef.current.elapsed +
         (performance.now() - anchorRef.current.time) / 1000;
       const drift = cur.elapsed - extrapolated;
       const looksLikeSeek = Math.abs(drift) > SEEK_THRESHOLD_S;
-
       if (playingChanged || pausedChanged || idChanged || looksLikeSeek) {
         anchorRef.current = { elapsed: cur.elapsed, time: performance.now() };
-        // Paint once on pause/stop/seek so the cursor lands on the authoritative frame.
-        if (!cur.playing || cur.paused) {
-          write(cur.elapsed);
-        }
+        if (!cur.playing || cur.paused) write(cur.elapsed);
       }
-      // else: ordinary 500 ms poll, server slightly behind us — keep drifting.
     });
 
     let raf = 0;
@@ -83,10 +74,10 @@ function PlaybackCursorImpl({
       unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvas]);
+  }, [timeToX]);
 
   function write(elapsed: number) {
-    const x = tc.timeToX(canvas, elapsed);
+    const x = timeToX(elapsed);
     const xs = String(x);
     if (lineRef.current) {
       lineRef.current.setAttribute("x1", xs);
