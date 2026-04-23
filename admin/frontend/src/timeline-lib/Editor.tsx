@@ -7,6 +7,7 @@ import type {
   Track,
 } from "./types";
 import { usePlaybackStore } from "../stores/playback-store";
+import { useDeviceStore } from "../stores/device-store";
 import { useTimelineCanvas } from "./hooks/use-timeline-canvas";
 import Toolbar from "./Toolbar";
 import Ruler from "./Ruler";
@@ -68,8 +69,28 @@ export default function Editor({ timeline, onChange, onSave, backPath }: Props) 
   const isPlaying = usePlaybackStore((s) => s.status.playing);
   const isPaused = usePlaybackStore((s) => s.status.paused);
   const playingTimelineId = usePlaybackStore((s) => s.status.id);
+  const startPlayback = usePlaybackStore((s) => s.start);
   const pausePlayback = usePlaybackStore((s) => s.pause);
   const resumePlayback = usePlaybackStore((s) => s.resume);
+  const devices = useDeviceStore((s) => s.list);
+  const fetchDevices = useDeviceStore((s) => s.fetchList);
+
+  async function handleKeyboardPlay() {
+    let devs = devices;
+    if (devs.length === 0) {
+      await fetchDevices();
+      devs = useDeviceStore.getState().list;
+    }
+    const eligible = devs.filter((d) => (d.type ?? "vents") === local.kind);
+    const ids = eligible.map((d) => d.id);
+    if (ids.length === 0) return;
+    const serverType = local.kind === "vents" ? "timeline" : "trolley-timeline";
+    try {
+      await startPlayback(serverType, local.id, ids);
+    } catch (e) {
+      console.error("[Editor] keyboard play failed:", e);
+    }
+  }
 
   // Default the active command for the first bang track
   useEffect(() => {
@@ -82,17 +103,18 @@ export default function Editor({ timeline, onChange, onSave, backPath }: Props) 
     }
   }, [local.tracks, activeCommand]);
 
-  // Keyboard: Space = play/pause/stop-back-to-handlePlay; Esc = deselect;
-  // Delete/Backspace = delete selected; Shift+D also deletes.
+  // Keyboard: Space = play/pause/resume this timeline; Esc = deselect;
+  // Delete/Backspace/Shift+D = delete selected event or point.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement)?.tagName;
       const isInputField = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
       if (e.key === " " && !isInputField) {
         e.preventDefault();
-        if (isPlaying && !isPaused) pausePlayback();
-        else if (isPlaying && isPaused) resumePlayback();
-        // Play-from-cold is up to the toolbar's Play button; keyboard play requires a mount-time device list.
+        const isOurs = isPlaying && playingTimelineId === local.id;
+        if (isOurs && !isPaused) pausePlayback();
+        else if (isOurs && isPaused) resumePlayback();
+        else handleKeyboardPlay();
         return;
       }
       if (e.key === "Escape") {
@@ -109,7 +131,8 @@ export default function Editor({ timeline, onChange, onSave, backPath }: Props) 
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isPlaying, isPaused, pausePlayback, resumePlayback, selectedId, readonly]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, isPaused, playingTimelineId, local.id, selectedId, readonly]);
 
   function updateTrack(updated: Track) {
     setLocal((prev) => ({
