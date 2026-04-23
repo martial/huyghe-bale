@@ -90,7 +90,9 @@ export default function VentsHero({ status, stale, lastPushAgeS }: Props) {
         </span>
         <span>
           peltier <span className="text-zinc-300">
-            {status ? status.peltier.map((on, i) => (on ? i + 1 : "·")).join("") : "—"}
+            {status?.peltier
+              ? status.peltier.map((on, i) => (on ? i + 1 : "·")).join("")
+              : "—"}
           </span>
         </span>
       </div>
