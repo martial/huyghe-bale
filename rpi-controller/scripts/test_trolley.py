@@ -78,15 +78,20 @@ class TrolleyBench:
         print(f"  → DIR = {'forward' if d else 'reverse'}")
 
     def pulse(self) -> None:
-        n = ask_int("Number of pulses", 1, 1_000_000, 200)
-        delay_ms = ask_float("Half-period ms (smaller = faster)", 0.1, 50.0, 2.0)
-        print(f"  sending {n} pulses at {1000 / (delay_ms * 2):.0f} Hz…")
-        half = delay_ms / 1000.0
+        """Drive the stepper for N steps at the chosen speed.
+
+        On the Nema/DM542-style drivers we use, one pulse on PUL = one step.
+        Speed is pulse frequency: freq = 1000 / (2 * half_period_ms).
+        """
+        n = ask_int("Number of steps", 1, 1_000_000, 200)
+        speed_hz = ask_float("Speed (Hz = steps/sec)", 10.0, 5000.0, 250.0)
+        half = (1.0 / speed_hz) / 2.0
+        print(f"  stepping {n} steps at {speed_hz:.0f} Hz (half-period {half * 1000:.2f}ms)…")
         start = time.monotonic()
         sent = 0
         for i in range(n):
             if GPIO.input(PIN_LIM_SWITCH) == GPIO.HIGH:
-                print(f"  → limit hit after {sent} pulses")
+                print(f"  → limit hit after {sent} steps")
                 return
             GPIO.output(PIN_STEP_PUL, GPIO.HIGH)
             time.sleep(half)
@@ -94,7 +99,7 @@ class TrolleyBench:
             time.sleep(half)
             sent = i + 1
         elapsed = time.monotonic() - start
-        print(f"  → sent {sent} pulses in {elapsed:.2f}s ({sent / elapsed:.0f} Hz)")
+        print(f"  → {sent} steps in {elapsed:.2f}s (actual {sent / elapsed:.0f} Hz)")
 
     def read_limit(self) -> None:
         state = GPIO.input(PIN_LIM_SWITCH)
@@ -124,7 +129,7 @@ def build_menu(b: TrolleyBench) -> "list[tuple[str, callable]]":
     return [
         ("Enable / disable driver (ENA)",    b.set_ena),
         ("Set direction (DIR)",              b.set_dir),
-        ("Send N pulses on PUL",             b.pulse),
+        ("Step N times at given speed (Hz)", b.pulse),
         ("Read limit switch",                b.read_limit),
         ("Print pin snapshot",               b.snapshot),
     ]
