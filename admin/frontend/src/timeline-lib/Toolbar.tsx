@@ -68,9 +68,27 @@ export default function Toolbar({
       selectedIds.length > 0
         ? selectedIds.filter((id) => eligible.some((d) => d.id === id))
         : eligible.map((d) => d.id);
-    if (ids.length === 0) return;
+    console.log("[Toolbar] handlePlay", {
+      deviceType,
+      timelineId: timeline.id,
+      eligibleCount: eligible.length,
+      selectedIds,
+      idsToSend: ids,
+    });
+    if (ids.length === 0) {
+      console.warn("[Toolbar] handlePlay aborted — no eligible device ids");
+      return;
+    }
     const serverType = deviceType === "vents" ? "timeline" : "trolley-timeline";
-    await start(serverType, timeline.id, ids);
+    try {
+      await start(serverType, timeline.id, ids);
+      console.log(
+        "[Toolbar] start() resolved — store status:",
+        usePlaybackStore.getState().status,
+      );
+    } catch (e) {
+      console.error("[Toolbar] start() threw:", e);
+    }
   }
 
   const isLooping = timeline.loop !== false;
