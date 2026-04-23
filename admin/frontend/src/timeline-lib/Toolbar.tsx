@@ -84,13 +84,23 @@ export default function Toolbar({
       );
       return;
     }
+    // Always derive ids from the LIVE eligible list — any selectedIds
+    // that no longer match a registered device are stale (added then
+    // removed, or a fresh backend replaced the data-dir) and would
+    // cause the backend to 400 with "No valid devices specified".
+    const liveIds = eligible.map((d) => d.id);
     const ids =
       selectedIds.length > 0
-        ? selectedIds.filter((id) => eligible.some((d) => d.id === id))
-        : eligible.map((d) => d.id);
+        ? selectedIds.filter((id) => liveIds.includes(id))
+        : liveIds;
     if (ids.length === 0) {
-      notify("info", `No ${deviceType} targets selected — pick at least one device.`);
-      return;
+      // Fall back to every eligible device rather than silently no-op.
+      if (liveIds.length > 0) {
+        ids.push(...liveIds);
+      } else {
+        notify("info", `No ${deviceType} targets selected — pick at least one device.`);
+        return;
+      }
     }
     const serverType = deviceType === "vents" ? "timeline" : "trolley-timeline";
     try {

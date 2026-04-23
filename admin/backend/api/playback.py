@@ -41,9 +41,11 @@ def start_playback():
 
     devices = []
     wrong_type = []
+    missing = []
     for did in device_ids:
         d = device_store.get(did)
         if not d:
+            missing.append(did)
             continue
         if d.get("type", "vents") != required_type:
             wrong_type.append({"id": did, "name": d.get("name"), "type": d.get("type")})
@@ -55,7 +57,16 @@ def start_playback():
             "unsupported_devices": wrong_type,
         }), 400
     if not devices:
-        return jsonify({"error": "No valid devices specified"}), 400
+        # Surface what was sent vs what the store sees so the UI can tell
+        # the user to re-add a stale device (common after a data-dir reset
+        # on a fresh PC where the Zustand cache outlives the backend).
+        known_ids = [d["id"] for d in device_store.list_all()]
+        return jsonify({
+            "error": "No valid devices specified",
+            "sent_ids": list(device_ids),
+            "missing_ids": missing,
+            "known_ids": known_ids,
+        }), 400
 
     # Apply current settings
     settings = read_settings()
