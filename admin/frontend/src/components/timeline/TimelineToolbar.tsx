@@ -37,9 +37,11 @@ export default function TimelineToolbar({
       await fetchDevices();
       devs = useDeviceStore.getState().list;
     }
-    if (devs.length === 0) return;
-    const ids = devs.map((d) => d.id);
-    await start("timeline", timeline.id, ids);
+    // Timelines drive the vents lane; exclude trolleys (they run their own
+    // /trolley-timelines flow) so the backend's type-guard doesn't 400.
+    const vents = devs.filter((d) => (d.type ?? "vents") === "vents");
+    if (vents.length === 0) return;
+    await start("timeline", timeline.id, vents.map((d) => d.id));
   }
 
   const [testBusy, setTestBusy] = useState(false);
