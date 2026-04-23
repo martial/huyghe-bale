@@ -9,6 +9,7 @@ import logging
 from flask import Blueprint, jsonify
 
 from api.devices import store as device_store
+from config import DATA_DIR
 from engine.osc_receiver import OscReceiver
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,8 @@ def get_health():
         "playback": playback_state,
         "vents_over_temp": vents_over_temp,
         "log_path": LOG_PATH,
+        "data_dir": DATA_DIR,
+        "device_count": len(device_store.list_all()),
     }
     payload["ok"] = (
         payload["osc_receiver"]["error"] is None

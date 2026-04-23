@@ -47,6 +47,12 @@ if _MEIPASS:
         "%(asctime)s %(levelname)s %(name)s: %(message)s"
     ))
     root_logger.addHandler(handler)
+    # Log where we're reading + writing persistent state so the operator
+    # can confirm it's surviving across rebuilds (it should — APPDATA is
+    # outside the bundle).
+    logging.getLogger("launcher").info(
+        "Bundled app paths — data_dir=%s log_dir=%s", data_dir, log_dir,
+    )
 else:
     dist_dir = None
     data_dir = None
