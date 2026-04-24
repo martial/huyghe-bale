@@ -94,16 +94,23 @@ Write-Host "  PIERRE HUYGHE BALE - Windows Builder"
 Write-Host "========================================"
 Write-Host ""
 
-# --- 1. Install build dependencies ---
+# --- 1. Install build dependencies into a local venv ---
 Write-Host "=== Installing build dependencies ==="
-pip install --quiet -r (Join-Path $BackendDir "requirements.txt") Pillow pywebview pyinstaller
+$VenvDir = Join-Path $BackendDir ".venv"
+if (-not (Test-Path (Join-Path $VenvDir "Scripts\python.exe"))) {
+    Write-Host "  Creating virtual environment at $VenvDir ..."
+    python -m venv $VenvDir
+}
+$VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+$VenvPip    = Join-Path $VenvDir "Scripts\pip.exe"
+& $VenvPip install --quiet -r (Join-Path $BackendDir "requirements.txt") Pillow pywebview pyinstaller
 Write-Host ""
 
 # --- 2. Generate icon ---
 if (-not (Test-Path $IconIco)) {
     Write-Host "=== Generating app icon ==="
 
-    python (Join-Path $BuildDir "generate_icon.py") $IconPng --ico $IconIco
+    & $VenvPython (Join-Path $BuildDir "generate_icon.py") $IconPng --ico $IconIco
 
     Write-Host "Icon: $IconIco"
     Write-Host ""
@@ -130,6 +137,7 @@ Write-Host ""
 # --- 4. Build frontend ---
 Write-Host "=== Building frontend ==="
 Push-Location $FrontendDir
+npm install
 npm run build
 $npmExit = $LASTEXITCODE
 Pop-Location
@@ -146,8 +154,9 @@ if (Test-Path $SpecFile) {
 
 # --- 6. Build Windows .exe with PyInstaller ---
 Write-Host "=== Building Windows .exe ==="
+$VenvPyInstaller = Join-Path $VenvDir "Scripts\pyinstaller.exe"
 Push-Location $BackendDir
-pyinstaller `
+& $VenvPyInstaller `
     --name $AppName `
     --windowed `
     --noconfirm `
