@@ -388,7 +388,6 @@ class TestVentsTimelinePlayback:
 
     def test_VP1_tick_sends_fan1_and_fan2(self, ctx):
         engine = ctx["engine"]
-        engine.output_cap = 100
         engine._devices = [{"id": ctx["vents_id"], "ip_address": "10.0.0.1",
                             "osc_port": 9000, "type": "vents"}]
         engine._evaluate_and_send(self._timeline(0.4, 0.7), 0.0)
@@ -397,20 +396,21 @@ class TestVentsTimelinePlayback:
             ("10.0.0.1", 9000, "/vents/fan/2", pytest.approx(0.7)),
         ]
 
-    def test_VP2_tick_respects_output_cap(self, ctx):
+    def test_VP2_tick_sends_raw_lane_value(self, ctx):
+        """Engine no longer scales lane values — the cap moved to the Pi
+        (vents_max_fan_pct), so the wire carries unscaled lane outputs.
+        See rpi-controller/controllers/vents.py:_set_fan."""
         engine = ctx["engine"]
-        engine.output_cap = 50
         engine._devices = [{"id": ctx["vents_id"], "ip_address": "10.0.0.1",
                             "osc_port": 9000, "type": "vents"}]
         engine._evaluate_and_send(self._timeline(0.4, 0.7), 0.0)
         assert ctx["sender"].sends == [
-            ("10.0.0.1", 9000, "/vents/fan/1", pytest.approx(0.2)),
-            ("10.0.0.1", 9000, "/vents/fan/2", pytest.approx(0.35)),
+            ("10.0.0.1", 9000, "/vents/fan/1", pytest.approx(0.4)),
+            ("10.0.0.1", 9000, "/vents/fan/2", pytest.approx(0.7)),
         ]
 
     def test_VP3_fans_to_every_device(self, ctx):
         engine = ctx["engine"]
-        engine.output_cap = 100
         engine._devices = [
             {"id": "a", "ip_address": "10.0.0.1", "osc_port": 9000, "type": "vents"},
             {"id": "b", "ip_address": "10.0.0.10", "osc_port": 9000, "type": "vents"},

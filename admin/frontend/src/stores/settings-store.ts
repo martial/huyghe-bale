@@ -12,11 +12,14 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>((set) => ({
   settings: {
     osc_frequency: 30,
-    output_cap: 100,
     bridge_enabled: false,
     bridge_port: 9002,
     bridge_routing: "type-match",
     vents_max_temp_c: 80,
+    vents_min_fan_pct: 20,
+    vents_max_fan_pct: 100,
+    vents_min_rpm_alarm: 500,
+    vents_over_temp_fan_pct: 100,
   },
   loading: false,
 

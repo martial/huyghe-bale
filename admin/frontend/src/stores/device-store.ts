@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { Device, DeviceStatus, DeviceVersion, DeviceSystemInfo, LatestVersion, DiscoveredHost } from "../types/device";
 import * as api from "../api/devices";
+import type { DeviceAlarms } from "../api/devices";
 
 interface DeviceState {
   list: Device[];
@@ -9,6 +10,8 @@ interface DeviceState {
   deviceSystemInfo: Record<string, DeviceSystemInfo>;
   /** Unix-seconds timestamp of the last OSC message we received from each device. */
   deviceLastSeen: Record<string, number>;
+  /** Active vents fan-RPM alarms keyed by device id. Only present devices have entries. */
+  deviceAlarms: Record<string, DeviceAlarms>;
   latestVersion: LatestVersion | null;
   updatingDevices: Set<string>;
   restartingDevices: Set<string>;
@@ -35,6 +38,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   deviceVersions: {},
   deviceSystemInfo: {},
   deviceLastSeen: {},
+  deviceAlarms: {},
   latestVersion: null,
   updatingDevices: new Set(),
   restartingDevices: new Set(),
@@ -158,11 +162,12 @@ let cleanupStatusStream: (() => void) | null = null;
 
 function startStatusStream() {
   cleanupStatusStream?.();
-  cleanupStatusStream = api.monitorDeviceStatus((statuses, versions, systemInfo, lastSeen) => {
+  cleanupStatusStream = api.monitorDeviceStatus((statuses, versions, systemInfo, lastSeen, alarms) => {
     const state = useDeviceStore.getState();
     const prevStatuses = state.deviceStatuses;
     const prevVersions = state.deviceVersions;
     const prevLastSeen = state.deviceLastSeen;
+    const prevAlarms = state.deviceAlarms;
 
     let statusChanged = false;
     for (const id in statuses) {
@@ -203,12 +208,15 @@ function startStatusStream() {
       }
     }
 
-    if (statusChanged || versionChanged || sysInfoChanged || lastSeenChanged) {
+    const alarmsChanged = JSON.stringify(alarms) !== JSON.stringify(prevAlarms);
+
+    if (statusChanged || versionChanged || sysInfoChanged || lastSeenChanged || alarmsChanged) {
       const update: Record<string, unknown> = {};
       if (statusChanged) update.deviceStatuses = statuses;
       if (versionChanged) update.deviceVersions = versions;
       if (sysInfoChanged) update.deviceSystemInfo = systemInfo;
       if (lastSeenChanged) update.deviceLastSeen = lastSeen;
+      if (alarmsChanged) update.deviceAlarms = alarms;
       useDeviceStore.setState(update);
     }
   });

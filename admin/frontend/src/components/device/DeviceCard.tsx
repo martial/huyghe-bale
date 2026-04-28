@@ -9,6 +9,8 @@ import { useNow, formatAgo } from "../../hooks/use-now";
 import VentsHero from "./VentsHero";
 import TrolleyHero from "./TrolleyHero";
 import VentsTestPanel from "./VentsTestPanel";
+import VentsConfigPanel from "./VentsConfigPanel";
+import VentsAlarmBadge from "./VentsAlarmBadge";
 
 const TYPE_BADGE: Record<DeviceType, string> = {
   vents: "bg-orange-500/10 text-orange-300 border-orange-500/30",
@@ -35,11 +37,16 @@ function Chevron({ open }: { open: boolean }) {
  *  so this doesn't break rules-of-hooks. */
 function VentsHeroSlot({ device }: { device: Device }) {
   const { status, stale, lastPushAgeS } = useVentsStatus(device.id);
+  const alarms = useDeviceStore((s) => s.deviceAlarms[device.id]);
   return (
     <>
+      {alarms && alarms.active.length > 0 && <VentsAlarmBadge alarms={alarms} />}
       <VentsHero status={status} stale={stale} lastPushAgeS={lastPushAgeS} />
       <DeviceCardDetails device={device}>
-        <VentsTestPanel device={device} status={status} />
+        <div className="space-y-4">
+          <VentsConfigPanel status={status} rpmAlarmThreshold={alarms?.threshold} />
+          <VentsTestPanel device={device} status={status} />
+        </div>
       </DeviceCardDetails>
     </>
   );

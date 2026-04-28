@@ -53,6 +53,8 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
 
     # Initialize and start OSC Receiver
     receiver = OscReceiver(port=9001)
+    _initial_settings = read_settings()
+    receiver.set_min_rpm_alarm(int(_initial_settings.get("vents_min_rpm_alarm", 500)))
     if start_osc:
         receiver.start()
 
@@ -64,7 +66,7 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
         os.path.join(os.path.dirname(__file__), "data"),
         "devices", "dev",
     )
-    _bridge_settings = read_settings()
+    _bridge_settings = _initial_settings
     osc_bridge = OscBridge(
         port=int(_bridge_settings.get("bridge_port", 9002)),
         routing=str(_bridge_settings.get("bridge_routing", "type-match")),

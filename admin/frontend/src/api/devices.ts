@@ -122,12 +122,23 @@ export async function sendTestValue(
   });
 }
 
+/** Live alarm payload for one device — emitted as part of the device-status SSE.
+ * Backend only sets a key when there's at least one active channel; missing key
+ * means the device is healthy. */
+export interface DeviceAlarms {
+  /** Channels in alarm. 0/1 = fan 1 tach A/B, 2/3 = fan 2 tach A/B. */
+  active: number[];
+  /** Threshold (RPM) under which channels are considered to be in alarm. */
+  threshold: number;
+}
+
 export function monitorDeviceStatus(
   onStatusUpdate: (
     statuses: Record<string, DeviceStatus>,
     versions: Record<string, DeviceVersion>,
     systemInfo: Record<string, DeviceSystemInfo>,
     lastSeen: Record<string, number>,
+    alarms: Record<string, DeviceAlarms>,
   ) => void,
 ) {
   const eventSource = new EventSource("/api/v1/devices/status");
@@ -140,9 +151,15 @@ export function monitorDeviceStatus(
     try {
       const data = JSON.parse(event.data);
       if (data.statuses) {
-        onStatusUpdate(data.statuses, data.versions || {}, data.system_info || {}, data.last_seen || {});
+        onStatusUpdate(
+          data.statuses,
+          data.versions || {},
+          data.system_info || {},
+          data.last_seen || {},
+          data.alarms || {},
+        );
       } else {
-        onStatusUpdate(data as Record<string, DeviceStatus>, {}, {}, {});
+        onStatusUpdate(data as Record<string, DeviceStatus>, {}, {}, {}, {});
       }
     } catch (e) {
       console.error("[HeartbeatSSE] Parse error:", e);

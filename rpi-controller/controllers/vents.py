@@ -19,10 +19,14 @@ Temperature control — two independent concepts:
     target + H (and under max) → all **OFF**; in band → **holding**. State names
     heating/cooling describe whether cells are driven, not which Peltier face is
     physically hot or cold. Fans are not used for this loop (use raw or /vents/fan/*).
-  - **max_temp_c**: **safety** ceiling (persisted on the Pi). If avg temp exceeds
-    max, state is "over_temp": all Peltiers off; fan PWM is left unchanged (auto
-    does not touch fans for over_temp either).
+  - **max_temp_c**: **safety** ceiling (persisted on the Pi). If **any individual
+    sensor** reads above max (per-sensor, not average), state is "over_temp":
+    all Peltiers off and both fans pinned to `over_temp_fan_pct`.
     Peltier "on" commands are ignored while above max (interlock).
+  - **min_fan_pct**: PWM floor enforced by `_set_fan` whenever a non-zero duty
+    is requested. Editable from admin Settings; persisted on the Pi.
+  - **over_temp_fan_pct**: fan PWM forced (both fans) during the over_temp
+    branch. Editable from admin Settings; persisted on the Pi.
 
 OSC protocol:
 
@@ -37,12 +41,22 @@ OSC protocol:
     /vents/target     float target temperature in °C (setpoint for Peltier regulation)
     /vents/max_temp   float safety max °C (stored in ~/.config/gpio-osc/vents_prefs.json)
 
+  Configuration push (admin → Pi on port 9000; mirrored on HTTP /gpio/test
+  via {"command": ..., "value": ...} bodies):
+    /vents/config/min_fan_pct          float 0..100 — PWM floor (persisted)
+    /vents/config/max_fan_pct          float 0..100 — PWM scale, applied to every
+                                       fan command (persisted). Replaces the admin
+                                       playback engine's old output_cap.
+    /vents/config/over_temp_fan_pct    float 0..100 — fan % during over_temp (persisted)
+
   Status broadcast (Pi → admin on port 9001) every VENTS_STATUS_HZ ticks:
     /vents/status temp1, temp2, fan1_0_1, fan2_0_1, peltier_mask,
-                  rpm1A, rpm1B, rpm2A, rpm2B, target_c, mode, state, max_temp_c
+                  rpm1A, rpm1B, rpm2A, rpm2B, target_c, mode, state,
+                  max_temp_c, min_fan_pct, over_temp_fan_pct, max_fan_pct
 
-Auto loop: avg > max → over_temp (Peltiers off only). avg < target − H → heating
-(mask 0b111). avg > target + H (and ≤ max) → cooling (mask 0). else → holding.
+Auto loop: ANY sensor > max → over_temp (Peltiers off + fans → over_temp_fan_pct).
+avg < target − H → heating (mask 0b111). avg > target + H (and no sensor over max)
+→ cooling (mask 0). else → holding.
 Missing sensors → sensor_error (Peltiers + fans off).
 """
 
@@ -96,6 +110,16 @@ _temp_files = [None, None]  # paths to DS18B20 w1_slave files, None if sensor mi
 
 target_temp_c = float(VENTS_DEFAULT_TARGET_C)
 max_temp_c = float(VENTS_DEFAULT_MAX_TEMP_C)  # over-temp threshold; persisted in _PREFS_PATH
+# PWM floor enforced inside _set_fan whenever a non-zero duty is requested.
+# Editable from admin Settings; persisted in _PREFS_PATH.
+min_fan_pct = float(VENTS_FAN_PWM_MIN_PCT)
+# PWM ceiling: every non-zero fan command is multiplied by max_fan_pct/100
+# before the floor is applied. Replaces the playback-engine "output_cap" so
+# the cap is enforced regardless of who issued the command.
+max_fan_pct = 100.0
+# Fan PWM forced (both fans) while any sensor exceeds max_temp_c.
+# Editable from admin Settings; persisted in _PREFS_PATH.
+over_temp_fan_pct = 100.0
 mode = "raw"          # "raw" or "auto"
 state = "idle"        # idle|heating|cooling|holding|sensor_error|over_temp
 
@@ -148,26 +172,45 @@ def _clamp_max_vs_target():
         max_temp_c = lo
 
 
+_PREFS_RANGES = {
+    "max_temp_c": (-55.0, 125.0),
+    "min_fan_pct": (0.0, 100.0),
+    "max_fan_pct": (0.0, 100.0),
+    "over_temp_fan_pct": (0.0, 100.0),
+}
+
+
 def _load_prefs():
-    """Load max_temp_c from disk (called from setup)."""
-    global max_temp_c
+    """Load persisted vents preferences from disk (called from setup)."""
     try:
         data = json.loads(_PREFS_PATH.read_text())
-        v = float(data.get("max_temp_c", VENTS_DEFAULT_MAX_TEMP_C))
-        max_temp_c = _clamp(v, -55.0, 125.0)
-        _clamp_max_vs_target()
     except FileNotFoundError:
-        pass
+        return
     except Exception as e:
         logger.warning("Failed to load vents prefs from %s: %s", _PREFS_PATH, e)
+        return
+    g = globals()
+    for key, (lo, hi) in _PREFS_RANGES.items():
+        if key not in data:
+            continue
+        try:
+            g[key] = _clamp(float(data[key]), lo, hi)
+        except (TypeError, ValueError):
+            logger.warning("Bad %s in prefs, ignoring", key)
+    _clamp_max_vs_target()
 
 
 def _save_prefs():
-    """Persist max_temp_c for reboot."""
+    """Persist editable vents preferences for reboot."""
     try:
         _PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = _PREFS_PATH.with_suffix(".json.tmp")
-        payload = json.dumps({"max_temp_c": max_temp_c}, indent=2) + "\n"
+        payload = json.dumps({
+            "max_temp_c": max_temp_c,
+            "min_fan_pct": min_fan_pct,
+            "max_fan_pct": max_fan_pct,
+            "over_temp_fan_pct": over_temp_fan_pct,
+        }, indent=2) + "\n"
         tmp.write_text(payload)
         tmp.replace(_PREFS_PATH)
     except Exception as e:
@@ -183,6 +226,30 @@ def _set_max_temp_c(value):
     logger.info("Vents max temperature threshold → %.2f °C (saved)", max_temp_c)
 
 
+def _set_min_fan_pct(value):
+    """Set fan PWM floor (% of duty cycle) and persist."""
+    global min_fan_pct
+    min_fan_pct = _clamp(float(value), 0.0, 100.0)
+    _save_prefs()
+    logger.info("Vents min fan PWM → %.2f %% (saved)", min_fan_pct)
+
+
+def _set_over_temp_fan_pct(value):
+    """Set fan PWM forced while over-temperature interlock is active and persist."""
+    global over_temp_fan_pct
+    over_temp_fan_pct = _clamp(float(value), 0.0, 100.0)
+    _save_prefs()
+    logger.info("Vents over-temp fan PWM → %.2f %% (saved)", over_temp_fan_pct)
+
+
+def _set_max_fan_pct(value):
+    """Set fan PWM ceiling (% of duty cycle) and persist."""
+    global max_fan_pct
+    max_fan_pct = _clamp(float(value), 0.0, 100.0)
+    _save_prefs()
+    logger.info("Vents max fan PWM → %.2f %% (saved)", max_fan_pct)
+
+
 def _set_peltier(index, on):
     """index is 0..2 (pin 26/25/24)."""
     pin = PELTIER_PINS[index]
@@ -191,10 +258,18 @@ def _set_peltier(index, on):
 
 
 def _set_fan(index, duty_0_1):
-    """index is 0 (fan 1) or 1 (fan 2). duty_0_1 in [0, 1]."""
-    duty_pct = _clamp(float(duty_0_1) * 100.0,
-                      VENTS_FAN_PWM_MIN_PCT if duty_0_1 > 0 else 0.0,
-                      VENTS_FAN_PWM_MAX_PCT)
+    """index is 0 (fan 1) or 1 (fan 2). duty_0_1 in [0, 1].
+
+    Pipeline for a non-zero request: clamp to [0, 100] → scale by max_fan_pct
+    (the device-side cap that replaced the playback engine's output_cap) →
+    raise to min_fan_pct floor so a stalled fan can't slip through. An
+    explicit 0.0 always passes through (lets callers fully stop a fan).
+    """
+    raw_pct = _clamp(float(duty_0_1) * 100.0, 0.0, VENTS_FAN_PWM_MAX_PCT)
+    if duty_0_1 > 0:
+        duty_pct = max(raw_pct * (max_fan_pct / 100.0), min_fan_pct)
+    else:
+        duty_pct = 0.0
     if index == 0 and pwm_fan_1 is not None:
         pwm_fan_1.ChangeDutyCycle(duty_pct)
     elif index == 1 and pwm_fan_2 is not None:
@@ -286,12 +361,20 @@ def _avg_temp():
     return sum(vals) / len(vals) if vals else None
 
 
+def _any_temp_over_max():
+    """True when ANY individual sensor reads above max_temp_c.
+
+    Per-sensor (not average) so a localised hot spot — e.g. one Peltier face
+    runaway — trips the interlock even if the other probe is still cool.
+    Sensors reading None are ignored; if both are None the result is False
+    (the auto loop separately routes that into the sensor_error state)."""
+    return any(t is not None and t > max_temp_c for t in temp_c)
+
+
 def _over_temp_interlock():
-    """True when average temp is above max_temp_c (same test as auto hot branch)."""
-    avg = _avg_temp()
-    if avg is None:
-        return False
-    return avg > max_temp_c
+    """True when ANY sensor is above max_temp_c. Used by manual peltier
+    handlers as a hard interlock that ignores `on` requests."""
+    return _any_temp_over_max()
 
 
 def _auto_loop():
@@ -307,9 +390,14 @@ def _auto_loop():
                 _apply_peltier_mask(0)
                 _set_fan(0, 0.0)
                 _set_fan(1, 0.0)
-            elif avg > max_temp_c:
+            elif _any_temp_over_max():
+                # Safety: per-sensor (not avg) — if either probe sees over-max,
+                # cut peltiers AND pin both fans to the configured fallback %.
                 state = "over_temp"
                 _apply_peltier_mask(0)
+                fallback_0_1 = over_temp_fan_pct / 100.0
+                _set_fan(0, fallback_0_1)
+                _set_fan(1, fallback_0_1)
             elif avg < target_temp_c - VENTS_HYSTERESIS_C:
                 state = "heating"
                 _apply_peltier_mask(0b111)
@@ -535,6 +623,27 @@ def handle_max_temp(address, *args):
     _set_max_temp_c(args[0])
 
 
+@_safe("min_fan_pct")
+def handle_min_fan_pct(address, *args):
+    if not args:
+        return
+    _set_min_fan_pct(args[0])
+
+
+@_safe("over_temp_fan_pct")
+def handle_over_temp_fan_pct(address, *args):
+    if not args:
+        return
+    _set_over_temp_fan_pct(args[0])
+
+
+@_safe("max_fan_pct")
+def handle_max_fan_pct(address, *args):
+    if not args:
+        return
+    _set_max_fan_pct(args[0])
+
+
 def register_osc(dispatcher):
     dispatcher.map("/vents/peltier/1", handle_peltier_1)
     dispatcher.map("/vents/peltier/2", handle_peltier_2)
@@ -545,6 +654,9 @@ def register_osc(dispatcher):
     dispatcher.map("/vents/mode", handle_mode)
     dispatcher.map("/vents/target", handle_target)
     dispatcher.map("/vents/max_temp", handle_max_temp)
+    dispatcher.map("/vents/config/min_fan_pct", handle_min_fan_pct)
+    dispatcher.map("/vents/config/max_fan_pct", handle_max_fan_pct)
+    dispatcher.map("/vents/config/over_temp_fan_pct", handle_over_temp_fan_pct)
 
 
 # ── HTTP test surface ─────────────────────────────────────────────────────
@@ -578,6 +690,12 @@ def handle_http_test(body):
             handle_target("/http", float(value))
         elif cmd == "max_temp":
             handle_max_temp("/http", float(value))
+        elif cmd == "min_fan_pct":
+            handle_min_fan_pct("/http", float(value))
+        elif cmd == "max_fan_pct":
+            handle_max_fan_pct("/http", float(value))
+        elif cmd == "over_temp_fan_pct":
+            handle_over_temp_fan_pct("/http", float(value))
         else:
             return {"ok": False, "error": f"unknown command: {cmd!r}"}
     except Exception as e:
@@ -606,6 +724,9 @@ def get_status():
         "rpm2B": tacho_rpm[3],
         "target_c": target_temp_c,
         "max_temp_c": max_temp_c,
+        "min_fan_pct": min_fan_pct,
+        "max_fan_pct": max_fan_pct,
+        "over_temp_fan_pct": over_temp_fan_pct,
         "mode": mode,
         "state": state,
         "sensors_ok": any(t is not None for t in temp_c),
@@ -614,7 +735,9 @@ def get_status():
 
 def get_status_osc_args():
     """OSC argument list matching the documented /vents/status contract.
-    Missing temperatures are encoded as -1.0 (python-osc rejects None)."""
+    Missing temperatures are encoded as -1.0 (python-osc rejects None).
+    Backend `_handle_vents_status` parses arg 13 onward optionally so older
+    firmware (12 args, no max_temp_c) and pre-min-fan (13 args) both decode."""
     s = get_status()
     return [
         float(s["temp1_c"]) if s["temp1_c"] is not None else -1.0,
@@ -630,6 +753,9 @@ def get_status_osc_args():
         str(s["mode"]),
         str(s["state"]),
         float(s["max_temp_c"]),
+        float(s["min_fan_pct"]),
+        float(s["over_temp_fan_pct"]),
+        float(s["max_fan_pct"]),
     ]
 
 

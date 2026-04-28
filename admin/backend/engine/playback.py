@@ -36,7 +36,6 @@ class PlaybackEngine:
         self._current_step_index = 0
         self._pause_event = threading.Event()  # Set = running, Clear = paused
         self._pause_event.set()
-        self.output_cap = 100  # Max output percentage (1–100)
         self._last_error: Optional[str] = None
 
     @property
@@ -82,9 +81,9 @@ class PlaybackEngine:
         b_pts = len((lanes.get("b") or {}).get("points", []))
         ips = ", ".join(f"{d.get('ip_address')}:{d.get('osc_port', 9000)}" for d in devices)
         logger.info(
-            "Playback started: timeline %s (%.1fs, a=%dpts b=%dpts, cap=%d%%, tick=%dHz) → %s",
+            "Playback started: timeline %s (%.1fs, a=%dpts b=%dpts, tick=%dHz) → %s",
             timeline.get("id"), self.total_duration, a_pts, b_pts,
-            self.output_cap, self.tick_rate, ips or "(no devices)",
+            self.tick_rate, ips or "(no devices)",
         )
 
     def start_trolley_timeline(self, timeline: dict, devices: list[dict]):
@@ -470,13 +469,17 @@ class PlaybackEngine:
             self._clear_run_state()
 
     def _evaluate_and_send(self, timeline: dict, current_time: float):
-        """Evaluate lanes and send OSC to all active devices."""
+        """Evaluate lanes and send OSC to all active devices.
+
+        Lane values are sent unscaled. Each vents Pi applies its own
+        max_fan_pct (and min_fan_pct floor) on receipt — see
+        rpi-controller/controllers/vents.py:_set_fan.
+        """
         lanes = timeline.get("lanes", {})
-        cap = self.output_cap / 100.0
         for lane_key in ("a", "b"):
             lane = lanes.get(lane_key, {})
             points = lane.get("points", [])
-            value = evaluate_lane(points, current_time) * cap
+            value = evaluate_lane(points, current_time)
             self.current_values[lane_key] = value
 
         for device in self._devices:

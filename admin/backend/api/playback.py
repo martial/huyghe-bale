@@ -72,7 +72,6 @@ def start_playback():
     # Apply current settings
     settings = read_settings()
     _engine.tick_rate = settings.get("osc_frequency", 30)
-    _engine.output_cap = settings.get("output_cap", 100)
 
     if playback_type == "timeline":
         timeline = timeline_store.get(playback_id)
