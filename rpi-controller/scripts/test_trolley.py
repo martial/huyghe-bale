@@ -18,7 +18,12 @@ sys.path.insert(0, os.path.dirname(_HERE))
 
 import RPi.GPIO as GPIO  # noqa: E402
 
-from config import PIN_STEP_DIR, PIN_STEP_PUL, PIN_STEP_ENA, PIN_LIM_SWITCH  # noqa: E402
+from config import (  # noqa: E402
+    PIN_STEP_DIR, PIN_STEP_PUL, PIN_STEP_ENA,
+    PIN_LIM_SWITCH, PIN_LIM_SWITCH_FAR,
+    PIN_ALARM_1, PIN_ALARM_2,
+    PIN_PEND_1, PIN_PEND_2,
+)
 
 
 # ── input helpers ──────────────────────────────────────────────────────────
@@ -55,6 +60,16 @@ def ask_float(prompt: str, low: float, high: float, default: float | None = None
 
 # ── hardware ops ───────────────────────────────────────────────────────────
 
+_INPUT_PINS = (
+    ("LIM_HOME", PIN_LIM_SWITCH),
+    ("LIM_FAR",  PIN_LIM_SWITCH_FAR),
+    ("ALARM_1",  PIN_ALARM_1),
+    ("ALARM_2",  PIN_ALARM_2),
+    ("PEND_1",   PIN_PEND_1),
+    ("PEND_2",   PIN_PEND_2),
+)
+
+
 class TrolleyBench:
     def __init__(self) -> None:
         GPIO.setmode(GPIO.BCM)
@@ -65,7 +80,8 @@ class TrolleyBench:
         GPIO.setup(PIN_STEP_DIR, GPIO.OUT, initial=GPIO.HIGH)  # default forward
         GPIO.setup(PIN_STEP_PUL, GPIO.OUT, initial=GPIO.LOW)
         GPIO.setup(PIN_STEP_ENA, GPIO.OUT, initial=GPIO.HIGH)  # disabled (active LOW)
-        GPIO.setup(PIN_LIM_SWITCH, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+        for _, pin in _INPUT_PINS:
+            GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
     def set_ena(self) -> None:
         state = ask_int("Driver enable (1=enabled/ENA LOW, 0=disabled)", 0, 1, 1)
@@ -82,6 +98,7 @@ class TrolleyBench:
 
         On the Nema/DM542-style drivers we use, one pulse on PUL = one step.
         Speed is pulse frequency: freq = 1000 / (2 * half_period_ms).
+        Aborts on either limit switch (home or far) or any driver alarm.
         """
         n = ask_int("Number of steps", 1, 1_000_000, 200)
         speed_hz = ask_float("Speed (Hz = steps/sec)", 10.0, 5000.0, 250.0)
@@ -91,7 +108,15 @@ class TrolleyBench:
         sent = 0
         for i in range(n):
             if GPIO.input(PIN_LIM_SWITCH) == GPIO.HIGH:
-                print(f"  → limit hit after {sent} steps")
+                print(f"  → home limit hit after {sent} steps")
+                return
+            if GPIO.input(PIN_LIM_SWITCH_FAR) == GPIO.HIGH:
+                print(f"  → far limit hit after {sent} steps")
+                return
+            if GPIO.input(PIN_ALARM_1) == GPIO.HIGH or GPIO.input(PIN_ALARM_2) == GPIO.HIGH:
+                a1 = GPIO.input(PIN_ALARM_1)
+                a2 = GPIO.input(PIN_ALARM_2)
+                print(f"  → driver alarm after {sent} steps (ALARM_1={a1} ALARM_2={a2})")
                 return
             GPIO.output(PIN_STEP_PUL, GPIO.HIGH)
             time.sleep(half)
@@ -101,15 +126,48 @@ class TrolleyBench:
         elapsed = time.monotonic() - start
         print(f"  → {sent} steps in {elapsed:.2f}s (actual {sent / elapsed:.0f} Hz)")
 
-    def read_limit(self) -> None:
-        state = GPIO.input(PIN_LIM_SWITCH)
-        print(f"  LIM = {'HIT (HIGH)' if state == GPIO.HIGH else 'open (LOW)'}")
+    def read_limits(self) -> None:
+        h = GPIO.input(PIN_LIM_SWITCH)
+        f = GPIO.input(PIN_LIM_SWITCH_FAR)
+        print(f"  LIM_HOME = {'HIT (HIGH)' if h == GPIO.HIGH else 'open (LOW)'}  (BCM {PIN_LIM_SWITCH})")
+        print(f"  LIM_FAR  = {'HIT (HIGH)' if f == GPIO.HIGH else 'open (LOW)'}  (BCM {PIN_LIM_SWITCH_FAR})")
+
+    def read_alarms(self) -> None:
+        a1 = GPIO.input(PIN_ALARM_1)
+        a2 = GPIO.input(PIN_ALARM_2)
+        print(f"  ALARM_1 = {'FAULT (HIGH)' if a1 == GPIO.HIGH else 'ok (LOW)'}  (BCM {PIN_ALARM_1})")
+        print(f"  ALARM_2 = {'FAULT (HIGH)' if a2 == GPIO.HIGH else 'ok (LOW)'}  (BCM {PIN_ALARM_2})")
+
+    def read_pend(self) -> None:
+        p1 = GPIO.input(PIN_PEND_1)
+        p2 = GPIO.input(PIN_PEND_2)
+        print(f"  PEND_1 = {p1}  (BCM {PIN_PEND_1})")
+        print(f"  PEND_2 = {p2}  (BCM {PIN_PEND_2})")
+
+    def live_monitor(self) -> None:
+        """Poll all six diagnostic inputs at 10 Hz for 5 seconds; print changes."""
+        duration = 5.0
+        period = 0.1
+        prev = {name: GPIO.input(pin) for name, pin in _INPUT_PINS}
+        print(f"  initial: " + "  ".join(f"{n}={v}" for n, v in prev.items()))
+        end = time.monotonic() + duration
+        while time.monotonic() < end:
+            time.sleep(period)
+            for name, pin in _INPUT_PINS:
+                cur = GPIO.input(pin)
+                if cur != prev[name]:
+                    arrow = "↑" if cur > prev[name] else "↓"
+                    print(f"  {time.strftime('%H:%M:%S')} {name} {arrow} {prev[name]}→{cur}")
+                    prev[name] = cur
+        print(f"  final:   " + "  ".join(f"{n}={v}" for n, v in prev.items()))
 
     def snapshot(self) -> None:
         d = "forward" if GPIO.input(PIN_STEP_DIR) == GPIO.HIGH else "reverse"
         e = "disabled" if GPIO.input(PIN_STEP_ENA) == GPIO.HIGH else "enabled"
-        lim = "HIT" if GPIO.input(PIN_LIM_SWITCH) == GPIO.HIGH else "open"
-        print(f"  DIR={d}  ENA={e}  LIM={lim}")
+        parts = [f"DIR={d}", f"ENA={e}"]
+        for name, pin in _INPUT_PINS:
+            parts.append(f"{name}={GPIO.input(pin)}")
+        print("  " + "  ".join(parts))
 
     def cleanup(self) -> None:
         try:
@@ -127,11 +185,14 @@ MENU_HEADER = "\n━━━ trolley bench test ━━━"
 
 def build_menu(b: TrolleyBench) -> "list[tuple[str, callable]]":
     return [
-        ("Enable / disable driver (ENA)",    b.set_ena),
-        ("Set direction (DIR)",              b.set_dir),
-        ("Step N times at given speed (Hz)", b.pulse),
-        ("Read limit switch",                b.read_limit),
-        ("Print pin snapshot",               b.snapshot),
+        ("Enable / disable driver (ENA)",            b.set_ena),
+        ("Set direction (DIR)",                      b.set_dir),
+        ("Step N times at given speed (Hz)",         b.pulse),
+        ("Read both limit switches (HOME / FAR)",    b.read_limits),
+        ("Read driver alarms (ALARM_1 / ALARM_2)",   b.read_alarms),
+        ("Read PEND inputs (PEND_1 / PEND_2)",       b.read_pend),
+        ("Live monitor diagnostic inputs (5 s)",     b.live_monitor),
+        ("Print pin snapshot",                       b.snapshot),
     ]
 
 

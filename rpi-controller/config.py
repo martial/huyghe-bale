@@ -36,12 +36,32 @@ VENTS_STATUS_HZ = 5            # /vents/status broadcast rate (5 Hz)
 VENTS_TEMP_POLL_HZ = 1         # DS18B20 read cadence (1 Hz — reads are slow)
 VENTS_TACHO_MIN_DT_S = 0.005   # debounce gap for tacho edge → RPM
 
-# --- Trolley (stepper + limit switch) ---------------------------------------
+# --- Trolley (single stepper + dual limit switches + driver diagnostics) ----
+#
+# One stepper motor on a rail with limit switches at both ends. The driver
+# exposes two pairs of diagnostic outputs (ALARM_1/ALARM_2, PEND_1/PEND_2)
+# wired to the Pi as inputs.
+#
+# Pin caveats:
+#   BCM 1  (ALARM_1) is I²C-0 SDA — fine as plain GPIO when no I²C HAT is attached.
+#   BCM 7  (PEND_1)  is SPI0 CE1 — fine as plain GPIO when SPI is disabled in
+#                    /boot/firmware/config.txt (it is on these Pis).
+#
+# NOTE: only PIN_LIM_SWITCH (home end) is read by controllers/trolley.py today.
+# The far-end + alarm + PEND constants are present so the bench script and any
+# future ISR refactor can reference the canonical pin numbers in one place.
 
-PIN_STEP_DIR = 25
-PIN_STEP_PUL = 24
-PIN_STEP_ENA = 23        # active LOW: GPIO.LOW enables the driver
-PIN_LIM_SWITCH = 21      # input, PUD_DOWN, HIGH when limit reached
+PIN_STEP_DIR = 23                 # DIR
+PIN_STEP_PUL = 18                 # PUL
+PIN_STEP_ENA = 14                 # ENA — active LOW
+
+PIN_LIM_SWITCH      = 20          # home end — used by the firmware (single switch it knows)
+PIN_LIM_SWITCH_FAR  = 21          # far end — read by scripts/test_trolley.py only (for now)
+
+PIN_ALARM_1 = 1                   # driver fault output channel 1 (input to Pi)
+PIN_ALARM_2 = 16                  # driver fault output channel 2
+PIN_PEND_1  = 7                   # driver "Position-End" output channel 1
+PIN_PEND_2  = 12                  # driver "Position-End" output channel 2
 
 STEP_DEBOUNCE_MS = 200
 TROLLEY_MAX_STEPS = 20000            # total travel between home and far end — calibrate on rig

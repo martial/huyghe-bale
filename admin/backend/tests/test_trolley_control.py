@@ -95,7 +95,10 @@ def test_status_reads_receiver(ctx):
     # Seed the receiver's trolley_status as if a Pi had pushed a frame.
     from engine.osc_receiver import OscReceiver
     r = OscReceiver(port=9001)
-    r.trolley_status["192.168.1.77"] = {"position": 0.42, "limit": 0, "homed": 1, "timestamp": 123.0}
+    r.trolley_status["192.168.1.77"] = {
+        "position": 0.42, "limit": 0, "homed": 1,
+        "state": "idle", "calibrated": 1, "timestamp": 123.0,
+    }
     r.last_seen["192.168.1.77"] = 1e12  # pretend "just now"
 
     resp = client.get(f"/api/v1/trolley-control/{dev['id']}/status")
@@ -103,4 +106,48 @@ def test_status_reads_receiver(ctx):
     body = resp.get_json()
     assert body["position"] == pytest.approx(0.42)
     assert body["homed"] == 1
+    assert body["calibrated"] == 1
+    assert body["state"] == "idle"
     assert body["online"] is True
+
+
+def test_calibrate_start_sends_correct_address(ctx):
+    client, dev = ctx
+    with patch("api.trolley_control._osc") as mock_osc:
+        resp = client.post(
+            f"/api/v1/trolley-control/{dev['id']}/command",
+            data=json.dumps({"command": "calibrate_start", "value": "forward"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        mock_osc.send.assert_called_once_with(
+            "192.168.1.77", 9000, "/trolley/calibrate/start", "forward",
+        )
+
+
+def test_config_set_sends_key_value_pair(ctx):
+    client, dev = ctx
+    with patch("api.trolley_control._osc") as mock_osc:
+        resp = client.post(
+            f"/api/v1/trolley-control/{dev['id']}/command",
+            data=json.dumps({
+                "command": "config_set",
+                "key": "soft_limit_pct", "value": 0.95,
+            }),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        mock_osc.send.assert_called_once_with(
+            "192.168.1.77", 9000, "/trolley/config/set",
+            ["soft_limit_pct", 0.95],
+        )
+
+
+def test_config_set_rejects_missing_key(ctx):
+    client, dev = ctx
+    resp = client.post(
+        f"/api/v1/trolley-control/{dev['id']}/command",
+        data=json.dumps({"command": "config_set", "value": 1.0}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 400

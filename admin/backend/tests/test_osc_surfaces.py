@@ -306,6 +306,66 @@ class TestTrolleyPanel:
         assert r.status_code == 400
         assert ctx["sender"].sends == []
 
+    def test_T10_calibrate_start(self, ctx):
+        _trolley_cmd(ctx, {"command": "calibrate_start"})
+        assert ctx["sender"].sends == [
+            ("10.0.0.2", 9000, "/trolley/calibrate/start", 0),
+        ]
+
+    def test_T11_calibrate_start_with_direction(self, ctx):
+        _trolley_cmd(ctx, {"command": "calibrate_start", "value": "reverse"})
+        assert ctx["sender"].sends == [
+            ("10.0.0.2", 9000, "/trolley/calibrate/start", "reverse"),
+        ]
+
+    def test_T12_calibrate_stop(self, ctx):
+        _trolley_cmd(ctx, {"command": "calibrate_stop"})
+        assert ctx["sender"].sends == [
+            ("10.0.0.2", 9000, "/trolley/calibrate/stop", 0),
+        ]
+
+    def test_T13_calibrate_save(self, ctx):
+        _trolley_cmd(ctx, {"command": "calibrate_save"})
+        assert ctx["sender"].sends == [
+            ("10.0.0.2", 9000, "/trolley/calibrate/save", 0),
+        ]
+
+    def test_T14_calibrate_cancel(self, ctx):
+        _trolley_cmd(ctx, {"command": "calibrate_cancel"})
+        assert ctx["sender"].sends == [
+            ("10.0.0.2", 9000, "/trolley/calibrate/cancel", 0),
+        ]
+
+    def test_T15_config_set_two_args(self, ctx):
+        _trolley_cmd(ctx, {"command": "config_set", "key": "max_speed_hz", "value": 1500})
+        assert ctx["sender"].sends == [
+            ("10.0.0.2", 9000, "/trolley/config/set", ["max_speed_hz", 1500]),
+        ]
+
+    def test_T16_config_set_calibration_direction(self, ctx):
+        _trolley_cmd(ctx, {"command": "config_set", "key": "calibration_direction", "value": "reverse"})
+        assert ctx["sender"].sends == [
+            ("10.0.0.2", 9000, "/trolley/config/set",
+             ["calibration_direction", "reverse"]),
+        ]
+
+    def test_T17_config_save(self, ctx):
+        _trolley_cmd(ctx, {"command": "config_save"})
+        assert ctx["sender"].sends == [
+            ("10.0.0.2", 9000, "/trolley/config/save", 0),
+        ]
+
+    def test_T18_config_get(self, ctx):
+        _trolley_cmd(ctx, {"command": "config_get"})
+        assert ctx["sender"].sends == [
+            ("10.0.0.2", 9000, "/trolley/config/get", 0),
+        ]
+
+    def test_T19_config_set_missing_key_rejected(self, ctx):
+        r = _trolley_cmd(ctx, {"command": "config_set", "value": 5})
+        assert r.status_code == 400
+        assert ctx["sender"].sends == []
+
 
 # --- Vents timeline playback (VP1..VP4) -------------------------------
 

@@ -47,3 +47,32 @@ class TestHandlePong:
             "10.0.0.7", "VENTS", "vents_x",
         )
         assert r.get_device_info("10.0.0.7")["type"] == "vents"
+
+
+class TestHandleTrolleyStatus:
+    def test_legacy_three_arg_payload(self):
+        r = _fresh_receiver()
+        r._handle_trolley_status(("10.0.0.8", 5000), "/trolley/status", 0.25, 0, 1)
+        s = r.get_trolley_status("10.0.0.8")
+        assert s["position"] == 0.25
+        assert s["homed"] == 1
+        assert s["state"] == "idle"        # default when not provided
+        assert s["calibrated"] == 0        # default when not provided
+
+    def test_extended_five_arg_payload(self):
+        r = _fresh_receiver()
+        r._handle_trolley_status(
+            ("10.0.0.9", 5000), "/trolley/status",
+            0.5, 0, 1, "calibrating", 0,
+        )
+        s = r.get_trolley_status("10.0.0.9")
+        assert s["state"] == "calibrating"
+        assert s["calibrated"] == 0
+
+    def test_calibrated_true(self):
+        r = _fresh_receiver()
+        r._handle_trolley_status(
+            ("10.0.0.10", 5000), "/trolley/status",
+            0.0, 0, 1, "idle", 1,
+        )
+        assert r.get_trolley_status("10.0.0.10")["calibrated"] == 1

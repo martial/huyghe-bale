@@ -4,6 +4,7 @@ from flask import Blueprint, request, jsonify
 from storage.json_store import JsonStore
 from config import DATA_DIR
 from api.settings import _read as read_settings
+from engine.osc_receiver import OscReceiver
 
 bp = Blueprint("playback", __name__)
 
@@ -84,6 +85,23 @@ def start_playback():
         timeline = trolley_timeline_store.get(playback_id)
         if not timeline:
             return jsonify({"error": "Trolley timeline not found"}), 404
+        # Refuse to drive an uncalibrated trolley — /trolley/position would be
+        # rejected by the firmware anyway, but a clear UI error is friendlier
+        # than silent no-ops.
+        receiver = OscReceiver(port=9001)
+        uncalibrated = []
+        for d in devices:
+            ip = d.get("ip_address")
+            if not ip:
+                continue
+            status = receiver.get_trolley_status(ip)
+            if not status.get("calibrated"):
+                uncalibrated.append({"id": d.get("id"), "name": d.get("name"), "ip": ip})
+        if uncalibrated:
+            return jsonify({
+                "error": "Some trolleys are not calibrated. Run Home → Calibrate first.",
+                "uncalibrated_devices": uncalibrated,
+            }), 400
         _engine.start_trolley_timeline(timeline, devices)
         return jsonify({"ok": True, "message": "Trolley timeline playback started"})
 

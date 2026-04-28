@@ -37,11 +37,25 @@ export function duplicateTrolleyTimeline(id: string) {
 export function sendTrolleyCommand(
   deviceId: string,
   command: TrolleyCommand,
-  value?: number,
+  value?: number | string,
 ) {
-  return post<{ ok: boolean; sent?: { address: string; value: number } }>(
+  return post<{ ok: boolean; sent?: { address: string; value: unknown } }>(
     `/trolley-control/${deviceId}/command`,
     { command, value: value ?? 0 },
+  );
+}
+
+/** Settings live in a single 'config_set' command that takes (key, value).
+ *  Use this for typed setting writes; pair with sendTrolleyCommand("config_save")
+ *  once all desired keys are staged on the Pi. */
+export function setTrolleyConfig(
+  deviceId: string,
+  key: string,
+  value: number | string | boolean,
+) {
+  return post<{ ok: boolean }>(
+    `/trolley-control/${deviceId}/command`,
+    { command: "config_set", key, value },
   );
 }
 

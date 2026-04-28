@@ -58,7 +58,8 @@ class OscReceiver:
 
     def _handle_trolley_status(self, client_address, addr, *args):
         """Pi-pushed status for trolley controllers.
-        Args: (position_0_1, limit_int, homed_int).
+        Args: (position_0_1, limit_int, homed_int [, state_str, calibrated_int]).
+        Old firmware sends only the first three; treat the extras as optional.
         """
         ip = client_address[0]
         self.last_seen[ip] = time.time()
@@ -66,12 +67,16 @@ class OscReceiver:
             position = float(args[0]) if len(args) > 0 else 0.0
             limit = int(args[1]) if len(args) > 1 else 0
             homed = int(args[2]) if len(args) > 2 else 0
+            state = str(args[3]) if len(args) > 3 else "idle"
+            calibrated = int(args[4]) if len(args) > 4 else 0
         except (TypeError, ValueError):
             return
         self.trolley_status[ip] = {
             "position": position,
             "limit": limit,
             "homed": homed,
+            "state": state,
+            "calibrated": calibrated,
             "timestamp": time.time(),
         }
 
