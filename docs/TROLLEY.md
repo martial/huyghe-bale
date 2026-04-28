@@ -16,57 +16,70 @@ Pin map and firmware constants live in `rpi-controller/config.py:39-72`.
 
 ## 1. Hardware overview
 
-One closed-loop stepper, one driver, two end-stop microswitches.
+Dual-motor gantry: **two closed-loop steppers driven in lockstep by a single
+shared step/dir/ena bus**. Two end-stop microswitches at the ends of the rail.
 
-- **Motor**: `34HS38-4204D-E1000` — NEMA 34, 1.8° / step (200 full steps per revolution),
-  rated 3.39 V / 4.2 A per phase, 7.0 Nm holding torque, with a built-in
-  1000 CPR rotary encoder. Datasheet: `docs/Motor_34HS38-4204D-E1000.pdf`.
-- **Driver**: `CL86Y(V20)` — Stepperonline closed-loop pulse-type stepper driver,
-  20–80 V AC / 30–110 V DC, up to 6.0 A continuous, 200 kHz pulse input,
-  built-in position-out-of-tolerance protection.
+- **Motors** (×2): `34HS38-4204D-E1000` — NEMA 34, 1.8° / step (200 full steps
+  per revolution), rated 3.39 V / 4.2 A per phase, 7.0 Nm holding torque, each
+  with a built-in 1000 CPR rotary encoder.
+  Datasheet: `docs/Motor_34HS38-4204D-E1000.pdf`.
+- **Drivers** (×2): `CL86Y(V20)` — Stepperonline closed-loop pulse-type stepper
+  driver, 20–80 V AC / 30–110 V DC, up to 6.0 A continuous, 200 kHz pulse input,
+  built-in position-out-of-tolerance protection. Both drivers receive the same
+  PUL / DIR / ENA signals from the Pi, so the two motors step together. Each
+  driver has its own ALM and PEND output wires running back to the Pi as
+  separate diagnostic inputs.
   Manual: `docs/Driver_CL86Y_V2.0_pulse_stepper_driver_manual_V1.0.pdf`.
 - **End-stops**: two mechanical microswitches, one at each end of the rail.
 
-The driver is **closed-loop at the driver level** — it reads its own encoder and
-adjusts current internally to keep the rotor on the commanded position. So
+Each driver is **closed-loop at the driver level** — it reads its own encoder
+and adjusts current internally to keep the rotor on the commanded position. So
 "missed steps" in the open-loop sense are corrected silently inside the driver.
 However, the **Pi-to-driver relationship is still open-loop** — the Pi only
 counts the pulses it *sent*, with no encoder feedback. Driver-side recovery
 events (a brief stall the driver corrects) are invisible to the Pi.
 
-### 1.1 Driver pin map (CL86Y signal ports)
+Because the two drivers share the pulse bus, one stalling while the other
+keeps moving would mechanically cock the gantry. The diagnostic ALM lines
+exist precisely to surface that condition — one driver alarms, the other
+keeps going. Today the firmware does not yet read those lines (see §8).
 
-The driver has **differential photocoupler I/O** — every signal is a pair of
+### 1.1 Driver pin map (per CL86Y — applies to each of the two drivers)
+
+Each driver has **differential photocoupler I/O** — every signal is a pair of
 + and − wires. The Pi GPIOs are wired to one wire of each pair (and the other
 wire to a fixed level depending on the wiring scheme).
 
 | Driver port | Wire | Role |
 |---|---|---|
-| 1 / 2 | PU+ / PU− | pulse input (one rising edge = one step) |
-| 3 / 4 | DR+ / DR− | direction input |
-| 5 / 6 | MF+ / MF− | motor-free / enable input. **Active LOW per the manual** = motor coils OFF + alarm cleared. The convention used on this rig is "common-negative" wiring, so the Pi-side ENA pin pulls **LOW to enable** (motor energised) and **HIGH to disable**. |
-| 7 / 8 | PEND+ / PEND− | position-end output. Optocoupler conducts when the driver finishes emitting the commanded pulse train. **Single signal, two wires.** |
-| 9 / 10 | ALM+ / ALM− | alarm output. Optocoupler conducts on overcurrent, overvoltage, undervoltage, phase error, position-over-tolerance, or encoder fault. **Single signal, two wires.** |
+| 1 / 2 | PU+ / PU− | pulse input (one rising edge = one step). **Both drivers share this signal** from the Pi's PUL pin. |
+| 3 / 4 | DR+ / DR− | direction input. **Both drivers share this signal** from the Pi's DIR pin. |
+| 5 / 6 | MF+ / MF− | motor-free / enable input. **Active LOW per the manual** = motor coils OFF + alarm cleared. **Both drivers share this signal** from the Pi's ENA pin. The convention used on this rig is "common-negative" wiring, so the Pi-side ENA pin pulls **LOW to enable** (motor energised) and **HIGH to disable**. |
+| 7 / 8 | PEND+ / PEND− | position-end output. Optocoupler conducts when *that driver* finishes emitting the commanded pulse train. Each driver has its own PEND going to a separate Pi GPIO. |
+| 9 / 10 | ALM+ / ALM− | alarm output. Optocoupler conducts on overcurrent, overvoltage, undervoltage, phase error, position-over-tolerance, or encoder fault. Each driver has its own ALM going to a separate Pi GPIO. |
 
 ### 1.2 Pi GPIO mapping
 
 | Wire | BCM | Direction | Role |
 |---|---|---|---|
-| `DIR` | 23 | output | step direction |
-| `PUL` | 18 | output | step pulse |
-| `ENA` | 14 | output | drives MF± of the driver. Pi LOW = motor enabled (on this rig's wiring) |
+| `DIR` | 23 | output | step direction — **fans out to DR± of both drivers** |
+| `PUL` | 18 | output | step pulse — **fans out to PU± of both drivers** |
+| `ENA` | 14 | output | drives MF± of both drivers. Pi LOW = motor enabled (on this rig's wiring) |
 | `LIM_HOME` | 20 | input, PUD_DOWN | home-end microswitch — HIGH when carriage is at home |
 | `LIM_FAR` | 21 | input, PUD_DOWN | far-end microswitch — HIGH when carriage is at far end |
-| `ALARM_1` | 1 | input, PUD_DOWN | one wire of the driver ALM± differential pair |
-| `ALARM_2` | 16 | input, PUD_DOWN | the other wire of ALM± |
-| `PEND_1` | 7 | input, PUD_DOWN | one wire of the driver PEND± differential pair |
-| `PEND_2` | 12 | input, PUD_DOWN | the other wire of PEND± |
+| `ALARM_1` | 1 | input, PUD_DOWN | driver 1 alarm output (motor-1 driver) |
+| `ALARM_2` | 16 | input, PUD_DOWN | driver 2 alarm output (motor-2 driver) |
+| `PEND_1` | 7 | input, PUD_DOWN | driver 1 position-end output |
+| `PEND_2` | 12 | input, PUD_DOWN | driver 2 position-end output |
 
-`ALARM_1` and `ALARM_2` are **two reads of the same single ALM signal**;
-they will toggle in opposite directions (one HIGH, the other LOW) when the
-optocoupler fires. Same for `PEND_1` / `PEND_2`. The bench tool prints both
-so the operator can verify the wiring polarity. Treat *either* `ALARM_1` or
-`ALARM_2` going active as "alarm fired" — both happen simultaneously.
+`ALARM_1` / `ALARM_2` and `PEND_1` / `PEND_2` are **per-driver, independent**.
+Each driver wires *one* side of its differential ALM±/PEND± output to its
+assigned Pi GPIO; the other side ties to a fixed level (3V3 or GND, common-
+positive or common-negative depending on the rig's wiring scheme). On a fault,
+exactly one of `ALARM_1` or `ALARM_2` will go active — that tells you *which*
+driver is in trouble. If both go active simultaneously, it's a power supply
+or shared-wiring problem. The bench tool prints both so the operator can
+verify polarity and which side fired.
 
 Pin caveats — all fine on this Pi:
 - `BCM 1` is the default `I²C-0 SDA` line; works as plain GPIO when no I²C HAT
@@ -438,13 +451,13 @@ asserts every admin trigger maps to the exact OSC tuple,
 ## 13. Quick reference — what each pin does, in one line
 
 ```
-DIR       (BCM 23)   output  step direction → driver DR±
-PUL       (BCM 18)   output  step pulse → driver PU±
-ENA       (BCM 14)   output  drives driver MF±. LOW = motor enabled on this rig
+DIR       (BCM 23)   output  step direction → DR± of BOTH drivers
+PUL       (BCM 18)   output  step pulse → PU± of BOTH drivers
+ENA       (BCM 14)   output  drives MF± of BOTH drivers. LOW = motors enabled on this rig
 LIM_HOME  (BCM 20)   input   home-end microswitch — HIGH when carriage is at home
 LIM_FAR   (BCM 21)   input   far-end microswitch — HIGH at far end (bench tool only)
-ALARM_1   (BCM 1)    input   driver ALM+ wire (bench tool only)
-ALARM_2   (BCM 16)   input   driver ALM− wire (bench tool only — same single signal)
-PEND_1    (BCM 7)    input   driver PEND+ wire (bench tool only)
-PEND_2    (BCM 12)   input   driver PEND− wire (bench tool only — same single signal)
+ALARM_1   (BCM 1)    input   motor-1 driver alarm (bench tool only)
+ALARM_2   (BCM 16)   input   motor-2 driver alarm (bench tool only — independent)
+PEND_1    (BCM 7)    input   motor-1 driver position-end (bench tool only)
+PEND_2    (BCM 12)   input   motor-2 driver position-end (bench tool only — independent)
 ```

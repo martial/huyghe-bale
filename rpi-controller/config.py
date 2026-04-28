@@ -36,11 +36,13 @@ VENTS_STATUS_HZ = 5            # /vents/status broadcast rate (5 Hz)
 VENTS_TEMP_POLL_HZ = 1         # DS18B20 read cadence (1 Hz — reads are slow)
 VENTS_TACHO_MIN_DT_S = 0.005   # debounce gap for tacho edge → RPM
 
-# --- Trolley (single stepper + dual limit switches + driver diagnostics) ----
+# --- Trolley (dual stepper gantry + dual limit switches + per-driver diags) -
 #
-# One stepper motor on a rail with limit switches at both ends. The driver
-# exposes two pairs of diagnostic outputs (ALARM_1/ALARM_2, PEND_1/PEND_2)
-# wired to the Pi as inputs.
+# Two stepper motors driven in lockstep by one shared step/dir/ena bus (one
+# CL86Y driver per motor, each receiving the same PUL/DIR/ENA signals).
+# Each driver has its own diagnostic outputs wired separately to the Pi:
+# ALARM_1 + PEND_1 come from driver/motor 1; ALARM_2 + PEND_2 from driver 2.
+# Limit switches sit at the home and far ends of the rail.
 #
 # Pin caveats:
 #   BCM 1  (ALARM_1) is I²C-0 SDA — fine as plain GPIO when no I²C HAT is attached.
