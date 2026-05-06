@@ -287,9 +287,21 @@ class TestTrolleyPanel:
         _trolley_cmd(ctx, {"command": "stop"})
         assert ctx["sender"].sends == [("10.0.0.2", 9000, "/trolley/stop", 0)]
 
-    def test_T8_home(self, ctx):
+    def test_T8_home_default(self, ctx):
         _trolley_cmd(ctx, {"command": "home"})
         assert ctx["sender"].sends == [("10.0.0.2", 9000, "/trolley/home", 0)]
+
+    def test_T8b_home_reverse(self, ctx):
+        _trolley_cmd(ctx, {"command": "home", "value": "reverse"})
+        assert ctx["sender"].sends == [
+            ("10.0.0.2", 9000, "/trolley/home", "reverse"),
+        ]
+
+    def test_T8c_home_forward(self, ctx):
+        _trolley_cmd(ctx, {"command": "home", "value": "forward"})
+        assert ctx["sender"].sends == [
+            ("10.0.0.2", 9000, "/trolley/home", "forward"),
+        ]
 
     def test_T9_position_quarter(self, ctx):
         _trolley_cmd(ctx, {"command": "position", "value": 0.25})
@@ -306,35 +318,14 @@ class TestTrolleyPanel:
         assert r.status_code == 400
         assert ctx["sender"].sends == []
 
-    def test_T10_calibrate_start(self, ctx):
-        _trolley_cmd(ctx, {"command": "calibrate_start"})
-        assert ctx["sender"].sends == [
-            ("10.0.0.2", 9000, "/trolley/calibrate/start", 0),
-        ]
-
-    def test_T11_calibrate_start_with_direction(self, ctx):
-        _trolley_cmd(ctx, {"command": "calibrate_start", "value": "reverse"})
-        assert ctx["sender"].sends == [
-            ("10.0.0.2", 9000, "/trolley/calibrate/start", "reverse"),
-        ]
-
-    def test_T12_calibrate_stop(self, ctx):
-        _trolley_cmd(ctx, {"command": "calibrate_stop"})
-        assert ctx["sender"].sends == [
-            ("10.0.0.2", 9000, "/trolley/calibrate/stop", 0),
-        ]
-
-    def test_T13_calibrate_save(self, ctx):
-        _trolley_cmd(ctx, {"command": "calibrate_save"})
-        assert ctx["sender"].sends == [
-            ("10.0.0.2", 9000, "/trolley/calibrate/save", 0),
-        ]
-
-    def test_T14_calibrate_cancel(self, ctx):
-        _trolley_cmd(ctx, {"command": "calibrate_cancel"})
-        assert ctx["sender"].sends == [
-            ("10.0.0.2", 9000, "/trolley/calibrate/cancel", 0),
-        ]
+    def test_calibrate_commands_no_longer_recognised(self, ctx):
+        for cmd in ("calibrate_start", "calibrate_stop", "calibrate_save", "calibrate_cancel"):
+            r = ctx["client"].post(
+                f"/api/v1/trolley-control/{ctx['trolley_id']}/command",
+                json={"command": cmd},
+            )
+            assert r.status_code == 400, cmd
+        assert ctx["sender"].sends == []
 
     def test_T15_config_set_two_args(self, ctx):
         _trolley_cmd(ctx, {"command": "config_set", "key": "max_speed_hz", "value": 1500})
@@ -365,6 +356,20 @@ class TestTrolleyPanel:
         r = _trolley_cmd(ctx, {"command": "config_set", "value": 5})
         assert r.status_code == 400
         assert ctx["sender"].sends == []
+
+    def test_T20_accel(self, ctx):
+        _trolley_cmd(ctx, {"command": "accel", "value": 1.5})
+        ip, port, addr, val = ctx["sender"].sends[-1]
+        assert (ip, port, addr) == ("10.0.0.2", 9000, "/trolley/accel")
+        assert math.isclose(val, 1.5)
+        assert isinstance(val, float)
+
+    def test_T21_decel(self, ctx):
+        _trolley_cmd(ctx, {"command": "decel", "value": 0.8})
+        ip, port, addr, val = ctx["sender"].sends[-1]
+        assert (ip, port, addr) == ("10.0.0.2", 9000, "/trolley/decel")
+        assert math.isclose(val, 0.8)
+        assert isinstance(val, float)
 
 
 # --- Vents timeline playback (VP1..VP4) -------------------------------

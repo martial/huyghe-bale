@@ -2,31 +2,31 @@ export type TrolleyCommand =
   | "enable"
   | "dir"
   | "speed"
+  | "accel"
+  | "decel"
   | "step"
   | "stop"
   | "home"
   | "position"
-  | "calibrate_start"
-  | "calibrate_stop"
-  | "calibrate_save"
-  | "calibrate_cancel"
   | "config_set"
   | "config_save"
   | "config_get";
 
-export type TrolleyState = "idle" | "homing" | "following" | "calibrating";
+export type TrolleyState = "idle" | "homing" | "following";
 
 export type CalibrationDirection = "forward" | "reverse";
 
 export interface TrolleySettings {
-  rail_length_steps: number | null;
-  lead_mm_per_rev: number;
+  rail_length_mm: number | null;
+  wheel_radius_mm: number | null;
   steps_per_rev: number;
   microsteps: number;
   max_speed_hz: number;
-  calibration_speed_hz: number;
+  home_speed_hz: number;
   calibration_direction: CalibrationDirection;
   soft_limit_pct: number;
+  accel_time_s: number;
+  decel_time_s: number;
 }
 
 /** Subset of TrolleyCommand that can appear in a timeline. Calibration and
@@ -70,7 +70,7 @@ export interface TrolleyStatus {
   position: number;
   limit: number;
   homed: number;
-  /** 1 = rail_length_steps is set on the Pi; 0 = needs calibration. */
+  /** 1 = rail length and wheel radius are set on the Pi; 0 = needs config. */
   calibrated: number;
   state: TrolleyState;
   timestamp?: number;

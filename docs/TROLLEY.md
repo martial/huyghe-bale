@@ -67,6 +67,10 @@ wire to a fixed level depending on the wiring scheme).
 | `ENA` | 14 | output | drives MF± of both drivers. Pi LOW = motor enabled (on this rig's wiring) |
 | `LIM_HOME` | 20 | input, PUD_DOWN | home-end microswitch — HIGH when carriage is at home |
 | `LIM_FAR` | 21 | input, PUD_DOWN | far-end microswitch — HIGH when carriage is at far end |
+
+Both limit switches are read by the firmware: `LIM_HOME` is the position-zero
+origin, `LIM_FAR` pins position to `rail_length_steps` and serves as the
+forward end-stop guard for `/trolley/position`.
 | `ALARM_1` | 1 | input, PUD_DOWN | driver 1 alarm output (motor-1 driver) |
 | `ALARM_2` | 16 | input, PUD_DOWN | driver 2 alarm output (motor-2 driver) |
 | `PEND_1` | 7 | input, PUD_DOWN | driver 1 position-end output |
@@ -87,9 +91,8 @@ Pin caveats — all fine on this Pi:
 - `BCM 7` is the default `SPI0 CE1` line; works as plain GPIO when SPI is
   disabled in `/boot/firmware/config.txt`.
 
-Currently the runtime firmware reads only `LIM_HOME`. `LIM_FAR`, `ALARM_*`,
-and `PEND_*` are visible in the bench tool but not in the OSC layer — see
-§8 for the known gaps and §11.1 for the bench tool.
+`ALARM_*` and `PEND_*` are visible in the bench tool but not in the OSC
+layer — see §8 for the known gaps and §11.1 for the bench tool.
 
 ### 1.3 Driver fault LED — quick visual diagnostic
 
@@ -130,14 +133,12 @@ listener is on **port 9001**.
 | `/trolley/enable` | `int 0\|1` | drive ENA pin (0 = disable, 1 = enable) |
 | `/trolley/dir` | `int 0\|1` | raw DIR pin level (the firmware re-maps this through `calibration_direction`) |
 | `/trolley/speed` | `float 0..1` | maps to pulse frequency, 0 = stopped, 1 = `1 / (2 × MIN_PULSE_DELAY_S)` |
-| `/trolley/step` | `int N` | pulse `N` steps at the current speed/direction; aborts on home limit |
+| `/trolley/accel` | `float 0..10` | linear ramp-up time in seconds applied to subsequent `/trolley/step` and `/trolley/position` moves. `0` = no ramp |
+| `/trolley/decel` | `float 0..10` | linear ramp-down time in seconds applied to subsequent `/trolley/step` and `/trolley/position` moves. `0` = no ramp |
+| `/trolley/step` | `int N` | pulse `N` steps at the current speed/direction; aborts on whichever limit switch is in the direction of travel |
 | `/trolley/stop` | — | drain queue + abort current motion |
-| `/trolley/home` | — | drive toward the home limit switch until the ISR resets `position_steps=0` |
-| `/trolley/position` | `float 0..1` | drive to a fraction of the calibrated rail length (see §4) |
-| `/trolley/calibrate/start` | optional `str "forward"\|"reverse"` | drive away from home at calibration speed; if a direction is supplied, **persists** it as the new `calibration_direction` |
-| `/trolley/calibrate/stop` | — | halt motion + record `calibration_candidate_steps` |
-| `/trolley/calibrate/save` | — | write candidate to `device.json`, set `calibrated=1` |
-| `/trolley/calibrate/cancel` | — | discard candidate, return to idle |
+| `/trolley/home` | optional `"forward"\|"reverse"` (or `0\|1`) | drive in the requested direction until that end's limit switch trips. Default = `reverse` (home end → `position_steps=0`). `forward` drives to the far end → `position_steps=rail_length_steps` |
+| `/trolley/position` | `float 0..1` | drive to a fraction of the configured rail length (see §4) |
 | `/trolley/config/set` | `str key`, value | stage one setting in memory (see §3 for valid keys) |
 | `/trolley/config/save` | — | persist staged settings to `device.json` |
 | `/trolley/config/get` | — | broadcast current settings as one `/trolley/config` JSON message |
@@ -153,9 +154,9 @@ listener is on **port 9001**.
 Status field semantics:
 - `position` — float 0..1, `position_steps / rail_length_steps`.
 - `limit` — int 0/1, the home-end limit switch state.
-- `homed` — int 0/1, set the moment the home switch trips while reversing.
-- `state` — string `idle | homing | following | calibrating`.
-- `calibrated` — int 0/1, true iff `device.json` has a non-null `rail_length_steps`.
+- `homed` — int 0/1, set when either limit switch trips during a matching home pass.
+- `state` — string `idle | homing | following`.
+- `calibrated` — int 0/1, true iff both `rail_length_mm` and `wheel_radius_mm` are set in `device.json`.
 
 The receiver (`admin/backend/engine/osc_receiver.py`) accepts the legacy 3-arg
 shape (`[position, limit, homed]`) too, so older firmware revisions keep working.
@@ -169,15 +170,28 @@ truth: `rpi-controller/trolley_settings.py`.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `rail_length_steps` | int or null | `null` | total step count between home and far end. `null` = uncalibrated |
-| `lead_mm_per_rev` | float > 0 | `8.0` | leadscrew/belt pitch — informational, used by the UI to show mm |
-| `steps_per_rev` | int > 0 | `200` | motor full-step count — informational |
-| `microsteps` | int > 0 | `16` | driver microstep setting — informational |
+| `rail_length_mm` | float > 0 or null | `null` | physical travel distance between the two end-stops. `null` = unconfigured |
+| `wheel_radius_mm` | float > 0 or null | `null` | drive pulley/wheel pitch radius. `null` = unconfigured |
+| `steps_per_rev` | int > 0 | `200` | motor full-step count (NEMA 34 = 200) |
+| `microsteps` | int > 0 | `16` | CL86Y driver microstep dip-switch setting |
 | `max_speed_hz` | float > 0 | `2000` | playback ceiling for position-follow speed |
-| `calibration_speed_hz` | float > 0 | `600` | speed used during the calibration span pass (deliberately slower) |
-| `calibration_direction` | `"forward"\|"reverse"` | `"forward"` | which DIR-pin level drives **away** from home; flips wiring polarity |
+| `home_speed_hz` | float > 0 | `600` | speed used during `/trolley/home` (deliberately slower) |
+| `calibration_direction` | `"forward"\|"reverse"` | `"forward"` | wiring polarity — which DIR-pin level drives **away** from the home end-stop |
 | `soft_limit_pct` | float in (0, 1] | `0.98` | safety margin: `/trolley/position 1.0` lands at `rail_length_steps × soft_limit_pct` |
-| `permissive_mode` | bool | **`true`** | allow `/trolley/position` to run on an unhomed/uncalibrated rig (bench testing) |
+| `permissive_mode` | bool | **`true`** | allow `/trolley/position` to run on an unhomed/unconfigured rig (bench testing) |
+| `accel_time_s` | float in [0, 10] | `0.0` | persisted default for the linear ramp-up time on `/trolley/step` and `/trolley/position`. Live override via `/trolley/accel` |
+| `decel_time_s` | float in [0, 10] | `0.0` | persisted default for the linear ramp-down time on `/trolley/step` and `/trolley/position`. Live override via `/trolley/decel` |
+
+**Derived (not persisted):**
+
+```
+travel_per_rev_mm  = 2 × π × wheel_radius_mm
+steps_per_mm       = (steps_per_rev × microsteps) / travel_per_rev_mm
+rail_length_steps  = round(rail_length_mm × steps_per_mm)
+```
+
+`is_calibrated` is true once `rail_length_mm` and `wheel_radius_mm` are both
+set; `rail_length_steps` then drops out of the math automatically.
 
 `/trolley/config/set` validates each value through `trolley_settings._coerce`
 before accepting; bad values are logged and ignored client-side.
@@ -188,19 +202,46 @@ before accepting; bad values are logged and ignored client-side.
 
 ```
 position_steps        # live counter, incremented per forward pulse, decremented per reverse
-rail_length_steps     # ground truth from calibration
+rail_length_steps     # derived from rail_length_mm + wheel_radius_mm + steps_per_rev × microsteps
 soft_limit_pct        # safety margin, default 0.98
 
 # /trolley/position v   →
-ceiling      = rail_length_steps × soft_limit_pct       # if calibrated
-             = TROLLEY_MAX_STEPS (=20000)               # if NOT calibrated AND permissive_mode=true
+ceiling      = rail_length_steps × soft_limit_pct       # if configured
+             = TROLLEY_MAX_STEPS (=20000)               # if NOT configured AND permissive_mode=true
 target_steps = round(v × ceiling)
 ```
 
 The motion thread then drives forward or reverse until `position_steps == target_steps`.
 
-mm/rev/microstep settings do **not** influence the position math. They exist so
-the UI (and the future calibration CLI) can convert between fraction and mm.
+---
+
+## 4.1 Acceleration / deceleration
+
+When both `accel_time_s` and `decel_time_s` are `0` (the default), every
+`/trolley/step` and `/trolley/position` move runs at the constant frequency
+set by `/trolley/speed` — identical to the legacy behaviour.
+
+When either is non-zero, the firmware emits a **trapezoidal velocity profile**:
+
+```
+Hz │
+   │      ┌──────────────────┐
+   │     ╱                    ╲
+   │    ╱                      ╲
+   │___╱                        ╲___
+   └─────────────────────────────────► steps
+       ◄ accel ►◄  cruise  ►◄ decel ►
+```
+
+`steps_accel ≈ target_hz × accel_time_s / 2` (and the same for decel). If the
+move is shorter than `steps_accel + steps_decel`, the profile becomes
+triangular — the two ramps shrink proportionally and `target_hz` is never
+reached. The total step count is always exact.
+
+`/trolley/accel` and `/trolley/decel` set transient state (live override, lost
+on reboot). To persist, use `/trolley/config/set accel_time_s …` then
+`/trolley/config/save` (or use the **Motor settings → Save settings** button
+in the admin panel).
 
 ---
 
@@ -210,13 +251,9 @@ the UI (and the future calibration CLI) can convert between fraction and mm.
 a command queue. Module-level `state` is one of:
 
 ```
-idle ── /trolley/home ──────────► homing  ── ISR/abort ─► idle (homed=1)
+idle ── /trolley/home reverse ──► homing  ── home ISR/abort ─► idle (position_steps=0, homed=1)
+idle ── /trolley/home forward ──► homing  ── far  ISR/abort ─► idle (position_steps=rail, homed=1)
 idle ── /trolley/position ──────► following ─► idle
-idle ── /trolley/calibrate/start ► calibrating
-calibrating ── /trolley/calibrate/stop  ─► calibrating (candidate set, idle physically)
-calibrating ── /trolley/calibrate/save  ─► idle (calibrated=1, candidate persisted)
-calibrating ── /trolley/calibrate/cancel ► idle
-calibrating ── 5-min auto-timeout ──────► idle
 ```
 
 Any new motion command sets `_abort_event` and drains the queue, so `Stop` is
@@ -224,28 +261,24 @@ always responsive (no race between "stop" and "next enqueue").
 
 ---
 
-## 6. Calibration flow
+## 6. Configuration flow
 
-The carriage is open-loop; calibration discovers `rail_length_steps` by driving
-from one end to the other and counting pulses.
+There is no calibration span pass — the operator measures the rig and enters
+the two physical parameters; the firmware derives the rail step count.
 
-1. **Power-cycle.** `homed=0`, `calibrated=0`, `state=idle`.
-2. **Home.** `/trolley/home` drives reverse until the home switch ISR fires.
-   `position_steps` is forced to `0`, `homed` flips to `1`.
-3. **Pick direction.** `/trolley/calibrate/start "forward"` or `"reverse"`.
-   The chosen value is persisted as `calibration_direction` before motion
-   starts, so home/calibrate remain consistent across reboots. State enters
-   `calibrating`, `position_steps` resets to 0.
-4. **Drive away from home.** Carriage moves at `calibration_speed_hz`.
-   Position counter ticks up.
-5. **Stop at the far end.** `/trolley/calibrate/stop` halts motion, snapshots
-   `calibration_candidate_steps = position_steps`. State stays `calibrating`.
-6. **Save.** `/trolley/calibrate/save` writes the candidate to
-   `device.json:trolley.rail_length_steps`, reloads, sets `calibrated=1`,
-   returns to `idle`. (Or **Cancel** discards.)
-7. **Use.** `/trolley/position` is now bound to the calibrated rail length.
+1. **Measure.** Tape-measure the rail (home-stop centre to far-stop centre)
+   for `rail_length_mm`; read or measure the drive pulley pitch radius for
+   `wheel_radius_mm`.
+2. **Set.** `/trolley/config/set rail_length_mm <mm>` and
+   `/trolley/config/set wheel_radius_mm <mm>`, then `/trolley/config/save`.
+   After save, `calibrated` flips to `1`.
+3. **Home.** `/trolley/home` (or `/trolley/home "reverse"`) drives toward the
+   home end-stop until the switch trips; `position_steps` resets to `0`,
+   `homed` flips to `1`. Use `/trolley/home "forward"` if you'd rather origin
+   the position counter at the far end (`position_steps = rail_length_steps`).
+4. **Use.** `/trolley/position` maps `0..1` to the configured rail length.
 
-In **permissive mode** (default `true`) step 7 also works *without* steps 1–6,
+In **permissive mode** (default `true`) step 4 also works *without* steps 1–3,
 falling back to a 20000-step placeholder span. Useful for bench testing without
 limit switches wired.
 
@@ -255,13 +288,13 @@ limit switches wired.
 
 When `permissive_mode=true`:
 - `/trolley/position` runs even with `homed=0` and/or `calibrated=0`.
-- An uncalibrated rig uses `TROLLEY_MAX_STEPS = 20000` as the rail length.
-- A `PERMISSIVE` warning is logged on every uncalibrated/unhomed call.
+- An unconfigured rig uses `TROLLEY_MAX_STEPS = 20000` as the rail length.
+- A `PERMISSIVE` warning is logged on every unconfigured/unhomed call.
 
 When `permissive_mode=false`:
 - `/trolley/position` refuses (logs a clear "trolley not homed" /
-  "not calibrated" message and does nothing) until the rig is properly
-  homed and calibrated.
+  "not configured" message and does nothing) until the rig is properly
+  homed and configured.
 
 Recommended workflow: leave `permissive_mode=true` during commissioning; flip
 it to `false` for the production show by sending
@@ -273,15 +306,13 @@ it to `false` for the production show by sending
 
 | Guard | Where | What it does |
 |---|---|---|
-| Home limit ISR | `_home_limit_isr` in `controllers/trolley.py` | resets `position_steps=0`, sets `homed=1`, stops reverse motion |
+| Home limit ISR | `_limit_switch_isr` in `controllers/trolley.py` | resets `position_steps=0`, sets `homed=1`, stops reverse motion |
+| Far limit ISR | `_far_limit_switch_isr` | pins `position_steps=rail_length_steps`, sets `homed=1`, stops forward motion |
 | Soft forward limit | `_soft_limit_steps()` | `/trolley/position 1.0` lands at `rail_length_steps × soft_limit_pct` (default 98%) |
-| Pulse-loop abort | `_pulse_once` | every commanded pulse checks `_abort_event` first |
-| Race-proof stop | `_drain_queue + _abort_event.set()` | `/trolley/stop`, `/trolley/calibrate/stop`, and cancel all both *clear* the queue and *abort* — no wasted commands picked up after stop |
-| Calibration timeout | motion-loop watchdog | a calibrating state with no commands for 300 s auto-cancels |
+| Pulse-loop abort | `_pulse_once` | every commanded pulse checks `_abort_event` first; aborts on whichever limit-error flag matches the current direction |
+| Race-proof stop | `_drain_queue + _abort_event.set()` | `/trolley/stop` *clears* the queue and *aborts* — no wasted commands picked up after stop |
 
 What is **not** guarded yet (known gaps):
-- The far-end limit switch (BCM 21) is unread. A runaway forward `/position`
-  is only protected by `soft_limit_pct`.
 - `ALARM_1` / `ALARM_2` are unread. Driver faults during a show won't halt the
   pulse train.
 - `PEND_1` / `PEND_2` are unread. They wouldn't help with position sensing
@@ -297,24 +328,29 @@ Live at `Trolleys page → click a trolley → trolley test panel`. Component:
 Status badges:
 - **Online** / **Offline** dot (green/red) — driven by `/sys/ping` round-trip.
 - **Homed** / **Not homed** — from `homed` in `/trolley/status`.
-- **Calibrated** / **Not calibrated** — from `calibrated` in `/trolley/status`.
-- **State** chip — `idle | homing | following | calibrating`.
+- **Configured** / **Not configured** — from `calibrated` in `/trolley/status`.
+- **State** chip — `idle | homing | following`.
 - **⚠ limit** — flashes when the home switch is currently engaged.
 
-Calibration card: numbered button row mirrors the OSC flow.
-**1. Home → 2. Start → 3. Stop here → 4. Save**, with **Cancel** always
-available. The radio above picks the calibration direction (forward/reverse).
+**Rail config** card: two number inputs (rail length mm, wheel radius mm) and
+a derived-step read-out. Click **Save rail config** to push both via
+`/trolley/config/set` and commit with `/trolley/config/save`. After save the
+"Configured" badge flips green.
+
+**Home** card: two buttons — **◄ Home reverse** drives toward the home
+limit switch (`position_steps=0`), **Home forward ►** drives toward the far
+limit switch (`position_steps=rail_length_steps`).
 
 Position slider: the explicit `/trolley/position` slider. **Disabled** until
-the rig is homed AND calibrated. (When `permissive_mode=true` the firmware
+the rig is homed AND configured. (When `permissive_mode=true` the firmware
 would still accept the command — but the UI currently doesn't surface
 permissive mode to the operator. Use the CLI tool or `/trolley/config/set` if
-you need to slide before calibration.)
+you need to slide before homing.)
 
-Motor settings (collapsible): editable form for `lead_mm_per_rev`,
-`steps_per_rev`, `microsteps`, `max_speed_hz`, `calibration_speed_hz`,
-`soft_limit_pct`. Click **Save settings** to push every changed value via
-`/trolley/config/set` then commit with `/trolley/config/save`.
+Motor settings (collapsible): editable form for `steps_per_rev`,
+`microsteps`, `max_speed_hz`, `home_speed_hz`, `soft_limit_pct`. Click
+**Save settings** to push every changed value via `/trolley/config/set` then
+commit with `/trolley/config/save`.
 
 ---
 
@@ -374,7 +410,10 @@ Menu actions:
 
 Runs from any machine with `pythonosc` available. Drives the **live**
 `gpio-osc-trolley` service over OSC. Useful when the admin UI is down or
-when you want a scripted/loggable calibration session.
+when you want a scripted/loggable configuration session. (The script is
+still named `calibrate_trolley_osc.py` for path stability — its menu has
+shifted from a calibration span flow to a "set the two physical inputs"
+flow.)
 
 ```bash
 python3 rpi-controller/scripts/calibrate_trolley_osc.py --host 192.168.1.74
@@ -388,28 +427,26 @@ Bootstrap:
 3. Sends `/trolley/config/get`. Prints the current settings dict.
 
 Menu actions (exact mapping to OSC):
-- `[1] Home` → `/trolley/home`. Watches state for up to 15 s.
-- `[2] Start calibration (forward)` → `/trolley/calibrate/start "forward"`
-  (also persists the direction). Refuses client-side if `homed=0`.
-- `[3] Start calibration (reverse)` → `/trolley/calibrate/start "reverse"`.
-- `[4] Stop here` → `/trolley/calibrate/stop`. Marks the session candidate
-  flag so subsequent Save knows it's safe.
-- `[5] Save calibration` → `/trolley/calibrate/save`. Re-fetches settings.
-- `[6] Cancel calibration` → `/trolley/calibrate/cancel`.
-- `[7] Re-read settings` → `/trolley/config/get`.
-- `[8] Set a setting` → prompts for `key` (with valid-keys hint), then
+- `[1] Home reverse` → `/trolley/home "reverse"`. Drives toward the home
+  limit switch.
+- `[2] Home forward` → `/trolley/home "forward"`. Drives toward the far
+  limit switch.
+- `[3] Set rail length (mm)` → prompts for a number; sends
+  `/trolley/config/set rail_length_mm <v>` then `/trolley/config/save`.
+- `[4] Set wheel radius (mm)` → same pattern for `wheel_radius_mm`.
+- `[5] Re-read settings` → `/trolley/config/get`.
+- `[6] Set a setting` → prompts for `key` (with valid-keys hint), then
   `value` (validated client-side via `trolley_settings._coerce`); sends
   `/trolley/config/set` then `/trolley/config/save`.
-- `[9] Send /trolley/position` → prompts for `0..1`. Refuses unless
-  `homed=1` AND `calibrated=1` (mirrors the strict firmware behaviour even
-  though permissive mode would relax this).
+- `[7] Send /trolley/position` → prompts for `0..1`. Refuses unless
+  `homed=1` AND `calibrated=1`.
 - `[s] Stop motion` → `/trolley/stop`.
 - `[q] Quit` → sends a final `/trolley/stop`, tears down the listener.
 
 Logging:
 - Every menu action timestamps a labelled section.
 - State transitions from `/trolley/status` print as
-  `state: idle → calibrating` once per transition.
+  `state: idle → homing` once per transition.
 - `--verbose` adds a per-packet trace for both directions.
 - ANSI colours auto-disable when stdout is not a TTY.
 
@@ -417,23 +454,30 @@ Logging:
 
 ## 12. Tests
 
-`rpi-controller/tests/test_trolley.py` — pytest suite (105 tests at last
-count). Coverage:
+`rpi-controller/tests/test_trolley.py` — pytest suite. Coverage:
 
-- GPIO setup/cleanup hygiene.
+- GPIO setup/cleanup hygiene (5 pin setups, 2 ISR registrations, both
+  `remove_event_detect` calls on cleanup).
 - Each raw OSC handler (enable, dir, speed, step, stop, home, position).
 - Motion thread: step burst, position-follow, follow-then-new-target.
-- Limit switch ISR semantics (resets only when reversing, ignores otherwise).
-- Calibration state machine: start → stop snapshot → save persists,
-  start → cancel discards, save without candidate refuses.
+- Limit switch ISRs:
+  - home-end ISR resets `position_steps=0` only when reversing,
+  - far-end ISR pins `position_steps=rail_length_steps` only when going
+    forward, with the symmetric pulse-loop abort.
+- Directional `/trolley/home`: default → reverse, `"forward"` / `"reverse"` /
+  `1` / `0` parse correctly; reverse trip lands at 0, forward trip lands at
+  the derived rail end.
+- Derivation math: `derived_rail_length_steps` and `is_calibrated` follow the
+  inputs.
 - Settings: stage-vs-save split, validation rejects bad keys/values,
   `calibration_direction` "forward"/"reverse" both round-trip.
 - `permissive_mode`:
-  - default-True path lets uncalibrated/unhomed `/trolley/position` enqueue a
+  - default-True path lets unconfigured/unhomed `/trolley/position` enqueue a
     follow,
   - explicit-False path preserves the strict "refused" log.
 - Soft-limit clamp: `/trolley/position 1.0` lands at `soft_limit_pct × rail`.
-- HTTP test surface mirrors the OSC surface.
+- HTTP test surface mirrors the OSC surface; the dropped `calibrate_*`
+  commands are rejected.
 - Status payload shape: `[position, limit, homed, state, calibrated]`.
 
 Run all of it:

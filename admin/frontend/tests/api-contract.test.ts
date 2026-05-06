@@ -141,6 +141,16 @@ describe("trolley api helpers", () => {
     expect(calls[0].body).toEqual({ command: "speed", value: 0.5 });
   });
 
+  it("sendTrolleyCommand accel 1.5", async () => {
+    await trolleyApi.sendTrolleyCommand(DEV_TROLLEY, "accel", 1.5);
+    expect(calls[0].body).toEqual({ command: "accel", value: 1.5 });
+  });
+
+  it("sendTrolleyCommand decel 0.8", async () => {
+    await trolleyApi.sendTrolleyCommand(DEV_TROLLEY, "decel", 0.8);
+    expect(calls[0].body).toEqual({ command: "decel", value: 0.8 });
+  });
+
   it("sendTrolleyCommand step 1000", async () => {
     await trolleyApi.sendTrolleyCommand(DEV_TROLLEY, "step", 1000);
     expect(calls[0].body).toEqual({ command: "step", value: 1000 });

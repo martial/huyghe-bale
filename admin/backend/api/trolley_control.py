@@ -24,20 +24,18 @@ _osc = OscSender()
 _receiver = OscReceiver(port=9001)
 
 # Maps user-facing command names → (OSC address, arg coercion).
-# Calibration and config use slash-namespaced sub-addresses to stay tidy
-# and avoid colliding with raw motion commands like "stop".
+# Config uses slash-namespaced sub-addresses to stay tidy and avoid colliding
+# with raw motion commands like "stop".
 _COMMAND_MAP = {
     "enable":           ("/trolley/enable",           "int"),
     "dir":              ("/trolley/dir",              "int"),
     "speed":            ("/trolley/speed",            "float"),
+    "accel":            ("/trolley/accel",            "float"),
+    "decel":            ("/trolley/decel",            "float"),
     "step":             ("/trolley/step",             "int"),
     "stop":             ("/trolley/stop",             "int_or_zero"),
-    "home":             ("/trolley/home",             "int_or_zero"),
+    "home":             ("/trolley/home",             "string_or_zero"),
     "position":         ("/trolley/position",         "float"),
-    "calibrate_start":  ("/trolley/calibrate/start",  "string_or_zero"),
-    "calibrate_stop":   ("/trolley/calibrate/stop",   "int_or_zero"),
-    "calibrate_save":   ("/trolley/calibrate/save",   "int_or_zero"),
-    "calibrate_cancel": ("/trolley/calibrate/cancel", "int_or_zero"),
     "config_save":      ("/trolley/config/save",      "int_or_zero"),
     "config_get":       ("/trolley/config/get",       "int_or_zero"),
     # config_set is special-cased below (two args: key, value).
@@ -52,9 +50,9 @@ def _coerce(value, kind):
     if kind == "int_or_zero":
         return int(value) if value else 0
     if kind == "string_or_zero":
-        # Used for /trolley/calibrate/start which takes an optional direction
-        # string. Anything falsy → send int 0 so the firmware treats it as "no
-        # direction override". Strings pass through as-is.
+        # Used for /trolley/home which takes an optional direction string
+        # ("forward"/"reverse"). Anything falsy → send int 0 so the firmware
+        # uses its default. Strings pass through as-is.
         if not value:
             return 0
         return str(value)

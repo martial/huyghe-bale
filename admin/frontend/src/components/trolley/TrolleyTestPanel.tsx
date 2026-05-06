@@ -1,23 +1,39 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Device } from "../../types/device";
-import type {
-  TrolleyStatus,
-  CalibrationDirection,
-} from "../../types/trolley";
+import type { TrolleyStatus } from "../../types/trolley";
 import {
   sendTrolleyCommand,
   fetchTrolleyStatus,
   setTrolleyConfig,
 } from "../../api/trolley";
 
-const DEFAULT_SETTINGS = {
-  lead_mm_per_rev: 8,
+const DEFAULT_RAIL = {
+  rail_length_mm: 0,
+  wheel_radius_mm: 0,
+};
+
+const DEFAULT_MOTOR = {
   steps_per_rev: 200,
   microsteps: 16,
   max_speed_hz: 2000,
-  calibration_speed_hz: 600,
+  home_speed_hz: 600,
   soft_limit_pct: 0.98,
+  accel_time_s: 0,
+  decel_time_s: 0,
 };
+
+function deriveRailLengthSteps(
+  rail_length_mm: number,
+  wheel_radius_mm: number,
+  steps_per_rev: number,
+  microsteps: number,
+): number {
+  if (!rail_length_mm || !wheel_radius_mm) return 0;
+  const travelPerRev = 2 * Math.PI * wheel_radius_mm;
+  if (travelPerRev <= 0) return 0;
+  const stepsPerMm = (steps_per_rev * microsteps) / travelPerRev;
+  return Math.round(rail_length_mm * stepsPerMm);
+}
 
 export default function TrolleyTestPanel({ device }: { device: Device }) {
   const [enabled, setEnabled] = useState(false);
@@ -25,9 +41,9 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
   const [speed, setSpeed] = useState(0.5);
   const [steps, setSteps] = useState(1000);
   const [position, setPosition] = useState(0.5);
-  const [calibDir, setCalibDir] = useState<CalibrationDirection>("forward");
   const [showSettings, setShowSettings] = useState(false);
-  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [rail, setRail] = useState(DEFAULT_RAIL);
+  const [motor, setMotor] = useState(DEFAULT_MOTOR);
   const [status, setStatus] = useState<TrolleyStatus | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -89,27 +105,23 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
     await send("position", next);
   }
 
-  async function handleStartCalibration() {
-    // Pass direction so the Pi persists `calibration_direction` before the span pass.
-    await send("calibrate_start", calibDir);
-  }
-
-  async function handleStopCalibration() {
-    await send("calibrate_stop");
-  }
-
-  async function handleSaveCalibration() {
-    await send("calibrate_save");
-  }
-
-  async function handleCancelCalibration() {
-    await send("calibrate_cancel");
+  async function handleSaveRail() {
+    setBusy(true);
+    try {
+      await setTrolleyConfig(device.id, "rail_length_mm", rail.rail_length_mm);
+      await setTrolleyConfig(device.id, "wheel_radius_mm", rail.wheel_radius_mm);
+      await sendTrolleyCommand(device.id, "config_save");
+    } catch (e) {
+      console.error("[trolley] saving rail config failed:", e);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleSaveSettings() {
     setBusy(true);
     try {
-      for (const [key, value] of Object.entries(settings)) {
+      for (const [key, value] of Object.entries(motor)) {
         await setTrolleyConfig(device.id, key, value);
       }
       await sendTrolleyCommand(device.id, "config_save");
@@ -126,8 +138,19 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
   const calibrated = status?.calibrated ?? 0;
   const state = status?.state ?? "idle";
   const livePosition = status?.position ?? 0;
-  const isCalibrating = state === "calibrating";
+  const isHoming = state === "homing";
   const positionAvailable = homed === 1 && calibrated === 1;
+
+  const derivedSteps = useMemo(
+    () =>
+      deriveRailLengthSteps(
+        rail.rail_length_mm,
+        rail.wheel_radius_mm,
+        motor.steps_per_rev,
+        motor.microsteps,
+      ),
+    [rail.rail_length_mm, rail.wheel_radius_mm, motor.steps_per_rev, motor.microsteps],
+  );
 
   return (
     <div className="p-5 rounded-2xl border border-white/5 bg-zinc-900/60 shadow-lg">
@@ -150,7 +173,7 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
       {/* Status badges */}
       <div className="flex flex-wrap gap-1.5 mb-3 text-[10px] font-mono">
         <Badge ok={homed === 1} label={homed ? "Homed" : "Not homed"} />
-        <Badge ok={calibrated === 1} label={calibrated ? "Calibrated" : "Not calibrated"} />
+        <Badge ok={calibrated === 1} label={calibrated ? "Configured" : "Not configured"} />
         <span className="px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 uppercase tracking-wide">
           {state}
         </span>
@@ -173,77 +196,64 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
         </div>
       </div>
 
-      {/* Calibration section */}
+      {/* Rail config */}
       <div className="mb-4 p-3 rounded-xl bg-zinc-950/50 border border-zinc-800/60">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-medium text-zinc-300">Calibration</span>
+          <span className="text-xs font-medium text-zinc-300">Rail config</span>
           <span className="text-[10px] text-zinc-500 font-mono">
-            {isCalibrating ? "running…" : calibrated ? "✓ saved" : "not run"}
+            {calibrated ? "✓ saved" : "not set"}
           </span>
         </div>
-
-        <div className="flex items-center gap-2 mb-2 text-[11px]">
-          <span className="text-zinc-500">Direction</span>
-          <label className="flex items-center gap-1 text-zinc-300">
-            <input
-              type="radio"
-              name={`calib-dir-${device.id}`}
-              checked={calibDir === "forward"}
-              onChange={() => setCalibDir("forward")}
-              disabled={busy || isCalibrating}
-              className="accent-sky-500"
-            />
-            Forward
-          </label>
-          <label className="flex items-center gap-1 text-zinc-300">
-            <input
-              type="radio"
-              name={`calib-dir-${device.id}`}
-              checked={calibDir === "reverse"}
-              onChange={() => setCalibDir("reverse")}
-              disabled={busy || isCalibrating}
-              className="accent-sky-500"
-            />
-            Reverse
-          </label>
+        <div className="grid grid-cols-2 gap-2 mb-2">
+          <NumField
+            label="Rail length (mm)"
+            value={rail.rail_length_mm}
+            onChange={(v) => setRail({ ...rail, rail_length_mm: v })}
+            step={1}
+          />
+          <NumField
+            label="Wheel radius (mm)"
+            value={rail.wheel_radius_mm}
+            onChange={(v) => setRail({ ...rail, wheel_radius_mm: v })}
+            step={0.01}
+          />
         </div>
+        <p className="text-[10px] text-zinc-500 font-mono mb-2">
+          Derived: {derivedSteps.toLocaleString()} steps
+        </p>
+        <button
+          onClick={handleSaveRail}
+          disabled={busy || !online || !rail.rail_length_mm || !rail.wheel_radius_mm}
+          className="w-full px-3 py-1.5 bg-emerald-700/70 hover:bg-emerald-600/80 disabled:opacity-30 rounded text-xs font-medium text-emerald-100 transition-all"
+        >
+          Save rail config
+        </button>
+      </div>
 
-        <div className="flex flex-wrap gap-2">
+      {/* Home */}
+      <div className="mb-4 p-3 rounded-xl bg-zinc-950/50 border border-zinc-800/60">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-medium text-zinc-300">Home</span>
+          <span className="text-[10px] text-zinc-500 font-mono">
+            {isHoming ? "running…" : homed ? "homed" : "—"}
+          </span>
+        </div>
+        <div className="flex gap-2">
           <button
-            onClick={() => send("home")}
-            disabled={busy || !online || isCalibrating}
-            className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 rounded text-[11px] font-medium text-zinc-300 transition-all"
+            onClick={() => send("home", "reverse")}
+            disabled={busy || !online || isHoming}
+            title="Drive toward home limit switch"
+            className="flex-1 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 rounded text-[11px] font-medium text-zinc-300 transition-all"
           >
-            1. Home
+            ◄ Home reverse
           </button>
           <button
-            onClick={handleStartCalibration}
-            disabled={busy || !online || homed !== 1 || isCalibrating}
-            title={homed !== 1 ? "Home first" : undefined}
-            className="px-2.5 py-1 bg-amber-900/50 hover:bg-amber-800/70 disabled:opacity-30 rounded text-[11px] font-medium text-amber-200 transition-all"
+            onClick={() => send("home", "forward")}
+            disabled={busy || !online || isHoming}
+            title="Drive toward far limit switch"
+            className="flex-1 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 rounded text-[11px] font-medium text-zinc-300 transition-all"
           >
-            2. Start
-          </button>
-          <button
-            onClick={handleStopCalibration}
-            disabled={busy || !online || !isCalibrating}
-            className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 rounded text-[11px] font-medium text-zinc-300 transition-all"
-          >
-            3. Stop here
-          </button>
-          <button
-            onClick={handleSaveCalibration}
-            disabled={busy || !online}
-            className="px-2.5 py-1 bg-emerald-900/50 hover:bg-emerald-800/70 disabled:opacity-30 rounded text-[11px] font-medium text-emerald-200 transition-all"
-          >
-            4. Save
-          </button>
-          <button
-            onClick={handleCancelCalibration}
-            disabled={busy || !online}
-            className="px-2.5 py-1 bg-red-900/40 hover:bg-red-800/60 disabled:opacity-30 rounded text-[11px] font-medium text-red-200 transition-all"
-          >
-            Cancel
+            Home forward ►
           </button>
         </div>
       </div>
@@ -269,7 +279,7 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
         </button>
       </div>
 
-      {/* Position slider — disabled until calibrated */}
+      {/* Position slider — disabled until configured */}
       <div className="mb-4">
         <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
           <span>Position</span>
@@ -285,7 +295,7 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
           onMouseUp={(e) => handlePosition(Number((e.target as HTMLInputElement).value))}
           onTouchEnd={(e) => handlePosition(Number((e.target as HTMLInputElement).value))}
           disabled={busy || !online || !positionAvailable}
-          title={!positionAvailable ? "Home + calibrate first" : undefined}
+          title={!positionAvailable ? "Configure rail + home first" : undefined}
           className="w-full accent-sky-500 disabled:opacity-30"
         />
       </div>
@@ -356,7 +366,7 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
         </button>
       </div>
 
-      {/* Settings (collapsible) */}
+      {/* Motor settings (collapsible) */}
       <div className="border-t border-zinc-800/60 pt-3">
         <button
           onClick={() => setShowSettings((v) => !v)}
@@ -367,39 +377,47 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
         {showSettings && (
           <div className="mt-3 space-y-2">
             <NumField
-              label="Lead (mm/rev)"
-              value={settings.lead_mm_per_rev}
-              onChange={(v) => setSettings({ ...settings, lead_mm_per_rev: v })}
-              step={0.1}
-            />
-            <NumField
               label="Steps/rev"
-              value={settings.steps_per_rev}
-              onChange={(v) => setSettings({ ...settings, steps_per_rev: v })}
+              value={motor.steps_per_rev}
+              onChange={(v) => setMotor({ ...motor, steps_per_rev: v })}
               step={1}
             />
             <NumField
               label="Microsteps"
-              value={settings.microsteps}
-              onChange={(v) => setSettings({ ...settings, microsteps: v })}
+              value={motor.microsteps}
+              onChange={(v) => setMotor({ ...motor, microsteps: v })}
               step={1}
             />
             <NumField
               label="Max speed (Hz)"
-              value={settings.max_speed_hz}
-              onChange={(v) => setSettings({ ...settings, max_speed_hz: v })}
+              value={motor.max_speed_hz}
+              onChange={(v) => setMotor({ ...motor, max_speed_hz: v })}
               step={50}
             />
             <NumField
-              label="Calibration speed (Hz)"
-              value={settings.calibration_speed_hz}
-              onChange={(v) => setSettings({ ...settings, calibration_speed_hz: v })}
+              label="Home speed (Hz)"
+              value={motor.home_speed_hz}
+              onChange={(v) => setMotor({ ...motor, home_speed_hz: v })}
               step={50}
+            />
+            <NumField
+              label="Accel (s)"
+              value={motor.accel_time_s}
+              onChange={(v) => setMotor({ ...motor, accel_time_s: v })}
+              onCommit={(v) => send("accel", v)}
+              step={0.1}
+            />
+            <NumField
+              label="Decel (s)"
+              value={motor.decel_time_s}
+              onChange={(v) => setMotor({ ...motor, decel_time_s: v })}
+              onCommit={(v) => send("decel", v)}
+              step={0.1}
             />
             <NumField
               label="Soft limit (0–1)"
-              value={settings.soft_limit_pct}
-              onChange={(v) => setSettings({ ...settings, soft_limit_pct: v })}
+              value={motor.soft_limit_pct}
+              onChange={(v) => setMotor({ ...motor, soft_limit_pct: v })}
               step={0.01}
             />
             <button
@@ -410,8 +428,14 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
               Save settings
             </button>
             <p className="text-[10px] text-zinc-500 leading-snug">
-              Saved per Pi in <code className="text-zinc-400">device.json</code>. Lead × steps × microsteps
-              feeds the mm display; the Pi only relies on rail_length_steps from calibration.
+              Saved per Pi in <code className="text-zinc-400">device.json</code>. Steps × microsteps
+              divided by 2π × wheel radius gives steps/mm; multiplied by rail length gives the total step count.
+            </p>
+            <p className="text-[10px] text-zinc-500 leading-snug">
+              <span className="text-zinc-400">Accel / Decel:</span> linear ramp time (s) applied to{" "}
+              <code className="text-zinc-400">/trolley/step</code> and{" "}
+              <code className="text-zinc-400">/trolley/position</code>. <span className="text-zinc-400">0</span> = no ramp
+              (constant speed). On blur the value is sent live; click Save settings to persist.
             </p>
           </div>
         )}
@@ -438,11 +462,14 @@ function NumField({
   label,
   value,
   onChange,
+  onCommit,
   step,
 }: {
   label: string;
   value: number;
   onChange: (v: number) => void;
+  /** Fires on blur — for fields that have a live OSC effect (e.g. accel/decel). */
+  onCommit?: (v: number) => void;
   step: number;
 }) {
   return (
@@ -453,6 +480,7 @@ function NumField({
         value={value}
         step={step}
         onChange={(e) => onChange(Number(e.target.value))}
+        onBlur={onCommit ? (e) => onCommit(Number(e.target.value)) : undefined}
         className="w-24 bg-zinc-800 border border-zinc-700/50 rounded px-2 py-0.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-sky-500/50"
       />
     </label>

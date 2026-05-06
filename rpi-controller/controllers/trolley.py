@@ -1,4 +1,4 @@
-"""Trolley controller: stepper (DIR/PUL/ENA) on a rail with a limit switch.
+"""Trolley controller: stepper (DIR/PUL/ENA) on a rail with two limit switches.
 
 OSC protocol:
 
@@ -7,14 +7,14 @@ OSC protocol:
       /trolley/dir     int 0|1       0 = reverse, 1 = forward (raw DIR pin)
       /trolley/speed   float 0..1    pulse frequency, 0 = stopped, 1 = MIN_PULSE_DELAY_S
       /trolley/step    int           burst N pulses at current speed/dir, aborts on limit
-      /trolley/stop                  cancel any burst / position follow / calibration
-      /trolley/home                  drive opposite to calibration_direction until LIM_SWITCH
+      /trolley/stop                  cancel any burst / position follow / homing
 
-    Calibration:
-      /trolley/calibrate/start [dir?]  span the rail at calibration_speed_hz
-      /trolley/calibrate/stop          halt + record candidate rail_length_steps
-      /trolley/calibrate/save          persist candidate to device.json
-      /trolley/calibrate/cancel        discard candidate
+    Home — drives until the limit switch in that direction trips:
+      /trolley/home  ["reverse"|"forward"|0|1]
+                                     omitted/0/"reverse" → toward home end
+                                                            (position_steps=0)
+                                     "forward"/1         → toward far end
+                                                            (position_steps=rail)
 
     Settings (per-Pi, persisted in device.json):
       /trolley/config/set   key value  validate + stage one field
@@ -23,7 +23,7 @@ OSC protocol:
 
     Position — for timeline playback:
       /trolley/position float 0..1   target = round(value * rail_length_steps * soft_limit_pct)
-                                     refused if not homed or not calibrated
+                                     refused if not homed or not configured
 """
 
 import json
@@ -35,7 +35,8 @@ import time
 import RPi.GPIO as GPIO
 
 from config import (
-    PIN_STEP_DIR, PIN_STEP_PUL, PIN_STEP_ENA, PIN_LIM_SWITCH,
+    PIN_STEP_DIR, PIN_STEP_PUL, PIN_STEP_ENA,
+    PIN_LIM_SWITCH, PIN_LIM_SWITCH_FAR,
     STEP_DEBOUNCE_MS,
     TROLLEY_MAX_STEPS, TROLLEY_MIN_PULSE_DELAY_S, TROLLEY_MAX_PULSE_DELAY_S,
     TROLLEY_DEFAULT_SPEED_HZ, TROLLEY_AUTO_HOME_ON_BOOT,
@@ -50,8 +51,8 @@ STATUS_BROADCAST_ADDRESS = "/trolley/status"
 STATUS_BROADCAST_HZ = TROLLEY_STATUS_HZ
 
 # Semantic directions — independent of which DIR-pin level drives the carriage.
-# DIR_FORWARD always means "away from home / limit switch."
-# DIR_REVERSE always means "toward home / limit switch."
+# DIR_FORWARD always means "away from home / toward far limit switch."
+# DIR_REVERSE always means "toward home / home limit switch."
 # The mapping to GPIO HIGH/LOW is decided by the persisted calibration_direction.
 DIR_REVERSE = 0
 DIR_FORWARD = 1
@@ -60,9 +61,6 @@ DIR_FORWARD = 1
 STATE_IDLE = "idle"
 STATE_HOMING = "homing"
 STATE_FOLLOWING = "following"
-STATE_CALIBRATING = "calibrating"
-
-CALIBRATION_TIMEOUT_S = 300.0  # safety: auto-cancel a forgotten calibration
 
 # --- runtime settings (loaded from device.json) ---------------------------
 
@@ -72,15 +70,18 @@ _settings_pending: dict = {}  # config/set stages here until config/save commits
 
 def _reload_settings():
     """Reload from device.json into module state. Call at boot and after save."""
-    global _settings, _settings_pending
+    global _settings, _settings_pending, _accel_time_s, _decel_time_s
     _settings = trolley_settings.load()
     _settings_pending = dict(_settings)
+    _accel_time_s = float(_settings.get("accel_time_s", 0.0) or 0.0)
+    _decel_time_s = float(_settings.get("decel_time_s", 0.0) or 0.0)
 
 
 def _rail_length_steps() -> int:
-    """Effective MAX_STEPS: the persisted calibration, or the legacy fallback."""
-    rail = _settings.get("rail_length_steps")
-    return int(rail) if rail else int(TROLLEY_MAX_STEPS)
+    """Effective rail length in steps. Uses derived value when configured,
+    falls back to TROLLEY_MAX_STEPS for permissive bench testing."""
+    derived = trolley_settings.derived_rail_length_steps(_settings)
+    return derived if derived else int(TROLLEY_MAX_STEPS)
 
 
 def _soft_limit_steps() -> int:
@@ -103,16 +104,20 @@ def _away_pin_high() -> bool:
 
 position_steps = 0
 homed = False
-limit_error = 0
+limit_error = 0       # home-end switch
+far_limit_error = 0   # far-end switch
 target_steps = None
 
 state = STATE_IDLE
-calibration_candidate_steps = None
-_calibration_started_at = 0.0
 
 _current_speed_hz = float(TROLLEY_DEFAULT_SPEED_HZ)
 _current_dir = DIR_FORWARD
 _enabled = False
+
+# Trapezoidal ramp times (seconds) applied to /trolley/step and /trolley/position.
+# 0.0 = constant speed, identical to legacy behaviour.
+_accel_time_s = 0.0
+_decel_time_s = 0.0
 
 last_osc_time = 0.0
 _webhooks = None
@@ -164,7 +169,8 @@ def _pulse_once(delay_s):
     if _abort_event.is_set():
         return False
     if limit_error and _current_dir == DIR_REVERSE:
-        # Already at home and still trying to drive into the switch — stop.
+        return False
+    if far_limit_error and _current_dir == DIR_FORWARD:
         return False
     GPIO.output(PIN_STEP_PUL, GPIO.HIGH)
     time.sleep(delay_s)
@@ -177,32 +183,60 @@ def _apply_step_delta():
     """Increment or decrement position after a successful pulse.
 
     Position is always counted in the calibration frame: forward = away from home,
-    reverse = toward home, regardless of which DIR pin level that maps to."""
+    reverse = toward home, regardless of which DIR pin level that maps to.
+
+    Skipping the delta when the limit-error flag for the current direction is
+    already set keeps the count exact when the ISR fires mid-pulse — the ISR
+    pins position to its end-stop value, and we don't want to drift past it."""
     global position_steps
     if _current_dir == DIR_FORWARD:
+        if far_limit_error:
+            return
         position_steps += 1
     else:
+        if limit_error:
+            return
         position_steps = max(0, position_steps - 1)
 
 
 def _limit_switch_isr(channel):
-    """Called by RPi.GPIO on both edges of LIM_SWITCH. Keep it short."""
+    """Home-end limit switch ISR. Fires on both edges. Keep it short."""
     global limit_error, position_steps, homed
     try:
         gpio_state = GPIO.input(PIN_LIM_SWITCH)
         if gpio_state == GPIO.HIGH:
             limit_error = 1
             if _current_dir == DIR_REVERSE:
-                # Driving toward home → switch trip = home reached.
                 position_steps = 0
                 homed = True
-                logger.info("Trolley: limit switch hit — position reset to 0")
+                logger.info("Trolley: home switch hit — position reset to 0")
             else:
-                logger.warning("Trolley: limit switch hit while moving away from home — check wiring")
+                logger.warning("Trolley: home switch hit while moving forward — check wiring")
         else:
             limit_error = 0
     except Exception as e:
-        logger.error("Trolley ISR error: %s", e)
+        logger.error("Trolley home ISR error: %s", e)
+
+
+def _far_limit_switch_isr(channel):
+    """Far-end limit switch ISR. Fires on both edges. Keep it short."""
+    global far_limit_error, position_steps, homed
+    try:
+        gpio_state = GPIO.input(PIN_LIM_SWITCH_FAR)
+        if gpio_state == GPIO.HIGH:
+            far_limit_error = 1
+            if _current_dir == DIR_FORWARD:
+                rail = trolley_settings.derived_rail_length_steps(_settings)
+                if rail:
+                    position_steps = rail
+                homed = True
+                logger.info("Trolley: far switch hit — position pinned to %d", position_steps)
+            else:
+                logger.warning("Trolley: far switch hit while moving reverse — check wiring")
+        else:
+            far_limit_error = 0
+    except Exception as e:
+        logger.error("Trolley far ISR error: %s", e)
 
 
 # --- motion thread --------------------------------------------------------
@@ -216,11 +250,6 @@ def _motion_loop():
         except queue.Empty:
             if _command_queue.empty():
                 _idle_event.set()
-            # Auto-cancel a stuck calibration after timeout
-            if state == STATE_CALIBRATING and _calibration_started_at and \
-                    (time.time() - _calibration_started_at) > CALIBRATION_TIMEOUT_S:
-                logger.warning("Trolley: calibration timed out — auto-cancelling")
-                _cancel_calibration()
             continue
         _abort_event.clear()
         try:
@@ -234,15 +263,10 @@ def _motion_loop():
                 _run_follow(target, speed_hz)
                 state = STATE_IDLE
             elif kind == "home":
+                _, direction = cmd
                 state = STATE_HOMING
-                _run_home()
+                _run_home(direction)
                 state = STATE_IDLE
-            elif kind == "calibrate":
-                _, speed_hz = cmd
-                state = STATE_CALIBRATING
-                _run_calibrate(speed_hz)
-                # state stays CALIBRATING after the span pass — operator decides
-                # save/cancel. _run_calibrate either ran to abort (stop) or limit error.
         except Exception as e:
             logger.error("Trolley motion error on %r: %s", cmd, e)
             state = STATE_IDLE
@@ -253,67 +277,94 @@ def _motion_loop():
                 _idle_event.set()
 
 
-def _run_step_burst(steps, direction, speed_hz):
-    if steps <= 0:
+def _run_pulse_train(total_steps, target_hz, accel_s, decel_s):
+    """Emit `total_steps` pulses with a trapezoidal velocity profile.
+
+    Direction must be set by the caller. With accel_s == decel_s == 0 this
+    falls back to the legacy constant-rate loop (identical wire timing).
+    Otherwise: linearly ramp from ~0 → target_hz over accel_s seconds, cruise,
+    ramp down to 0 over decel_s seconds. If the move is too short to fit both
+    ramps, the profile becomes triangular and never reaches target_hz."""
+    if total_steps <= 0:
         return
-    _set_dir(direction)
-    delay = _speed_to_delay(speed_hz)
-    for _ in range(steps):
-        if not _pulse_once(delay):
+
+    if accel_s <= 0 and decel_s <= 0:
+        delay = _speed_to_delay(target_hz)
+        for _ in range(total_steps):
+            if not _pulse_once(delay):
+                return
+            _apply_step_delta()
+        return
+
+    # Avg frequency during a 0→target linear ramp is target/2, so the step
+    # count for a given ramp time is target_hz * t / 2.
+    steps_a = int(target_hz * accel_s / 2) if accel_s > 0 else 0
+    steps_d = int(target_hz * decel_s / 2) if decel_s > 0 else 0
+    if steps_a + steps_d > total_steps:
+        # Triangular profile — scale the two ramps proportionally.
+        ramp_total = steps_a + steps_d
+        steps_a = int(steps_a * total_steps / ramp_total) if ramp_total else 0
+        steps_d = total_steps - steps_a
+    steps_c = total_steps - steps_a - steps_d
+
+    for i in range(steps_a):
+        f = target_hz * (i + 1) / steps_a
+        if not _pulse_once(_speed_to_delay(f)):
+            return
+        _apply_step_delta()
+
+    cruise_delay = _speed_to_delay(target_hz)
+    for _ in range(steps_c):
+        if not _pulse_once(cruise_delay):
+            return
+        _apply_step_delta()
+
+    for i in range(steps_d):
+        f = target_hz * (1.0 - (i + 1) / steps_d)
+        if not _pulse_once(_speed_to_delay(f)):
             return
         _apply_step_delta()
 
 
+def _run_step_burst(steps, direction, speed_hz):
+    if steps <= 0:
+        return
+    _set_dir(direction)
+    _run_pulse_train(steps, speed_hz, _accel_time_s, _decel_time_s)
+
+
 def _run_follow(target, speed_hz):
     global target_steps
-    target_steps = target
-    delay = _speed_to_delay(speed_hz)
     target = _clamp(target, 0, _rail_length_steps())
-    while not _abort_event.is_set():
-        if position_steps == target:
-            break
-        direction = DIR_FORWARD if target > position_steps else DIR_REVERSE
-        if direction != _current_dir:
-            _set_dir(direction)
-        if not _pulse_once(delay):
-            break
-        _apply_step_delta()
+    target_steps = target
+    delta = target - position_steps
+    if delta == 0:
+        target_steps = None
+        return
+    direction = DIR_FORWARD if delta > 0 else DIR_REVERSE
+    if direction != _current_dir:
+        _set_dir(direction)
+    _run_pulse_train(abs(delta), speed_hz, _accel_time_s, _decel_time_s)
     target_steps = None
 
 
-def _run_home():
-    """Drive toward the limit switch until ISR resets position to 0."""
-    global homed
-    _set_dir(DIR_REVERSE)
-    delay = _speed_to_delay(TROLLEY_DEFAULT_SPEED_HZ)
-    while not _abort_event.is_set() and not limit_error:
-        if not _pulse_once(delay):
-            break
-        _apply_step_delta()
-    if limit_error:
-        homed = True
+def _run_home(direction):
+    """Drive in the requested direction until that end's limit switch trips.
 
-
-def _run_calibrate(speed_hz):
-    """Span pass: drive away from home at calibration speed.
-
-    Stops on /trolley/calibrate/stop (which sets _abort_event) or if the limit
-    switch unexpectedly trips (wiring inverted)."""
-    _set_dir(DIR_FORWARD)
-    delay = _speed_to_delay(speed_hz)
-    while not _abort_event.is_set():
-        if not _pulse_once(delay):
-            break
-        _apply_step_delta()
-
-
-def _cancel_calibration():
-    global state, calibration_candidate_steps, _calibration_started_at
-    _drain_queue()
-    _abort_event.set()
-    state = STATE_IDLE
-    calibration_candidate_steps = None
-    _calibration_started_at = 0.0
+    direction: DIR_REVERSE → toward home switch, DIR_FORWARD → toward far switch."""
+    _set_dir(direction)
+    speed = float(_settings.get("home_speed_hz") or TROLLEY_DEFAULT_SPEED_HZ)
+    delay = _speed_to_delay(speed)
+    if direction == DIR_FORWARD:
+        while not _abort_event.is_set() and not far_limit_error:
+            if not _pulse_once(delay):
+                break
+            _apply_step_delta()
+    else:
+        while not _abort_event.is_set() and not limit_error:
+            if not _pulse_once(delay):
+                break
+            _apply_step_delta()
 
 
 def _drain_queue():
@@ -335,13 +386,14 @@ def _enqueue(cmd):
 
 def setup(webhooks):
     """Configure pins, start the motion thread, leave driver disabled."""
-    global _webhooks, _motion_thread, position_steps, homed, limit_error, state
+    global _webhooks, _motion_thread, position_steps, homed, limit_error, far_limit_error, state
     _webhooks = webhooks
     _reload_settings()
 
     position_steps = 0
     homed = False
     limit_error = 0
+    far_limit_error = 0
     state = STATE_IDLE
     _shutdown_event.clear()
     _abort_event.clear()
@@ -353,6 +405,7 @@ def setup(webhooks):
     GPIO.setup(PIN_STEP_PUL, GPIO.OUT, initial=GPIO.LOW)
     GPIO.setup(PIN_STEP_ENA, GPIO.OUT, initial=GPIO.HIGH)
     GPIO.setup(PIN_LIM_SWITCH, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    GPIO.setup(PIN_LIM_SWITCH_FAR, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
     try:
         GPIO.add_event_detect(
@@ -361,24 +414,33 @@ def setup(webhooks):
             bouncetime=STEP_DEBOUNCE_MS,
         )
     except Exception as e:
-        logger.error("Trolley: failed to install limit-switch ISR: %s", e)
+        logger.error("Trolley: failed to install home-switch ISR: %s", e)
+
+    try:
+        GPIO.add_event_detect(
+            PIN_LIM_SWITCH_FAR, GPIO.BOTH,
+            callback=_far_limit_switch_isr,
+            bouncetime=STEP_DEBOUNCE_MS,
+        )
+    except Exception as e:
+        logger.error("Trolley: failed to install far-switch ISR: %s", e)
 
     _motion_thread = threading.Thread(target=_motion_loop, name="trolley-motion", daemon=True)
     _motion_thread.start()
 
     logger.info(
-        "Trolley GPIO: DIR=%d PUL=%d ENA=%d LIM=%d rail_length=%d calib_dir=%s calibrated=%s",
-        PIN_STEP_DIR, PIN_STEP_PUL, PIN_STEP_ENA, PIN_LIM_SWITCH,
+        "Trolley GPIO: DIR=%d PUL=%d ENA=%d LIM_HOME=%d LIM_FAR=%d rail_length=%d calib_dir=%s configured=%s",
+        PIN_STEP_DIR, PIN_STEP_PUL, PIN_STEP_ENA, PIN_LIM_SWITCH, PIN_LIM_SWITCH_FAR,
         _rail_length_steps(), _settings.get("calibration_direction"), _is_calibrated(),
     )
 
     if TROLLEY_AUTO_HOME_ON_BOOT:
         _set_enable(True)
-        _enqueue(("home",))
+        _enqueue(("home", DIR_REVERSE))
 
 
 def cleanup():
-    """Stop any motion, disable driver, remove ISR."""
+    """Stop any motion, disable driver, remove ISRs."""
     logger.info("Trolley shutdown — aborting motion and disabling driver")
     _abort_event.set()
     _shutdown_event.set()
@@ -389,10 +451,11 @@ def cleanup():
         GPIO.output(PIN_STEP_ENA, GPIO.HIGH)
     except Exception as e:
         logger.error("Trolley cleanup GPIO.output error: %s", e)
-    try:
-        GPIO.remove_event_detect(PIN_LIM_SWITCH)
-    except Exception as e:
-        logger.error("Trolley cleanup remove_event_detect error: %s", e)
+    for pin in (PIN_LIM_SWITCH, PIN_LIM_SWITCH_FAR):
+        try:
+            GPIO.remove_event_detect(pin)
+        except Exception as e:
+            logger.error("Trolley cleanup remove_event_detect(%d) error: %s", pin, e)
 
 
 def set_pinger_provider(provider):
@@ -445,6 +508,26 @@ def handle_speed(address, *args):
     logger.info("OSC %s: %.3f → %.0f Hz", address, speed_01, _current_speed_hz)
 
 
+@_safe("accel")
+def handle_accel(address, *args):
+    """Set the linear ramp-up time (seconds) used by /trolley/step and /trolley/position."""
+    global _accel_time_s
+    if not args:
+        return
+    _accel_time_s = _clamp(float(args[0]), 0.0, 10.0)
+    logger.info("OSC %s: accel_time_s=%.3f", address, _accel_time_s)
+
+
+@_safe("decel")
+def handle_decel(address, *args):
+    """Set the linear ramp-down time (seconds) used by /trolley/step and /trolley/position."""
+    global _decel_time_s
+    if not args:
+        return
+    _decel_time_s = _clamp(float(args[0]), 0.0, 10.0)
+    logger.info("OSC %s: decel_time_s=%.3f", address, _decel_time_s)
+
+
 @_safe("step")
 def handle_step(address, *args):
     if not args:
@@ -458,21 +541,37 @@ def handle_step(address, *args):
 
 @_safe("stop")
 def handle_stop(address, *args):
-    """Halt motion. During calibration, snapshot the candidate (does not save)."""
-    global calibration_candidate_steps
+    """Halt motion."""
     logger.info("OSC %s: stop", address)
-    if state == STATE_CALIBRATING:
-        calibration_candidate_steps = position_steps
-        logger.info("OSC %s: calibration paused, candidate=%d steps", address, calibration_candidate_steps)
     _drain_queue()
     _abort_event.set()
 
 
+def _parse_direction(value, default=DIR_REVERSE):
+    """Parse a direction OSC arg into DIR_FORWARD/DIR_REVERSE.
+
+    Accepts "forward"/"reverse" strings, or 0/1 ints. Empty/None/0 → default."""
+    if value is None or value == "":
+        return default
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("forward", "fwd", "1"):
+            return DIR_FORWARD
+        if s in ("reverse", "rev", "0", ""):
+            return DIR_REVERSE
+        return default
+    try:
+        return DIR_FORWARD if int(value) else DIR_REVERSE
+    except (TypeError, ValueError):
+        return default
+
+
 @_safe("home")
 def handle_home(address, *args):
-    logger.info("OSC %s: home", address)
+    direction = _parse_direction(args[0] if args else None, default=DIR_REVERSE)
+    logger.info("OSC %s: home %s", address, "forward" if direction == DIR_FORWARD else "reverse")
     _set_enable(True)
-    _enqueue(("home",))
+    _enqueue(("home", direction))
 
 
 @_safe("position")
@@ -487,103 +586,23 @@ def handle_position(address, *args):
                            "(set permissive_mode=true to override)", address)
             return
         if not calibrated:
-            logger.warning("OSC %s: refused — trolley not calibrated "
+            logger.warning("OSC %s: refused — trolley not configured "
                            "(set permissive_mode=true to override)", address)
             return
     elif not (homed and calibrated):
-        logger.warning("OSC %s: PERMISSIVE — homed=%d calibrated=%d, "
+        logger.warning("OSC %s: PERMISSIVE — homed=%d configured=%d, "
                        "using fallback rail=%d steps",
                        address, int(homed), int(calibrated), _rail_length_steps())
     value = _clamp(float(args[0]), 0.0, 1.0)
-    # When uncalibrated, _soft_limit_steps() is 0 — fall back to the legacy
-    # TROLLEY_MAX_STEPS span so position still scales sensibly for bench tests.
+    # When unconfigured, _soft_limit_steps() is 0 — fall back to the
+    # _rail_length_steps() (which uses TROLLEY_MAX_STEPS in that case)
+    # so position still scales sensibly for bench tests.
     ceiling = _soft_limit_steps() if calibrated else _rail_length_steps()
     target = int(round(value * ceiling))
     logger.info("OSC %s: %.3f → target %d / %d (rail=%d)",
                 address, value, target, ceiling, _rail_length_steps())
     _set_enable(True)
     _enqueue(("follow", target, _current_speed_hz or TROLLEY_DEFAULT_SPEED_HZ))
-
-
-# Calibration handlers -----------------------------------------------------
-
-@_safe("calibrate_start")
-def handle_calibrate_start(address, *args):
-    """Span the rail away from home to discover rail_length_steps.
-
-    Optional first arg "forward"|"reverse" updates and persists
-    calibration_direction before starting the span pass."""
-    global calibration_candidate_steps, _calibration_started_at, position_steps
-    if not homed:
-        logger.warning("OSC %s: refused — must home before calibrating", address)
-        return
-    if state == STATE_CALIBRATING:
-        logger.info("OSC %s: already calibrating — ignored", address)
-        return
-    if args:
-        candidate = str(args[0]).strip().lower()
-        if candidate in trolley_settings.VALID_DIRECTIONS:
-            try:
-                new_block = dict(_settings)
-                new_block["calibration_direction"] = candidate
-                trolley_settings.save(new_block)
-                _reload_settings()
-                logger.info("OSC %s: calibration_direction set to %s", address, candidate)
-            except Exception as e:
-                logger.warning("OSC %s: failed to persist direction: %s", address, e)
-        else:
-            logger.warning("OSC %s: ignoring invalid direction %r", address, args[0])
-    calibration_candidate_steps = None
-    _calibration_started_at = time.time()
-    # Reset position frame so the count captured at /calibrate/stop is the rail length.
-    position_steps = 0
-    logger.info("OSC %s: starting calibration (%s away from home)",
-                address, _settings.get("calibration_direction"))
-    _set_enable(True)
-    _enqueue(("calibrate", _settings.get("calibration_speed_hz")))
-
-
-@_safe("calibrate_stop")
-def handle_calibrate_stop(address, *args):
-    """Halt the span pass and record the candidate rail length."""
-    global calibration_candidate_steps
-    if state != STATE_CALIBRATING:
-        logger.info("OSC %s: not calibrating — ignored", address)
-        return
-    calibration_candidate_steps = position_steps
-    logger.info("OSC %s: candidate=%d steps", address, calibration_candidate_steps)
-    _drain_queue()
-    _abort_event.set()
-
-
-@_safe("calibrate_save")
-def handle_calibrate_save(address, *args):
-    """Persist the candidate as rail_length_steps in device.json."""
-    global state, calibration_candidate_steps, _calibration_started_at
-    if calibration_candidate_steps is None or calibration_candidate_steps <= 0:
-        logger.warning("OSC %s: no valid candidate to save", address)
-        return
-    new_block = dict(_settings)
-    new_block["rail_length_steps"] = int(calibration_candidate_steps)
-    try:
-        trolley_settings.save(new_block)
-    except Exception as e:
-        logger.error("OSC %s: failed to persist settings: %s", address, e)
-        return
-    _reload_settings()
-    state = STATE_IDLE
-    calibration_candidate_steps = None
-    _calibration_started_at = 0.0
-    logger.info("OSC %s: saved rail_length_steps=%d", address, _settings.get("rail_length_steps"))
-
-
-@_safe("calibrate_cancel")
-def handle_calibrate_cancel(address, *args):
-    if state != STATE_CALIBRATING and calibration_candidate_steps is None:
-        logger.info("OSC %s: nothing to cancel", address)
-        return
-    _cancel_calibration()
-    logger.info("OSC %s: calibration cancelled", address)
 
 
 # Settings handlers --------------------------------------------------------
@@ -632,7 +651,9 @@ def handle_config_get(address, *args):
     try:
         from pythonosc.udp_client import SimpleUDPClient
         client = SimpleUDPClient(ip, port)
-        client.send_message("/trolley/config", [json.dumps(_settings)])
+        payload = dict(_settings)
+        payload["rail_length_steps"] = trolley_settings.derived_rail_length_steps(_settings)
+        client.send_message("/trolley/config", [json.dumps(payload)])
     except Exception as e:
         logger.warning("OSC %s: broadcast failed: %s", address, e)
 
@@ -641,14 +662,12 @@ def register_osc(dispatcher):
     dispatcher.map("/trolley/enable", handle_enable)
     dispatcher.map("/trolley/dir", handle_dir)
     dispatcher.map("/trolley/speed", handle_speed)
+    dispatcher.map("/trolley/accel", handle_accel)
+    dispatcher.map("/trolley/decel", handle_decel)
     dispatcher.map("/trolley/step", handle_step)
     dispatcher.map("/trolley/stop", handle_stop)
     dispatcher.map("/trolley/home", handle_home)
     dispatcher.map("/trolley/position", handle_position)
-    dispatcher.map("/trolley/calibrate/start", handle_calibrate_start)
-    dispatcher.map("/trolley/calibrate/stop", handle_calibrate_stop)
-    dispatcher.map("/trolley/calibrate/save", handle_calibrate_save)
-    dispatcher.map("/trolley/calibrate/cancel", handle_calibrate_cancel)
     dispatcher.map("/trolley/config/set", handle_config_set)
     dispatcher.map("/trolley/config/save", handle_config_save)
     dispatcher.map("/trolley/config/get", handle_config_get)
@@ -665,22 +684,18 @@ def handle_http_test(body):
             _set_dir(int(value))
         elif command == "speed":
             handle_speed("/http", float(value))
+        elif command == "accel":
+            handle_accel("/http", float(value))
+        elif command == "decel":
+            handle_decel("/http", float(value))
         elif command == "step":
             handle_step("/http", int(value))
         elif command == "stop":
             handle_stop("/http")
         elif command == "home":
-            handle_home("/http")
+            handle_home("/http", value) if value is not None else handle_home("/http")
         elif command == "position":
             handle_position("/http", float(value))
-        elif command == "calibrate_start":
-            handle_calibrate_start("/http", value) if value is not None else handle_calibrate_start("/http")
-        elif command == "calibrate_stop":
-            handle_calibrate_stop("/http")
-        elif command == "calibrate_save":
-            handle_calibrate_save("/http")
-        elif command == "calibrate_cancel":
-            handle_calibrate_cancel("/http")
         elif command == "config_set":
             key, val = value or [None, None]
             handle_config_set("/http", key, val)
@@ -699,6 +714,7 @@ def handle_http_test(body):
         "homed": homed,
         "calibrated": _is_calibrated(),
         "limit": limit_error,
+        "far_limit": far_limit_error,
         "enabled": _enabled,
         "state": state,
     }
@@ -716,6 +732,7 @@ def describe():
             "pul": PIN_STEP_PUL,
             "ena": PIN_STEP_ENA,
             "limit": PIN_LIM_SWITCH,
+            "limit_far": PIN_LIM_SWITCH_FAR,
         },
         "rail_length_steps": _rail_length_steps(),
         "calibrated": _is_calibrated(),
@@ -723,6 +740,7 @@ def describe():
         "position": position_steps,
         "homed": homed,
         "limit": limit_error,
+        "far_limit": far_limit_error,
         "state": state,
     }
 
@@ -735,11 +753,13 @@ def get_status():
         "position_steps": position_steps,
         "max_steps": rail,
         "limit": int(limit_error),
+        "far_limit": int(far_limit_error),
         "homed": int(homed),
         "calibrated": int(_is_calibrated()),
         "enabled": int(_enabled),
         "state": state,
-        "candidate_steps": int(calibration_candidate_steps) if calibration_candidate_steps else 0,
+        "accel_time_s": _accel_time_s,
+        "decel_time_s": _decel_time_s,
     }
 
 

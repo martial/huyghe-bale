@@ -1,14 +1,29 @@
-"""Per-Pi trolley calibration + motor settings, persisted in device.json.
+"""Per-Pi trolley configuration, persisted in device.json.
 
 Read at module import / on demand to derive the runtime values used by
-controllers.trolley:
+controllers.trolley.
 
-  rail_length_steps     ground truth for /trolley/position 0..1 → step count
+The rail length in steps is **derived** from the physical configuration
+(rail length + wheel radius) plus the motor parameters (steps_per_rev,
+microsteps). There is no longer a calibration span pass — the operator
+enters the two physical measurements and the firmware computes everything.
+
+  rail_length_mm       physical rail travel between the two end-stops
+  wheel_radius_mm      pitch radius of the drive pulley/wheel
+  steps_per_rev        motor full-step count (NEMA 34 = 200)
+  microsteps           CL86Y dip-switch setting
+
+  travel_per_rev_mm    = 2 * π * wheel_radius_mm
+  steps_per_mm         = (steps_per_rev * microsteps) / travel_per_rev_mm
+  rail_length_steps    = round(rail_length_mm * steps_per_mm)
+
+Other knobs:
+
   soft_limit_pct        margin from the unprotected forward end
-  calibration_direction "forward" or "reverse" — direction the carriage moves
-                        during /trolley/calibrate. /trolley/home drives the
-                        opposite way until the limit switch trips.
-  calibration_speed_hz  pulse rate used during the calibration span pass
+  calibration_direction "forward" or "reverse" — wiring polarity. Defines
+                        which DIR-pin level drives the carriage *away* from
+                        the home end-stop.
+  home_speed_hz         pulse rate used by /trolley/home
   max_speed_hz          ceiling for /trolley/position follow
 
 The block lives at JSON path .trolley inside ~/.config/gpio-osc/device.json
@@ -20,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 from pathlib import Path
@@ -30,17 +46,21 @@ _PATH = Path(os.path.expanduser("~/.config/gpio-osc/device.json"))
 _LOCK = threading.RLock()
 
 DEFAULTS = {
-    "rail_length_steps": None,         # None → uncalibrated
-    "lead_mm_per_rev": 8.0,            # informational
-    "steps_per_rev": 200,              # informational
-    "microsteps": 16,                  # informational
+    "rail_length_mm": None,            # None → unconfigured
+    "wheel_radius_mm": None,           # None → unconfigured
+    "steps_per_rev": 200,
+    "microsteps": 16,
     "max_speed_hz": 2000,
-    "calibration_speed_hz": 600,
-    "calibration_direction": "forward",  # also defines which DIR-pin level drives away from home
+    "home_speed_hz": 600,
+    "calibration_direction": "forward",  # wiring polarity for "away from home"
     "soft_limit_pct": 0.98,
-    # When True, /trolley/position runs even on an unhomed/uncalibrated rig
+    # When True, /trolley/position runs even on an unconfigured rig
     # (uses TROLLEY_MAX_STEPS as the rail length). For bench testing.
     "permissive_mode": True,
+    # Trapezoidal ramp times applied to /trolley/step and /trolley/position.
+    # 0 = no ramp (constant speed, identical to legacy behaviour).
+    "accel_time_s": 0.0,
+    "decel_time_s": 0.0,
 }
 
 VALID_DIRECTIONS = ("forward", "reverse")
@@ -49,17 +69,12 @@ ALLOWED_KEYS = tuple(DEFAULTS.keys())
 
 def _coerce(key, value):
     """Coerce/validate one setting. Raises ValueError on bad input."""
-    if key == "rail_length_steps":
+    if key in ("rail_length_mm", "wheel_radius_mm"):
         if value is None:
             return None
-        v = int(value)
-        if v <= 0:
-            raise ValueError("rail_length_steps must be > 0")
-        return v
-    if key == "lead_mm_per_rev":
         v = float(value)
         if v <= 0:
-            raise ValueError("lead_mm_per_rev must be > 0")
+            raise ValueError(f"{key} must be > 0")
         return v
     if key == "steps_per_rev":
         v = int(value)
@@ -76,10 +91,10 @@ def _coerce(key, value):
         if v <= 0:
             raise ValueError("max_speed_hz must be > 0")
         return v
-    if key == "calibration_speed_hz":
+    if key == "home_speed_hz":
         v = float(value)
         if v <= 0:
-            raise ValueError("calibration_speed_hz must be > 0")
+            raise ValueError("home_speed_hz must be > 0")
         return v
     if key == "calibration_direction":
         s = str(value).strip().lower()
@@ -90,6 +105,11 @@ def _coerce(key, value):
         v = float(value)
         if not (0.0 < v <= 1.0):
             raise ValueError("soft_limit_pct must be in (0, 1]")
+        return v
+    if key in ("accel_time_s", "decel_time_s"):
+        v = float(value)
+        if not (0.0 <= v <= 10.0):
+            raise ValueError(f"{key} must be in [0, 10] seconds")
         return v
     if key == "permissive_mode":
         if isinstance(value, bool):
@@ -156,12 +176,29 @@ def update(key: str, value):
 
 
 def is_calibrated(settings: dict) -> bool:
-    return settings.get("rail_length_steps") is not None
+    """True when both physical measurements are set — rail steps can be derived."""
+    return bool(settings.get("rail_length_mm")) and bool(settings.get("wheel_radius_mm"))
+
+
+def derived_rail_length_steps(settings: dict) -> int:
+    """Compute total step count between home and far end.
+
+    Returns 0 when either physical input is missing.
+    """
+    rail_mm = settings.get("rail_length_mm")
+    wheel_mm = settings.get("wheel_radius_mm")
+    if not rail_mm or not wheel_mm:
+        return 0
+    steps_per_rev = int(settings.get("steps_per_rev") or DEFAULTS["steps_per_rev"])
+    microsteps = int(settings.get("microsteps") or DEFAULTS["microsteps"])
+    travel_per_rev_mm = 2.0 * math.pi * float(wheel_mm)
+    steps_per_mm = (steps_per_rev * microsteps) / travel_per_rev_mm
+    return int(round(float(rail_mm) * steps_per_mm))
 
 
 def soft_limit_steps(settings: dict) -> int:
     """Effective forward target ceiling (steps) for /trolley/position 1.0."""
-    rail = settings.get("rail_length_steps")
+    rail = derived_rail_length_steps(settings)
     pct = settings.get("soft_limit_pct", DEFAULTS["soft_limit_pct"])
     if not rail:
         return 0

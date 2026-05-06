@@ -76,6 +76,34 @@ def test_sends_osc_for_enable(ctx):
         mock_osc.send.assert_called_once_with("192.168.1.77", 9000, "/trolley/enable", 1)
 
 
+def test_sends_osc_for_accel(ctx):
+    client, dev = ctx
+    with patch("api.trolley_control._osc") as mock_osc:
+        client.post(
+            f"/api/v1/trolley-control/{dev['id']}/command",
+            data=json.dumps({"command": "accel", "value": 1.5}),
+            content_type="application/json",
+        )
+        mock_osc.send.assert_called_once()
+        args = mock_osc.send.call_args[0]
+        assert args[2] == "/trolley/accel"
+        assert args[3] == pytest.approx(1.5)
+
+
+def test_sends_osc_for_decel(ctx):
+    client, dev = ctx
+    with patch("api.trolley_control._osc") as mock_osc:
+        client.post(
+            f"/api/v1/trolley-control/{dev['id']}/command",
+            data=json.dumps({"command": "decel", "value": 0.8}),
+            content_type="application/json",
+        )
+        mock_osc.send.assert_called_once()
+        args = mock_osc.send.call_args[0]
+        assert args[2] == "/trolley/decel"
+        assert args[3] == pytest.approx(0.8)
+
+
 def test_sends_osc_for_position(ctx):
     client, dev = ctx
     with patch("api.trolley_control._osc") as mock_osc:
@@ -111,18 +139,29 @@ def test_status_reads_receiver(ctx):
     assert body["online"] is True
 
 
-def test_calibrate_start_sends_correct_address(ctx):
+def test_home_with_direction_sends_string(ctx):
     client, dev = ctx
     with patch("api.trolley_control._osc") as mock_osc:
         resp = client.post(
             f"/api/v1/trolley-control/{dev['id']}/command",
-            data=json.dumps({"command": "calibrate_start", "value": "forward"}),
+            data=json.dumps({"command": "home", "value": "forward"}),
             content_type="application/json",
         )
         assert resp.status_code == 200
         mock_osc.send.assert_called_once_with(
-            "192.168.1.77", 9000, "/trolley/calibrate/start", "forward",
+            "192.168.1.77", 9000, "/trolley/home", "forward",
         )
+
+
+def test_calibrate_commands_no_longer_recognised(ctx):
+    client, dev = ctx
+    for cmd in ("calibrate_start", "calibrate_stop", "calibrate_save", "calibrate_cancel"):
+        resp = client.post(
+            f"/api/v1/trolley-control/{dev['id']}/command",
+            data=json.dumps({"command": cmd}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400, cmd
 
 
 def test_config_set_sends_key_value_pair(ctx):

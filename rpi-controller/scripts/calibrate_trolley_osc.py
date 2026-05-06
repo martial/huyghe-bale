@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Interactive trolley calibration CLI — talks to a live gpio-osc-trolley over OSC.
+"""Interactive trolley configuration CLI — talks to a live gpio-osc-trolley over OSC.
 
-Walks an operator through Home → Calibrate → Save with live status feedback
-from the Pi's /trolley/status broadcasts. Useful for rig commissioning when the
-admin web UI isn't available, and as an ad-hoc smoke test for the calibration
-state machine.
+The trolley no longer requires a physical calibration span. Configure it by
+entering the rail length and wheel radius; the firmware derives steps. This
+tool also exposes a directional Home command — drive toward either end-stop
+until that limit switch trips.
 
     python rpi-controller/scripts/calibrate_trolley_osc.py --host 192.168.1.74
 
@@ -18,7 +18,6 @@ import argparse
 import json
 import logging
 import os
-import socket
 import sys
 import threading
 import time
@@ -72,18 +71,13 @@ class State:
         self.last_pong_at: float = 0.0
         self.device_type: str | None = None
         self.hardware_id: str | None = None
-        # Status fields (defaulted to a not-seen-yet shape).
         self.position: float = 0.0
         self.limit: int = 0
         self.homed: int = 0
         self.calibrated: int = 0
         self.state: str = "?"
         self.last_status_at: float = 0.0
-        # Settings reported by /trolley/config.
         self.settings: dict = {}
-        # Session flag: did we successfully send a calibrate/stop?
-        self.candidate_recorded: bool = False
-        # Logged state transitions.
         self._prev_state: str | None = None
 
     def update_status(self, position, limit, homed, state, calibrated):
@@ -99,15 +93,15 @@ class State:
             if prev is not None and prev != state:
                 transition = (prev, state)
             self._prev_state = state
-            return transition  # caller logs outside the lock
+            return transition
 
     def snapshot_line(self) -> str:
         with self.lock:
             age = time.time() - self.last_status_at if self.last_status_at else None
         homed_tag = green("HOMED ✓") if self.homed else red("HOMED ✗")
-        cal_tag = green("CAL ✓") if self.calibrated else red("CAL ✗")
+        cal_tag = green("CFG ✓") if self.calibrated else red("CFG ✗")
         state_tag = (yellow(f"state={self.state:<11}")
-                     if self.state == "calibrating"
+                     if self.state == "homing"
                      else cyan(f"state={self.state:<11}"))
         pos_tag = f"POS {self.position * 100:5.1f}%"
         if age is None:
@@ -141,7 +135,6 @@ def make_dispatcher(state: State, verbose: bool) -> Dispatcher:
         position = args[0]
         limit = args[1]
         homed = args[2]
-        # Old firmware sends 3-arg status; new firmware sends 5-arg.
         s = args[3] if len(args) >= 4 else "idle"
         calibrated = args[4] if len(args) >= 5 else 0
         transition = state.update_status(position, limit, homed, s, calibrated)
@@ -169,7 +162,6 @@ def make_dispatcher(state: State, verbose: bool) -> Dispatcher:
     d.map("/sys/pong", on_pong, needs_reply_address=True)
     d.map("/trolley/status", on_status, needs_reply_address=True)
     d.map("/trolley/config", on_config, needs_reply_address=True)
-    # Catch-all so unexpected addresses are visible in verbose mode.
     if verbose:
         def fallback(client_address, addr, *args):
             print(dim(f"   ← {addr} {list(args)}"))
@@ -209,44 +201,44 @@ class Client:
 
 # ── menu actions ───────────────────────────────────────────────────────────
 
-def do_home(client: Client, state: State):
-    client.send("/trolley/home")
-    print(yellow("  → /trolley/home — driving toward limit switch (watch the carriage)"))
-    _watch_state(state, want={"idle"}, max_s=15.0, hint="homing")
+def do_home(client: Client, state: State, direction: str):
+    client.send("/trolley/home", direction)
+    print(yellow(f"  → /trolley/home \"{direction}\" — driving until limit switch"))
+    _watch_state(state, want={"idle"}, max_s=30.0, hint="homing")
 
 
-def do_calibrate_start(client: Client, state: State, direction: str):
-    if state.homed == 0:
-        print(red(f"  ✗ refusing — /trolley/status shows homed=0. Run [1] Home first."))
+def do_set_rail_length(client: Client, state: State):
+    raw = ask("rail length (mm)")
+    try:
+        v = float(raw)
+    except ValueError:
+        print(red("  ✗ not a number"))
         return
-    state.candidate_recorded = False
-    client.send("/trolley/calibrate/start", direction)
-    print(yellow(f"  → /trolley/calibrate/start \"{direction}\" sent — "
-                 f"watch the carriage. Click [4] Stop here near the far end."))
-
-
-def do_calibrate_stop(client: Client, state: State):
-    client.send("/trolley/calibrate/stop")
-    state.candidate_recorded = True
-    print(yellow("  → /trolley/calibrate/stop sent — candidate recorded on the Pi."))
-    _watch_state(state, want={"calibrating"}, max_s=2.0, hint="awaiting stop")
-
-
-def do_calibrate_save(client: Client, state: State):
-    if not state.candidate_recorded and state.state != "calibrating":
-        if not ask_yes("No candidate recorded in this session. Save anyway?", default=False):
-            return
-    client.send("/trolley/calibrate/save")
-    print(green("  → /trolley/calibrate/save sent."))
-    # Re-read settings so the rail_length_steps update is visible.
+    if v <= 0:
+        print(red("  ✗ must be > 0"))
+        return
+    client.send_pair("/trolley/config/set", "rail_length_mm", v)
+    client.send("/trolley/config/save")
+    print(green(f"  → rail_length_mm = {v} saved"))
     time.sleep(0.3)
     client.send("/trolley/config/get")
 
 
-def do_calibrate_cancel(client: Client, state: State):
-    client.send("/trolley/calibrate/cancel")
-    state.candidate_recorded = False
-    print(yellow("  → /trolley/calibrate/cancel sent."))
+def do_set_wheel_radius(client: Client, state: State):
+    raw = ask("wheel radius (mm)")
+    try:
+        v = float(raw)
+    except ValueError:
+        print(red("  ✗ not a number"))
+        return
+    if v <= 0:
+        print(red("  ✗ must be > 0"))
+        return
+    client.send_pair("/trolley/config/set", "wheel_radius_mm", v)
+    client.send("/trolley/config/save")
+    print(green(f"  → wheel_radius_mm = {v} saved"))
+    time.sleep(0.3)
+    client.send("/trolley/config/get")
 
 
 def do_config_get(client: Client):
@@ -265,15 +257,13 @@ def do_config_set(client: Client, state: State):
     if raw == "":
         print(red("  ✗ empty value"))
         return
-    # Client-side coerce + validate using the firmware's own validator.
     try:
         if key == "calibration_direction":
             value = trolley_settings._coerce(key, raw)
         else:
-            # Numbers come through as strings on the OSC wire; coerce to native first.
             try:
                 num = float(raw)
-                value = int(num) if num.is_integer() and key != "soft_limit_pct" else num
+                value = int(num) if num.is_integer() and key in ("steps_per_rev", "microsteps") else num
             except ValueError:
                 value = raw
             value = trolley_settings._coerce(key, value)
@@ -281,17 +271,16 @@ def do_config_set(client: Client, state: State):
         print(red(f"  ✗ rejected: {e}"))
         return
     client.send_pair("/trolley/config/set", key, value)
-    print(yellow(f"  → staged {key}={value!r} (call [9?] config/save to persist… "
-                 f"actually doing it now)"))
     client.send("/trolley/config/save")
+    print(yellow(f"  → {key}={value!r} saved"))
     time.sleep(0.2)
     client.send("/trolley/config/get")
 
 
 def do_position(client: Client, state: State):
     if state.homed == 0 or state.calibrated == 0:
-        print(red(f"  ✗ refusing — needs homed=1 and calibrated=1 "
-                  f"(current homed={state.homed}, calibrated={state.calibrated})"))
+        print(red(f"  ✗ refusing — needs homed=1 and configured=1 "
+                  f"(current homed={state.homed}, configured={state.calibrated})"))
         return
     raw = ask("position 0..1", "0.5")
     try:
@@ -314,8 +303,7 @@ def do_stop(client: Client):
 # ── short watcher loop ─────────────────────────────────────────────────────
 
 def _watch_state(state: State, want: set[str], max_s: float, hint: str):
-    """Print position pulses for up to max_s seconds, until state ∈ want.
-    'want' is the *terminal* state we stop watching at."""
+    """Print position pulses for up to max_s seconds, until state ∈ want."""
     start = time.time()
     last_print = 0.0
     while time.time() - start < max_s:
@@ -336,7 +324,6 @@ def _watch_state(state: State, want: set[str], max_s: float, hint: str):
 def bootstrap(host: str, port: int, reply_port: int, verbose: bool) -> tuple[State, ThreadingOSCUDPServer, threading.Thread, Client, int]:
     state = State()
     dispatcher = make_dispatcher(state, verbose)
-    # `port=0` → kernel picks an ephemeral free port.
     server = ThreadingOSCUDPServer(("0.0.0.0", reply_port), dispatcher)
     actual_reply_port = server.server_address[1]
     server_thread = threading.Thread(target=server.serve_forever,
@@ -347,7 +334,6 @@ def bootstrap(host: str, port: int, reply_port: int, verbose: bool) -> tuple[Sta
     client.send("/sys/ping", actual_reply_port)
     print(dim(f"   listening for replies on udp/{actual_reply_port}"))
 
-    # Wait up to 3 s for a pong.
     deadline = time.time() + 3.0
     while time.time() < deadline:
         with state.lock:
@@ -363,11 +349,10 @@ def bootstrap(host: str, port: int, reply_port: int, verbose: bool) -> tuple[Sta
     print(green(f"  ✓ pong received: type={state.device_type} id={state.hardware_id}"))
     if state.device_type != "trolley":
         print(red(f"  ✗ device at {host} is type={state.device_type!r}, "
-                  f"not 'trolley' — calibration handlers aren't registered there"))
+                  f"not 'trolley'"))
         server.shutdown()
         sys.exit(3)
 
-    # Pull current settings.
     client.send("/trolley/config/get")
     time.sleep(0.4)
     with state.lock:
@@ -383,16 +368,14 @@ def bootstrap(host: str, port: int, reply_port: int, verbose: bool) -> tuple[Sta
 # ── main loop ──────────────────────────────────────────────────────────────
 
 MENU = f"""
-{bold("━━━ trolley calibration over OSC ━━━")}
-  [1] Home (drive toward limit switch)
-  [2] Start calibration {dim("(forward — DIR pin HIGH drives away from home)")}
-  [3] Start calibration {dim("(reverse — DIR pin LOW drives away from home)")}
-  [4] Stop here {dim("(record candidate rail_length_steps)")}
-  [5] Save calibration {dim("(persist to device.json)")}
-  [6] Cancel calibration
-  [7] Re-read settings
-  [8] Set a setting (key + value, persists immediately)
-  [9] Send /trolley/position {dim("(test calibrated mapping)")}
+{bold("━━━ trolley configuration over OSC ━━━")}
+  [1] Home reverse {dim("(toward home limit switch)")}
+  [2] Home forward {dim("(toward far limit switch)")}
+  [3] Set rail length (mm)
+  [4] Set wheel radius (mm)
+  [5] Re-read settings
+  [6] Set a setting (key + value, persists immediately)
+  [7] Send /trolley/position {dim("(test configured mapping)")}
   [s] Stop motion
   [q] Quit
 """.rstrip()
@@ -411,23 +394,19 @@ def main():
 
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
-    print(bold(f"trolley calibration CLI → {args.host}:{args.port}"))
+    print(bold(f"trolley config CLI → {args.host}:{args.port}"))
     state, server, server_thread, client, reply_port = bootstrap(
         args.host, args.port, args.reply_port, args.verbose,
     )
 
     actions = {
-        "1": ("Home", lambda: do_home(client, state)),
-        "2": ("Start calibration (forward)",
-              lambda: do_calibrate_start(client, state, "forward")),
-        "3": ("Start calibration (reverse)",
-              lambda: do_calibrate_start(client, state, "reverse")),
-        "4": ("Stop here", lambda: do_calibrate_stop(client, state)),
-        "5": ("Save calibration", lambda: do_calibrate_save(client, state)),
-        "6": ("Cancel calibration", lambda: do_calibrate_cancel(client, state)),
-        "7": ("Re-read settings", lambda: do_config_get(client)),
-        "8": ("Set a setting", lambda: do_config_set(client, state)),
-        "9": ("Send /trolley/position", lambda: do_position(client, state)),
+        "1": ("Home reverse", lambda: do_home(client, state, "reverse")),
+        "2": ("Home forward", lambda: do_home(client, state, "forward")),
+        "3": ("Set rail length (mm)", lambda: do_set_rail_length(client, state)),
+        "4": ("Set wheel radius (mm)", lambda: do_set_wheel_radius(client, state)),
+        "5": ("Re-read settings", lambda: do_config_get(client)),
+        "6": ("Set a setting", lambda: do_config_set(client, state)),
+        "7": ("Send /trolley/position", lambda: do_position(client, state)),
         "s": ("Stop motion", lambda: do_stop(client)),
     }
 
@@ -452,7 +431,6 @@ def main():
                 fn()
             except Exception as e:
                 print(red(f"  error: {e}"))
-            # Brief pause so the next snapshot reflects the action's outcome.
             time.sleep(0.4)
             print("  " + state.snapshot_line())
     finally:
