@@ -44,8 +44,10 @@ export async function downloadDeviceListExport(format: "csv" | "json" = "csv"): 
   URL.revokeObjectURL(url);
 }
 
-export function getLatestVersion() {
-  return get<LatestVersion>("/devices/version/latest");
+export function getLatestVersion(force = false) {
+  return get<LatestVersion>(
+    force ? "/devices/version/latest?refresh=1" : "/devices/version/latest",
+  );
 }
 
 export function updateDeviceSoftware(id: string) {

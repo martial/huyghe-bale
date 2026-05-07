@@ -82,7 +82,7 @@ export default function DevicesPage() {
   async function handleRefresh() {
     setRefreshing(true);
     useDeviceStore.setState({ deviceVersions: {} });
-    await fetchLatestVersion();
+    await fetchLatestVersion({ force: true });
     await fetchList();
     setTimeout(() => setRefreshing(false), 1000);
   }
