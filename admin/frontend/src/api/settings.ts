@@ -17,6 +17,10 @@ export interface Settings {
   vents_min_rpm_alarm: number;
   /** Fan PWM (%) the Pi forces both fans to whenever any sensor exceeds max */
   vents_over_temp_fan_pct: number;
+  /** Outbound webhook URL — empty disables. Receives status_change events. */
+  webhook_url: string;
+  /** Optional bearer token sent in Authorization header on every webhook POST. */
+  webhook_token: string;
 }
 
 export function getSettings() {

@@ -29,6 +29,7 @@ admin/backend/data/devices/*.json
 admin/backend/data/orchestrations/*.json
 admin/backend/data/trolley_timelines/*.json
 admin/backend/data/settings.json
+admin/backend/data/webhooks.json
 
 # PyInstaller / build artifacts
 apps/

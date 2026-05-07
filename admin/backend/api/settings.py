@@ -40,6 +40,11 @@ DEFAULTS = {
     # Fan PWM (%) the Pi forces both fans to whenever any sensor exceeds
     # max_temp_c. Pushed to each Pi on save and persisted there.
     "vents_over_temp_fan_pct": 100.0,
+    # Outbound webhook for admin events (status_change, ...). Empty disables.
+    # Power users can also hand-edit admin/backend/data/webhooks.json for
+    # multi-target or per-event configurations — both sources are merged.
+    "webhook_url": "",
+    "webhook_token": "",
 }
 
 # Listeners notified when specific settings change. Keys: setting name.
@@ -174,6 +179,27 @@ def update_settings():
             }), 400
         current["bridge_routing"] = val
 
+    if "webhook_url" in body:
+        val = body["webhook_url"]
+        if val is None:
+            current["webhook_url"] = ""
+        elif isinstance(val, str):
+            v = val.strip()
+            if v and not (v.startswith("http://") or v.startswith("https://")):
+                return jsonify({"error": "webhook_url must be empty or start with http:// or https://"}), 400
+            current["webhook_url"] = v
+        else:
+            return jsonify({"error": "webhook_url must be a string"}), 400
+
+    if "webhook_token" in body:
+        val = body["webhook_token"]
+        if val is None:
+            current["webhook_token"] = ""
+        elif isinstance(val, str):
+            current["webhook_token"] = val.strip()
+        else:
+            return jsonify({"error": "webhook_token must be a string"}), 400
+
     for key, lo, hi, cast, unit in _VENTS_NUMERIC_SETTINGS:
         if key not in body:
             continue
@@ -198,8 +224,22 @@ def update_settings():
         except Exception as e:
             logger.warning("Could not propagate vents_min_rpm_alarm to receiver: %s", e)
 
-    for key in ("bridge_enabled", "bridge_port", "bridge_routing"):
+    for key in ("bridge_enabled", "bridge_port", "bridge_routing",
+                "webhook_url", "webhook_token"):
         if before.get(key) != current.get(key):
             _fire(key, before.get(key), current.get(key))
 
     return jsonify(current)
+
+
+def settings_to_webhook_entry(settings: dict) -> dict | None:
+    """Build a single webhook entry from settings.json values, or None when
+    the URL is empty. Always subscribes to `status_change` for now."""
+    url = (settings.get("webhook_url") or "").strip()
+    if not url:
+        return None
+    entry = {"url": url, "events": ["status_change"]}
+    token = (settings.get("webhook_token") or "").strip()
+    if token:
+        entry["token"] = token
+    return entry

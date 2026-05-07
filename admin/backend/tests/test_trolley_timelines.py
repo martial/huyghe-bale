@@ -18,6 +18,18 @@ def client(monkeypatch):
 
     from app import create_app
     app = create_app(data_dir=tmp, start_osc=False)
+
+    # Rebind the blueprint's module-level store onto this tmp dir.
+    # The store was captured at first import (possibly by an earlier test's
+    # fixture); without rebinding, list/create routes would see the old dir
+    # and break test isolation on collection-order changes.
+    from storage.json_store import JsonStore
+    from api import trolley_timelines as trolley_timelines_mod
+    monkeypatch.setattr(
+        trolley_timelines_mod, "store",
+        JsonStore(tmp, "trolley_timelines", "trtl"), raising=False,
+    )
+
     with app.test_client() as c:
         yield c
 

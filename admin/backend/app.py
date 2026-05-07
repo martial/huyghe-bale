@@ -21,6 +21,7 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
     from engine.playback import PlaybackEngine
     from engine.osc_receiver import OscReceiver
     from engine.osc_bridge import OscBridge
+    from engine.webhooks import WebhookNotifier
     from storage.json_store import JsonStore
 
     app = Flask(__name__, static_folder=None)
@@ -93,6 +94,29 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
     on_settings_change("bridge_enabled", _on_bridge_enabled)
     on_settings_change("bridge_port", _on_bridge_port)
     on_settings_change("bridge_routing", _on_bridge_routing)
+
+    # Outbound webhooks (admin → external observers). Two sources of hooks:
+    #   1. <DATA_DIR>/webhooks.json — power-user file (multi-target, per-event)
+    #   2. settings.json `webhook_url` / `webhook_token` — UI-managed single hook
+    # Both are active; missing/empty → fewer hooks, every fire() stays cheap.
+    _resolved_data_dir = (
+        data_dir if data_dir is not None
+        else os.path.join(os.path.dirname(__file__), "data")
+    )
+    webhooks = WebhookNotifier(_resolved_data_dir)
+    from api.settings import settings_to_webhook_entry
+    _settings_hook = settings_to_webhook_entry(_initial_settings)
+    webhooks.set_extra_hooks([_settings_hook] if _settings_hook else [])
+    if start_osc:
+        webhooks.start_status_watcher(receiver, _device_store)
+
+    def _refresh_settings_webhook(*_):
+        from api.settings import _read as read_settings_now
+        entry = settings_to_webhook_entry(read_settings_now())
+        webhooks.set_extra_hooks([entry] if entry else [])
+
+    on_settings_change("webhook_url", _refresh_settings_webhook)
+    on_settings_change("webhook_token", _refresh_settings_webhook)
 
     # SPA fallback — serve frontend dist if it exists
     if dist_dir is None:

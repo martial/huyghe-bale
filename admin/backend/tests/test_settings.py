@@ -215,3 +215,95 @@ class _MockResp:
     def read(self): return b"{}"
     def __enter__(self): return self
     def __exit__(self, *a): return False
+
+
+# ── webhook URL/token ────────────────────────────────────────────────────
+
+
+def test_get_settings_includes_webhook_defaults(client):
+    c, _, _ = client
+    body = c.get("/api/v1/settings").get_json()
+    assert body["webhook_url"] == ""
+    assert body["webhook_token"] == ""
+
+
+def test_put_webhook_url_persists(client):
+    c, _, _ = client
+    r = c.put(
+        "/api/v1/settings",
+        data=json.dumps({"webhook_url": "https://example.test/hook"}),
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    assert r.get_json()["webhook_url"] == "https://example.test/hook"
+    # Round-trip via GET
+    assert c.get("/api/v1/settings").get_json()["webhook_url"] == "https://example.test/hook"
+
+
+def test_put_webhook_url_rejects_non_http_scheme(client):
+    c, _, _ = client
+    r = c.put(
+        "/api/v1/settings",
+        data=json.dumps({"webhook_url": "ftp://nope.example/hook"}),
+        content_type="application/json",
+    )
+    assert r.status_code == 400
+    assert "http://" in r.get_json()["error"]
+
+
+def test_put_webhook_url_empty_string_clears(client):
+    c, _, _ = client
+    c.put(
+        "/api/v1/settings",
+        data=json.dumps({"webhook_url": "https://example.test/hook"}),
+        content_type="application/json",
+    )
+    r = c.put(
+        "/api/v1/settings",
+        data=json.dumps({"webhook_url": ""}),
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    assert r.get_json()["webhook_url"] == ""
+
+
+def test_put_webhook_url_rejects_non_string(client):
+    c, _, _ = client
+    r = c.put(
+        "/api/v1/settings",
+        data=json.dumps({"webhook_url": 42}),
+        content_type="application/json",
+    )
+    assert r.status_code == 400
+
+
+def test_put_webhook_token_trimmed(client):
+    c, _, _ = client
+    r = c.put(
+        "/api/v1/settings",
+        data=json.dumps({"webhook_token": "  abc123  "}),
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    assert r.get_json()["webhook_token"] == "abc123"
+
+
+def test_settings_to_webhook_entry_disabled_when_url_empty():
+    from api.settings import settings_to_webhook_entry
+    assert settings_to_webhook_entry({"webhook_url": "", "webhook_token": ""}) is None
+    assert settings_to_webhook_entry({"webhook_url": "   ", "webhook_token": ""}) is None
+    assert settings_to_webhook_entry({}) is None
+
+
+def test_settings_to_webhook_entry_basic():
+    from api.settings import settings_to_webhook_entry
+    entry = settings_to_webhook_entry({"webhook_url": "https://x", "webhook_token": ""})
+    assert entry == {"url": "https://x", "events": ["status_change"]}
+
+
+def test_settings_to_webhook_entry_with_token():
+    from api.settings import settings_to_webhook_entry
+    entry = settings_to_webhook_entry({
+        "webhook_url": "https://x", "webhook_token": "tok",
+    })
+    assert entry == {"url": "https://x", "events": ["status_change"], "token": "tok"}

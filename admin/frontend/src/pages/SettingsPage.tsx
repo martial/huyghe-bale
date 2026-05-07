@@ -77,6 +77,28 @@ function NumInput({
   );
 }
 
+function TextInput({
+  value, onChange, placeholder, type = "text", width = "w-72", accent = "orange",
+}: {
+  value: string;
+  onChange: (s: string) => void;
+  placeholder?: string;
+  type?: "text" | "password" | "url";
+  width?: string;
+  accent?: "orange" | "sky";
+}) {
+  const focus = accent === "sky" ? "focus:border-sky-500/50" : "focus:border-orange-500/50";
+  return (
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      type={type}
+      placeholder={placeholder}
+      className={`${width} bg-zinc-800 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-zinc-100 font-mono focus:outline-none ${focus} transition-colors`}
+    />
+  );
+}
+
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (b: boolean) => void }) {
   return (
     <button
@@ -102,6 +124,9 @@ const IconShield = (
 const IconBridge = (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 17h18M5 17V8a3 3 0 0 1 6 0M13 8a3 3 0 0 1 6 0v9"/></svg>
 );
+const IconWebhook = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 16.5a3 3 0 1 1-6 0M9.5 10l-3 5.2a3 3 0 1 1-2.6-1.5M14 7a3 3 0 1 1 5.2 3l-3 5.2"/></svg>
+);
 
 export default function SettingsPage() {
   const settings = useSettingsStore((s) => s.settings);
@@ -119,6 +144,8 @@ export default function SettingsPage() {
   const [ventsMaxFanPct, setVentsMaxFanPct] = useState(100);
   const [ventsMinRpmAlarm, setVentsMinRpmAlarm] = useState(500);
   const [ventsOverTempFanPct, setVentsOverTempFanPct] = useState(100);
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookToken, setWebhookToken] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => { fetchSettings(); }, [fetchSettings]);
@@ -133,10 +160,13 @@ export default function SettingsPage() {
     setVentsMaxFanPct(settings.vents_max_fan_pct ?? 100);
     setVentsMinRpmAlarm(settings.vents_min_rpm_alarm ?? 500);
     setVentsOverTempFanPct(settings.vents_over_temp_fan_pct ?? 100);
+    setWebhookUrl(settings.webhook_url ?? "");
+    setWebhookToken(settings.webhook_token ?? "");
   }, [
     settings.bridge_enabled, settings.bridge_port, settings.bridge_routing,
     settings.vents_max_temp_c, settings.vents_min_fan_pct, settings.vents_max_fan_pct,
     settings.vents_min_rpm_alarm, settings.vents_over_temp_fan_pct,
+    settings.webhook_url, settings.webhook_token,
   ]);
 
   const draft: Partial<Settings> = useMemo(() => ({
@@ -149,9 +179,12 @@ export default function SettingsPage() {
     vents_max_fan_pct: ventsMaxFanPct,
     vents_min_rpm_alarm: ventsMinRpmAlarm,
     vents_over_temp_fan_pct: ventsOverTempFanPct,
+    webhook_url: webhookUrl,
+    webhook_token: webhookToken,
   }), [
     frequency, bridgeEnabled, bridgePort, bridgeRouting,
     ventsMaxTemp, ventsMinFanPct, ventsMaxFanPct, ventsMinRpmAlarm, ventsOverTempFanPct,
+    webhookUrl, webhookToken,
   ]);
 
   const dirty = useMemo(
@@ -179,6 +212,8 @@ export default function SettingsPage() {
     setVentsMaxFanPct(settings.vents_max_fan_pct ?? 100);
     setVentsMinRpmAlarm(settings.vents_min_rpm_alarm ?? 500);
     setVentsOverTempFanPct(settings.vents_over_temp_fan_pct ?? 100);
+    setWebhookUrl(settings.webhook_url ?? "");
+    setWebhookToken(settings.webhook_token ?? "");
   }
 
   if (loading) return null;
@@ -304,6 +339,48 @@ export default function SettingsPage() {
                     <option value="passthrough">passthrough</option>
                     <option value="none">none — tap only</option>
                   </select>
+                </Field>
+              </div>
+            </Section>
+
+            {/* ── Webhooks ─────────────────────────────────────── */}
+            <Section>
+              <SectionHeader
+                icon={IconWebhook}
+                title="Webhooks"
+                subtitle="Notify an external service when a device flips online or offline."
+              />
+              <div className="space-y-2">
+                <Field
+                  label="Webhook URL"
+                  hint={
+                    <>
+                      POSTed when any device transitions online ↔ offline. Empty disables.
+                      Payload includes <span className="font-mono">device, status, previous, controller_status</span>.
+                    </>
+                  }
+                  accent="sky"
+                >
+                  <TextInput
+                    value={webhookUrl}
+                    onChange={setWebhookUrl}
+                    placeholder="https://your-endpoint.example/hook"
+                    type="url"
+                    accent="sky"
+                  />
+                </Field>
+                <Field
+                  label="Bearer token"
+                  hint="Optional — sent as Authorization: Bearer <token> on every webhook POST. Leave empty if your endpoint uses URL-based auth (e.g. Monitory)."
+                  accent="sky"
+                >
+                  <TextInput
+                    value={webhookToken}
+                    onChange={setWebhookToken}
+                    placeholder="(optional)"
+                    type="password"
+                    accent="sky"
+                  />
                 </Field>
               </div>
             </Section>
