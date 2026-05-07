@@ -282,6 +282,14 @@ class TestHandleAccelDecel:
         trolley.handle_accel("/trolley/accel")
         assert trolley._accel_time_s == 2.0
 
+    def test_handle_accel_stages_for_persistence(self):
+        """Live OSC writes must round-trip via /trolley/config/save without
+        the operator having to re-send the same value via /trolley/config/set."""
+        trolley.handle_accel("/trolley/accel", 1.5)
+        trolley.handle_decel("/trolley/decel", 0.7)
+        assert trolley._settings_pending["accel_time_s"] == pytest.approx(1.5)
+        assert trolley._settings_pending["decel_time_s"] == pytest.approx(0.7)
+
 
 class TestPulseTrainRamp:
     """Direct unit tests on _run_pulse_train — patches _pulse_once to capture

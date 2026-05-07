@@ -114,8 +114,6 @@ _current_speed_hz = float(TROLLEY_DEFAULT_SPEED_HZ)
 _current_dir = DIR_FORWARD
 _enabled = False
 
-# Trapezoidal ramp times (seconds) applied to /trolley/step and /trolley/position.
-# 0.0 = constant speed, identical to legacy behaviour.
 _accel_time_s = 0.0
 _decel_time_s = 0.0
 
@@ -510,21 +508,27 @@ def handle_speed(address, *args):
 
 @_safe("accel")
 def handle_accel(address, *args):
-    """Set the linear ramp-up time (seconds) used by /trolley/step and /trolley/position."""
+    """Set the linear ramp-up time (seconds) used by /trolley/step and /trolley/position.
+    Also stages the value in _settings_pending so a subsequent
+    /trolley/config/save will persist it across reboots."""
     global _accel_time_s
     if not args:
         return
     _accel_time_s = _clamp(float(args[0]), 0.0, 10.0)
+    _settings_pending["accel_time_s"] = _accel_time_s
     logger.info("OSC %s: accel_time_s=%.3f", address, _accel_time_s)
 
 
 @_safe("decel")
 def handle_decel(address, *args):
-    """Set the linear ramp-down time (seconds) used by /trolley/step and /trolley/position."""
+    """Set the linear ramp-down time (seconds) used by /trolley/step and /trolley/position.
+    Also stages the value in _settings_pending so a subsequent
+    /trolley/config/save will persist it across reboots."""
     global _decel_time_s
     if not args:
         return
     _decel_time_s = _clamp(float(args[0]), 0.0, 10.0)
+    _settings_pending["decel_time_s"] = _decel_time_s
     logger.info("OSC %s: decel_time_s=%.3f", address, _decel_time_s)
 
 
