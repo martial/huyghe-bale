@@ -146,10 +146,10 @@ class TestFanHandlers:
         vents.handle_fan_1("/vents/fan/1", 2.0)
         vents.pwm_fan_1.ChangeDutyCycle.assert_called_once_with(100.0)
 
-    def test_fan_zero_drops_below_floor(self):
-        # 0.0 should resolve to 0% duty (explicit off, not floor)
+    def test_fan_zero_respects_floor(self):
+        # Floor is unconditional: 0.0 command still maps to min_fan_pct.
         vents.handle_fan_1("/vents/fan/1", 0.0)
-        vents.pwm_fan_1.ChangeDutyCycle.assert_called_once_with(0.0)
+        vents.pwm_fan_1.ChangeDutyCycle.assert_called_once_with(20.0)
 
     def test_manual_fan_forces_mode_raw(self):
         vents.mode = "auto"
@@ -183,11 +183,10 @@ class TestDynamicMinFanPct:
         vents.handle_fan_1("/vents/fan/1", 0.1)
         vents.pwm_fan_1.ChangeDutyCycle.assert_called_with(40.0)
 
-    def test_set_fan_zero_still_zero_with_high_floor(self):
+    def test_set_fan_zero_uses_high_floor(self):
         vents.min_fan_pct = 50.0
         vents.handle_fan_1("/vents/fan/1", 0.0)
-        # explicit 0.0 always passes through; floor only applies to non-zero requests
-        vents.pwm_fan_1.ChangeDutyCycle.assert_called_with(0.0)
+        vents.pwm_fan_1.ChangeDutyCycle.assert_called_with(50.0)
 
     def test_set_fan_above_floor_passes_through(self):
         vents.min_fan_pct = 20.0
@@ -235,11 +234,11 @@ class TestMaxFanPct:
         vents.handle_fan_1("/vents/fan/1", 0.1)
         vents.pwm_fan_1.ChangeDutyCycle.assert_called_with(20.0)
 
-    def test_explicit_zero_passes_through_under_max(self):
+    def test_zero_still_respects_floor_under_max(self):
         vents.max_fan_pct = 50.0
         vents.min_fan_pct = 30.0
         vents.handle_fan_1("/vents/fan/1", 0.0)
-        vents.pwm_fan_1.ChangeDutyCycle.assert_called_with(0.0)
+        vents.pwm_fan_1.ChangeDutyCycle.assert_called_with(30.0)
 
 
 class TestOverTempFanFallback:

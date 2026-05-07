@@ -260,16 +260,12 @@ def _set_peltier(index, on):
 def _set_fan(index, duty_0_1):
     """index is 0 (fan 1) or 1 (fan 2). duty_0_1 in [0, 1].
 
-    Pipeline for a non-zero request: clamp to [0, 100] → scale by max_fan_pct
-    (the device-side cap that replaced the playback engine's output_cap) →
-    raise to min_fan_pct floor so a stalled fan can't slip through. An
-    explicit 0.0 always passes through (lets callers fully stop a fan).
+    Pipeline: clamp to [0, 100] → scale by max_fan_pct (the device-side cap
+    that replaced the playback engine's output_cap) → raise to min_fan_pct
+    floor. The floor is unconditional: output never drops below min_fan_pct.
     """
     raw_pct = _clamp(float(duty_0_1) * 100.0, 0.0, VENTS_FAN_PWM_MAX_PCT)
-    if duty_0_1 > 0:
-        duty_pct = max(raw_pct * (max_fan_pct / 100.0), min_fan_pct)
-    else:
-        duty_pct = 0.0
+    duty_pct = max(raw_pct * (max_fan_pct / 100.0), min_fan_pct)
     if index == 0 and pwm_fan_1 is not None:
         pwm_fan_1.ChangeDutyCycle(duty_pct)
     elif index == 1 and pwm_fan_2 is not None:

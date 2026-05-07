@@ -233,7 +233,7 @@ export default function SettingsPage() {
                 </Field>
                 <Field
                   label="Minimum fan PWM"
-                  hint="Floor enforced on every fan command above zero. Keeps ventilation always on. Explicit 0% still passes through."
+                  hint="Hard floor enforced on every fan command. Effective fan duty can never drop below this value."
                 >
                   <NumInput value={ventsMinFanPct} onChange={setVentsMinFanPct} min={0} max={100} step={1} suffix="%" />
                 </Field>
