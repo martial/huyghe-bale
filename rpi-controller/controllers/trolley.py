@@ -129,6 +129,7 @@ _shutdown_event = threading.Event()
 _idle_event = threading.Event()
 _idle_event.set()
 _motion_thread: "threading.Thread | None" = None
+_position_lock = threading.Lock()  # guards position_steps, homed, limit_error, far_limit_error
 
 
 # --- helpers --------------------------------------------------------------
@@ -168,6 +169,8 @@ def _pulse_once(delay_s):
     """One PUL high-low cycle. Returns False if aborted (limit hit or stop)."""
     if _abort_event.is_set():
         return False
+    if not _enabled:
+        return False
     if limit_error and _current_dir == DIR_REVERSE:
         return False
     if far_limit_error and _current_dir == DIR_FORWARD:
@@ -189,14 +192,15 @@ def _apply_step_delta():
     already set keeps the count exact when the ISR fires mid-pulse — the ISR
     pins position to its end-stop value, and we don't want to drift past it."""
     global position_steps
-    if _current_dir == DIR_FORWARD:
-        if far_limit_error:
-            return
-        position_steps += 1
-    else:
-        if limit_error:
-            return
-        position_steps = max(0, position_steps - 1)
+    with _position_lock:
+        if _current_dir == DIR_FORWARD:
+            if far_limit_error:
+                return
+            position_steps += 1
+        else:
+            if limit_error:
+                return
+            position_steps = max(0, position_steps - 1)
 
 
 def _limit_switch_isr(channel):
@@ -204,16 +208,17 @@ def _limit_switch_isr(channel):
     global limit_error, position_steps, homed
     try:
         gpio_state = GPIO.input(PIN_LIM_SWITCH)
-        if gpio_state == GPIO.HIGH:
-            limit_error = 1
-            if _current_dir == DIR_REVERSE:
-                position_steps = 0
-                homed = True
-                logger.info("Trolley: home switch hit — position reset to 0")
+        with _position_lock:
+            if gpio_state == GPIO.HIGH:
+                limit_error = 1
+                if _current_dir == DIR_REVERSE:
+                    position_steps = 0
+                    homed = True
+                    logger.info("Trolley: home switch hit — position reset to 0")
+                else:
+                    logger.warning("Trolley: home switch hit while moving forward — check wiring")
             else:
-                logger.warning("Trolley: home switch hit while moving forward — check wiring")
-        else:
-            limit_error = 0
+                limit_error = 0
     except Exception as e:
         logger.error("Trolley home ISR error: %s", e)
 
@@ -223,18 +228,19 @@ def _far_limit_switch_isr(channel):
     global far_limit_error, position_steps, homed
     try:
         gpio_state = GPIO.input(PIN_LIM_SWITCH_FAR)
-        if gpio_state == GPIO.HIGH:
-            far_limit_error = 1
-            if _current_dir == DIR_FORWARD:
-                rail = trolley_settings.derived_rail_length_steps(_settings)
-                if rail:
-                    position_steps = rail
-                homed = True
-                logger.info("Trolley: far switch hit — position pinned to %d", position_steps)
+        with _position_lock:
+            if gpio_state == GPIO.HIGH:
+                far_limit_error = 1
+                if _current_dir == DIR_FORWARD:
+                    rail = trolley_settings.derived_rail_length_steps(_settings)
+                    if rail:
+                        position_steps = rail
+                    homed = True
+                    logger.info("Trolley: far switch hit — position pinned to %d", position_steps)
+                else:
+                    logger.warning("Trolley: far switch hit while moving reverse — check wiring")
             else:
-                logger.warning("Trolley: far switch hit while moving reverse — check wiring")
-        else:
-            far_limit_error = 0
+                far_limit_error = 0
     except Exception as e:
         logger.error("Trolley far ISR error: %s", e)
 
@@ -329,22 +335,28 @@ def _run_pulse_train(total_steps, target_hz, accel_s, decel_s):
 def _run_step_burst(steps, direction, speed_hz):
     if steps <= 0:
         return
+    # Snapshot ramp times before starting so a mid-motion OSC update doesn't
+    # corrupt the trapezoidal profile.
+    accel, decel = _accel_time_s, _decel_time_s
     _set_dir(direction)
-    _run_pulse_train(steps, speed_hz, _accel_time_s, _decel_time_s)
+    _run_pulse_train(steps, speed_hz, accel, decel)
 
 
 def _run_follow(target, speed_hz):
     global target_steps
+    # Snapshot ramp times before starting (same reason as _run_step_burst).
+    accel, decel = _accel_time_s, _decel_time_s
     target = _clamp(target, 0, _rail_length_steps())
     target_steps = target
-    delta = target - position_steps
+    with _position_lock:
+        delta = target - position_steps
     if delta == 0:
         target_steps = None
         return
     direction = DIR_FORWARD if delta > 0 else DIR_REVERSE
     if direction != _current_dir:
         _set_dir(direction)
-    _run_pulse_train(abs(delta), speed_hz, _accel_time_s, _decel_time_s)
+    _run_pulse_train(abs(delta), speed_hz, accel, decel)
     target_steps = None
 
 
