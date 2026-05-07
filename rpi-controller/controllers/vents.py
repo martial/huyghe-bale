@@ -8,25 +8,32 @@ Hardware:
   - Fan 1 — cold-side ventilation PWM on GPIO 20; fan 2 — hot-side PWM on GPIO 18.
   - Tachos on GPIO {27, 17, 23, 22} (pair A/B per fan), falling-edge ISR
     → period → RPM.
-  - Two DS18B20 probes on 1-wire (`dtoverlay=w1-gpio` in config.txt). Typically
-    one probe tracks the cold path and one the hot path; discovery order maps to
-    temp1_c / temp2_c. Auto regulation uses their average unless both are missing.
+  - Two DS18B20 probes on 1-wire (`dtoverlay=w1-gpio` in config.txt). One probe
+    is physically attached to the hot face, one to the cold face. The operator
+    pins each probe to its role (touch-test in the admin UI); the assignment is
+    persisted by the probe's 64-bit ROM id (`28-xxxxxxxxxxxx`), so it survives
+    reboots and 1-Wire enumeration order changes.
 
-Temperature control — two independent concepts:
+Temperature control — dual setpoints:
 
-  - **target** (+ hysteresis): regulation setpoint vs **average** probe temperature.
-    Bang-bang: below target − H → all cells **ON** (heat pumping active); above
-    target + H (and under max) → all **OFF**; in band → **holding**. State names
-    heating/cooling describe whether cells are driven, not which Peltier face is
-    physically hot or cold. Fans are not used for this loop (use raw or /vents/fan/*).
-  - **max_temp_c**: **safety** ceiling (persisted on the Pi). If **any individual
-    sensor** reads above max (per-sensor, not average), state is "over_temp":
+  - **hot_target_c** + hysteresis: setpoint for the probe assigned to the hot
+    face. **cold_target_c** + hysteresis: setpoint for the probe assigned to
+    the cold face. Both regulate independently. OR composition rule:
+    Peltiers ON whenever `t_hot < hot_target − H` OR `t_cold > cold_target + H`
+    (drive gradient if either side is unhappy). OFF only when both probes are
+    inside their bands. State names heating/cooling describe whether cells are
+    driven, not which Peltier face is physically hot or cold. Fans are not used
+    for this loop (use raw or /vents/fan/*).
+  - **max_temp_c**: **safety** ceiling (persisted on the Pi). If **any
+    discovered probe** (assigned or not) reads above max, state is "over_temp":
     all Peltiers off and both fans pinned to `over_temp_fan_pct`.
     Peltier "on" commands are ignored while above max (interlock).
-  - **min_fan_pct**: PWM floor enforced by `_set_fan` whenever a non-zero duty
-    is requested. Editable from admin Settings; persisted on the Pi.
-  - **over_temp_fan_pct**: fan PWM forced (both fans) during the over_temp
-    branch. Editable from admin Settings; persisted on the Pi.
+  - **probe_unassigned**: auto refuses to run unless both `probe_hot_id` and
+    `probe_cold_id` are set AND currently in the discovered probes set.
+  - Cross-clamps: hot_target + H + margin < max_temp_c, and
+    cold_target + H + margin ≤ hot_target. Enforced on every save.
+  - **min_fan_pct**, **max_fan_pct**, **over_temp_fan_pct**: per-Pi safety
+    settings, persisted on the Pi.
 
 OSC protocol:
 
@@ -38,8 +45,13 @@ OSC protocol:
     /vents/fan/1      float 0..1
     /vents/fan/2      float 0..1
     /vents/mode       string "raw" | "auto"
-    /vents/target     float target temperature in °C (setpoint for Peltier regulation)
+    /vents/target     float °C — back-compat alias for /vents/target/hot
+    /vents/target/hot   float °C — hot setpoint (regulates the hot-assigned probe)
+    /vents/target/cold  float °C — cold setpoint (regulates the cold-assigned probe)
     /vents/max_temp   float safety max °C (stored in ~/.config/gpio-osc/vents_prefs.json)
+    /vents/probe/assign_hot   string rom_id (28-xxxxxxxxxxxx) — pin probe to hot role
+    /vents/probe/assign_cold  string rom_id — pin probe to cold role
+    /vents/probe/clear        string "hot"|"cold"|"both" — clear assignment(s)
 
   Configuration push (admin → Pi on port 9000; mirrored on HTTP /gpio/test
   via {"command": ..., "value": ...} bodies):
@@ -49,21 +61,32 @@ OSC protocol:
                                        playback engine's old output_cap.
     /vents/config/over_temp_fan_pct    float 0..100 — fan % during over_temp (persisted)
 
+  HTTP `snapshot` command (no-op): returns full status (incl. probes list).
+
   Status broadcast (Pi → admin on port 9001) every VENTS_STATUS_HZ ticks:
     /vents/status temp1, temp2, fan1_0_1, fan2_0_1, peltier_mask,
                   rpm1A, rpm1B, rpm2A, rpm2B, target_c, mode, state,
-                  max_temp_c, min_fan_pct, over_temp_fan_pct, max_fan_pct
+                  max_temp_c, min_fan_pct, over_temp_fan_pct, max_fan_pct,
+                  temp_hot_c, temp_cold_c, hot_target_c, cold_target_c
+    target_c at position 9 mirrors hot_target_c (back-compat). The dual-
+    setpoint tail (positions 16-19) is forward-compat — older admins ignore.
+    Missing temps (incl. temp_hot_c / temp_cold_c) are encoded as -1.0.
 
-Auto loop: ANY sensor > max → over_temp (Peltiers off + fans → over_temp_fan_pct).
-avg < target − H → heating (mask 0b111). avg > target + H (and no sensor over max)
-→ cooling (mask 0). else → holding.
-Missing sensors → sensor_error (Peltiers + fans off).
+Auto loop branches (first match wins):
+  mode != "auto"        → idle.
+  either probe id null/missing → probe_unassigned (Peltiers off, fans off).
+  ANY discovered probe > max_temp_c → over_temp (Peltiers off, fans → over_temp_fan_pct).
+  assigned probe reads None         → sensor_error (Peltiers off, fans off).
+  t_hot < hot_target − H OR t_cold > cold_target + H → heating (mask 0b111).
+  t_hot ≥ hot_target + H AND t_cold ≤ cold_target − H → cooling (mask 0).
+  else → holding (deadband; mask unchanged).
 """
 
 import glob
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -105,11 +128,28 @@ peltier_state = [0, 0, 0]
 tacho_last_t = [0.0, 0.0, 0.0, 0.0]  # 1A, 1B, 2A, 2B
 tacho_rpm = [0.0, 0.0, 0.0, 0.0]
 
-temp_c = [None, None]  # temp1, temp2
-_temp_files = [None, None]  # paths to DS18B20 w1_slave files, None if sensor missing
+# ROM-keyed discovery state (replaces _temp_files = [None, None])
+# Each DS18B20 has a unique 64-bit serial; we identify probes by that ID
+# (the `28-xxxxxxxxxxxx` folder name on /sys/bus/w1/devices) instead of by
+# enumeration order, so probe roles survive boot/swap/hot-plug.
+_probes: dict = {}        # rom_id -> /sys/.../w1_slave path
+_probe_temps: dict = {}   # rom_id -> last reading °C (None on read failure)
 
-target_temp_c = float(VENTS_DEFAULT_TARGET_C)
+# Back-compat 2-slot view kept for the positional /vents/status broadcast
+# (temp1_c / temp2_c). Recomputed each tick from sorted(_probes.keys())[:2].
+temp_c = [None, None]
+
+# Role pinning. Persisted in vents_prefs.json. None = unassigned.
+# Auto loop refuses to run unless both ids are set AND currently in _probes.
+probe_hot_id = None        # rom_id of probe physically attached to the hot face
+probe_cold_id = None       # rom_id of probe physically attached to the cold face
+
+# Dual setpoints. Both regulated independently; OR composition (see _auto_loop).
+hot_target_c = float(VENTS_DEFAULT_TARGET_C)
+cold_target_c = float(VENTS_DEFAULT_TARGET_C)
 max_temp_c = float(VENTS_DEFAULT_MAX_TEMP_C)  # over-temp threshold; persisted in _PREFS_PATH
+
+_ROM_ID_RE = re.compile(r"^28-[0-9a-fA-F]{12}$")
 # PWM floor enforced inside _set_fan whenever a non-zero duty is requested.
 # Editable from admin Settings; persisted in _PREFS_PATH.
 min_fan_pct = float(VENTS_FAN_PWM_MIN_PCT)
@@ -121,7 +161,7 @@ max_fan_pct = 100.0
 # Editable from admin Settings; persisted in _PREFS_PATH.
 over_temp_fan_pct = 100.0
 mode = "raw"          # "raw" or "auto"
-state = "idle"        # idle|heating|cooling|holding|sensor_error|over_temp
+state = "idle"        # idle|heating|cooling|holding|sensor_error|probe_unassigned|over_temp
 
 last_osc_time = 0.0
 _webhooks = None
@@ -137,39 +177,30 @@ def _clamp(value, lo, hi):
     return max(lo, min(hi, value))
 
 
-def _regulation_band_high():
-    return target_temp_c + VENTS_HYSTERESIS_C
+def _clamp_setpoints():
+    """Enforce the cross-clamp invariants between cold_target_c, hot_target_c,
+    and max_temp_c. Always pulls values DOWN, never raises max_temp_c.
 
-
-def _min_allowed_max_temp_c():
-    return _regulation_band_high() + _BAND_MARGIN_C
-
-
-def _clamp_target_vs_max():
-    """Ensure target band stays strictly below max_temp_c."""
-    global target_temp_c
-    ceiling = max_temp_c - VENTS_HYSTERESIS_C - _BAND_MARGIN_C
-    if target_temp_c > ceiling:
+    Invariants after this returns:
+      - hot_target_c  + H + margin <  max_temp_c   (hot band stays below safety)
+      - cold_target_c + H + margin <= hot_target_c (cold setpoint below hot
+        setpoint — otherwise the OR rule in _auto_loop is permanently triggered).
+    """
+    global hot_target_c, cold_target_c
+    hot_ceiling = max_temp_c - VENTS_HYSTERESIS_C - _BAND_MARGIN_C
+    if hot_target_c > hot_ceiling:
         logger.warning(
-            "target clamped from %.2f °C to %.2f °C so band stays below max_temp_c (%.2f)",
-            target_temp_c,
-            ceiling,
-            max_temp_c,
+            "hot_target_c clamped %.2f → %.2f (max_temp_c=%.2f, H=%.2f)",
+            hot_target_c, hot_ceiling, max_temp_c, VENTS_HYSTERESIS_C,
         )
-        target_temp_c = ceiling
-
-
-def _clamp_max_vs_target():
-    """Ensure max_temp_c stays strictly above regulation band upper edge."""
-    global max_temp_c
-    lo = _min_allowed_max_temp_c()
-    if max_temp_c <= lo:
+        hot_target_c = hot_ceiling
+    cold_ceiling = hot_target_c - VENTS_HYSTERESIS_C - _BAND_MARGIN_C
+    if cold_target_c > cold_ceiling:
         logger.warning(
-            "max_temp_c raised from %.2f °C to %.2f °C (must exceed target + hysteresis)",
-            max_temp_c,
-            lo,
+            "cold_target_c clamped %.2f → %.2f (hot_target_c=%.2f, H=%.2f)",
+            cold_target_c, cold_ceiling, hot_target_c, VENTS_HYSTERESIS_C,
         )
-        max_temp_c = lo
+        cold_target_c = cold_ceiling
 
 
 _PREFS_RANGES = {
@@ -177,11 +208,14 @@ _PREFS_RANGES = {
     "min_fan_pct": (0.0, 100.0),
     "max_fan_pct": (0.0, 100.0),
     "over_temp_fan_pct": (0.0, 100.0),
+    "hot_target_c": (-55.0, 125.0),
+    "cold_target_c": (-55.0, 125.0),
 }
 
 
 def _load_prefs():
     """Load persisted vents preferences from disk (called from setup)."""
+    global probe_hot_id, probe_cold_id
     try:
         data = json.loads(_PREFS_PATH.read_text())
     except FileNotFoundError:
@@ -189,6 +223,19 @@ def _load_prefs():
     except Exception as e:
         logger.warning("Failed to load vents prefs from %s: %s", _PREFS_PATH, e)
         return
+
+    # One-shot migration: legacy single setpoint → both targets default to it
+    # so the install behaves "single setpoint"-like until the operator splits.
+    if "target_temp_c" in data and "hot_target_c" not in data:
+        try:
+            legacy = float(data["target_temp_c"])
+            data["hot_target_c"] = legacy
+            data["cold_target_c"] = legacy
+            logger.info("Migrated legacy target_temp_c=%.2f → hot=cold=%.2f",
+                        legacy, legacy)
+        except (TypeError, ValueError):
+            pass
+
     g = globals()
     for key, (lo, hi) in _PREFS_RANGES.items():
         if key not in data:
@@ -197,7 +244,20 @@ def _load_prefs():
             g[key] = _clamp(float(data[key]), lo, hi)
         except (TypeError, ValueError):
             logger.warning("Bad %s in prefs, ignoring", key)
-    _clamp_max_vs_target()
+
+    for id_key in ("probe_hot_id", "probe_cold_id"):
+        val = data.get(id_key)
+        if val is None:
+            continue
+        if isinstance(val, str) and _ROM_ID_RE.match(val):
+            if id_key == "probe_hot_id":
+                probe_hot_id = val
+            else:
+                probe_cold_id = val
+        else:
+            logger.warning("Bad %s in prefs, ignoring: %r", id_key, val)
+
+    _clamp_setpoints()
 
 
 def _save_prefs():
@@ -210,6 +270,10 @@ def _save_prefs():
             "min_fan_pct": min_fan_pct,
             "max_fan_pct": max_fan_pct,
             "over_temp_fan_pct": over_temp_fan_pct,
+            "hot_target_c": hot_target_c,
+            "cold_target_c": cold_target_c,
+            "probe_hot_id": probe_hot_id,
+            "probe_cold_id": probe_cold_id,
         }, indent=2) + "\n"
         tmp.write_text(payload)
         tmp.replace(_PREFS_PATH)
@@ -221,7 +285,7 @@ def _set_max_temp_c(value):
     """Set absolute over-temperature threshold (°C) and persist."""
     global max_temp_c
     max_temp_c = _clamp(float(value), -55.0, 125.0)
-    _clamp_max_vs_target()
+    _clamp_setpoints()
     _save_prefs()
     logger.info("Vents max temperature threshold → %.2f °C (saved)", max_temp_c)
 
@@ -285,20 +349,28 @@ def _apply_peltier_mask(mask):
 # ── DS18B20 temperature sensors ───────────────────────────────────────────
 
 def _discover_sensors():
-    """Locate up to two /sys/bus/w1/devices/28*/w1_slave files. Missing
-    sensors are tolerated: the corresponding entry stays None and the
-    broadcaster reports null temps. Auto mode will refuse to run."""
-    base = "/sys/bus/w1/devices/"
+    """Scan /sys/bus/w1/devices for 28-* DS18B20 probes. Build _probes keyed
+    by ROM id (the bare folder name like '28-3c01b556a8b9'). Idempotent —
+    called from setup() and again on a slow rescan tick from _temp_loop so
+    unplug/replug is picked up without restart."""
+    global _probes
+    new_map = {}
     try:
-        found = sorted(glob.glob(base + "28*"))
+        for folder in sorted(glob.glob("/sys/bus/w1/devices/28*")):
+            rom_id = os.path.basename(folder)
+            new_map[rom_id] = os.path.join(folder, "w1_slave")
     except Exception as e:
         logger.warning("Temp sensor discovery failed: %s", e)
         return
-    for i, folder in enumerate(found[:2]):
-        _temp_files[i] = os.path.join(folder, "w1_slave")
-        logger.info("DS18B20 sensor %d → %s", i + 1, _temp_files[i])
-    if not found:
-        logger.warning("No DS18B20 sensors found. Check dtoverlay=w1-gpio in config.txt.")
+    if set(new_map) != set(_probes):
+        if new_map:
+            logger.info("Probes discovered: %s", list(new_map))
+        else:
+            logger.warning("No DS18B20 sensors found. Check dtoverlay=w1-gpio in config.txt.")
+    _probes = new_map
+    # Drop temps for probes that disappeared so stale values don't trip safety.
+    for stale in set(_probe_temps) - set(_probes):
+        _probe_temps.pop(stale, None)
 
 
 def _read_ds18b20(path):
@@ -317,13 +389,25 @@ def _read_ds18b20(path):
         return None
 
 
+_RESCAN_PERIOD_S = 30.0
+
+
 def _temp_loop():
-    """Poll both sensors at VENTS_TEMP_POLL_HZ."""
+    """Poll every discovered probe at VENTS_TEMP_POLL_HZ. Periodically rescan
+    the 1-Wire bus so a probe wired in after boot becomes visible without a
+    restart. Refresh the back-compat temp_c view from sorted ROM ids."""
     period = 1.0 / max(1, VENTS_TEMP_POLL_HZ)
+    last_rescan = 0.0
     while not _shutdown_event.is_set():
+        now = time.time()
+        if now - last_rescan > _RESCAN_PERIOD_S:
+            _discover_sensors()
+            last_rescan = now
+        for rom_id, path in list(_probes.items()):
+            _probe_temps[rom_id] = _read_ds18b20(path)
+        ordered = sorted(_probes.keys())
         for i in range(2):
-            if _temp_files[i]:
-                temp_c[i] = _read_ds18b20(_temp_files[i])
+            temp_c[i] = _probe_temps.get(ordered[i]) if i < len(ordered) else None
         _shutdown_event.wait(period)
 
 
@@ -352,59 +436,100 @@ def _tacho_decay_tick():
 
 # ── auto-regulation loop ──────────────────────────────────────────────────
 
-def _avg_temp():
-    vals = [t for t in temp_c if t is not None]
-    return sum(vals) / len(vals) if vals else None
-
-
-def _any_temp_over_max():
-    """True when ANY individual sensor reads above max_temp_c.
-
-    Per-sensor (not average) so a localised hot spot — e.g. one Peltier face
-    runaway — trips the interlock even if the other probe is still cool.
-    Sensors reading None are ignored; if both are None the result is False
-    (the auto loop separately routes that into the sensor_error state)."""
-    return any(t is not None and t > max_temp_c for t in temp_c)
-
-
 def _over_temp_interlock():
-    """True when ANY sensor is above max_temp_c. Used by manual peltier
-    handlers as a hard interlock that ignores `on` requests."""
-    return _any_temp_over_max()
+    """True when ANY discovered probe (assigned or not) reads above max_temp_c.
+    Used by manual peltier handlers as a hard interlock that ignores `on`
+    requests, and by the auto loop's safety branch."""
+    return any(t is not None and t > max_temp_c for t in _probe_temps.values())
 
 
 def _auto_loop():
+    """Dual-setpoint bang-bang regulator with role-pinned probes (OR rule).
+
+    Per-tick branches, first match wins:
+
+      1. mode != "auto"            → state=idle, return.
+      2. probe_unassigned          → either role's id is null OR not currently
+                                     in _probes. Peltiers off, fans off.
+      3. over_temp                 → ANY probe (incl. unassigned) > max_temp_c.
+                                     Peltiers off, both fans pinned to
+                                     over_temp_fan_pct.
+      4. sensor_error              → an assigned probe currently reads None.
+                                     Peltiers off, fans off.
+      5. heating (need_on, OR)     → t_hot < hot_target_c − H
+                                     OR t_cold > cold_target_c + H.
+                                     Peltiers all on (mask 0b111).
+      6. cooling (need_off, AND)   → t_hot ≥ hot_target_c + H
+                                     AND t_cold ≤ cold_target_c − H.
+                                     Peltiers all off.
+      7. holding                   → deadband — leave Peltier mask unchanged.
+                                     Fans not touched in any heating/cooling/
+                                     holding branch (auto doesn't drive fans).
+    """
     global state
     period = 1.0 / max(1, VENTS_AUTO_LOOP_HZ)
+    H = VENTS_HYSTERESIS_C
     while not _shutdown_event.is_set():
-        if mode == "auto":
-            avg = _avg_temp()
-            if avg is None:
-                if state != "sensor_error":
-                    logger.warning("Auto mode active but no valid temperature — halting peltiers")
-                state = "sensor_error"
-                _apply_peltier_mask(0)
-                _set_fan(0, 0.0)
-                _set_fan(1, 0.0)
-            elif _any_temp_over_max():
-                # Safety: per-sensor (not avg) — if either probe sees over-max,
-                # cut peltiers AND pin both fans to the configured fallback %.
-                state = "over_temp"
-                _apply_peltier_mask(0)
-                fallback_0_1 = over_temp_fan_pct / 100.0
-                _set_fan(0, fallback_0_1)
-                _set_fan(1, fallback_0_1)
-            elif avg < target_temp_c - VENTS_HYSTERESIS_C:
-                state = "heating"
-                _apply_peltier_mask(0b111)
-            elif avg > target_temp_c + VENTS_HYSTERESIS_C:
-                state = "cooling"
-                _apply_peltier_mask(0)
-            else:
-                state = "holding"
-                # deadband — keep previous Peltier outputs; fans unchanged by auto
-        else:
+        if mode != "auto":
             state = "idle"
+            _tacho_decay_tick()
+            _shutdown_event.wait(period)
+            continue
+
+        hot_present = probe_hot_id is not None and probe_hot_id in _probes
+        cold_present = probe_cold_id is not None and probe_cold_id in _probes
+        if not hot_present or not cold_present:
+            if state != "probe_unassigned":
+                logger.warning(
+                    "Auto blocked: hot=%s cold=%s discovered=%s",
+                    probe_hot_id, probe_cold_id, list(_probes),
+                )
+            state = "probe_unassigned"
+            _apply_peltier_mask(0)
+            _set_fan(0, 0.0)
+            _set_fan(1, 0.0)
+            _tacho_decay_tick()
+            _shutdown_event.wait(period)
+            continue
+
+        # Safety interlock — ANY probe (assigned or not) over max.
+        if any(t is not None and t > max_temp_c for t in _probe_temps.values()):
+            state = "over_temp"
+            _apply_peltier_mask(0)
+            fallback_0_1 = over_temp_fan_pct / 100.0
+            _set_fan(0, fallback_0_1)
+            _set_fan(1, fallback_0_1)
+            _tacho_decay_tick()
+            _shutdown_event.wait(period)
+            continue
+
+        t_hot = _probe_temps.get(probe_hot_id)
+        t_cold = _probe_temps.get(probe_cold_id)
+        if t_hot is None or t_cold is None:
+            if state != "sensor_error":
+                logger.warning(
+                    "Auto: assigned probe read failed (hot=%s cold=%s)",
+                    t_hot, t_cold,
+                )
+            state = "sensor_error"
+            _apply_peltier_mask(0)
+            _set_fan(0, 0.0)
+            _set_fan(1, 0.0)
+            _tacho_decay_tick()
+            _shutdown_event.wait(period)
+            continue
+
+        # OR composition — ON if either side wants more gradient.
+        need_on = (t_hot < hot_target_c - H) or (t_cold > cold_target_c + H)
+        need_off = (t_hot >= hot_target_c + H) and (t_cold <= cold_target_c - H)
+        if need_on:
+            state = "heating"        # name preserved for admin enum compat
+            _apply_peltier_mask(0b111)
+        elif need_off:
+            state = "cooling"
+            _apply_peltier_mask(0)
+        else:
+            state = "holding"        # deadband — preserve previous mask
         _tacho_decay_tick()
         _shutdown_event.wait(period)
 
@@ -417,7 +542,7 @@ def setup(webhooks):
 
     _shutdown_event.clear()
     _load_prefs()
-    _clamp_max_vs_target()
+    _clamp_setpoints()
 
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
@@ -602,14 +727,108 @@ def handle_mode(address, *args):
     logger.info("Vents mode → %s", mode)
 
 
-@_safe("target")
-def handle_target(address, *args):
-    global target_temp_c
+@_safe("target_hot")
+def handle_target_hot(address, *args):
+    """Set the hot setpoint (regulates the probe assigned to the hot face).
+    Persisted. Cross-clamped against max_temp_c, then forces cold_target_c
+    down if it would otherwise breach the cold ≤ hot − H − margin invariant."""
+    global hot_target_c
     if not args:
         return
-    target_temp_c = float(args[0])
-    _clamp_target_vs_max()
-    logger.info("Vents target temperature → %.2f °C", target_temp_c)
+    hot_target_c = float(args[0])
+    _clamp_setpoints()
+    _save_prefs()
+    logger.info("Vents hot target → %.2f °C (cold=%.2f, saved)",
+                hot_target_c, cold_target_c)
+
+
+@_safe("target_cold")
+def handle_target_cold(address, *args):
+    """Set the cold setpoint (regulates the probe assigned to the cold face).
+    Persisted. Clamped to ≤ hot_target_c − H − margin so the OR rule isn't
+    permanently triggered."""
+    global cold_target_c
+    if not args:
+        return
+    cold_target_c = float(args[0])
+    _clamp_setpoints()
+    _save_prefs()
+    logger.info("Vents cold target → %.2f °C (hot=%.2f, saved)",
+                cold_target_c, hot_target_c)
+
+
+@_safe("target")
+def handle_target(address, *args):
+    """Back-compat alias — legacy /vents/target routes to the hot setpoint."""
+    handle_target_hot(address, *args)
+
+
+def _validate_rom_id(value):
+    """Returns the trimmed ROM id if it matches /^28-[0-9a-fA-F]{12}$/, else None."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    return v if _ROM_ID_RE.match(v) else None
+
+
+@_safe("probe_assign_hot")
+def handle_probe_assign_hot(address, *args):
+    """Assign a probe ROM id to the hot face. Rejected if the same id is
+    already the cold probe. Persisted unconditionally — the probe doesn't
+    have to be wired in yet (auto loop refuses to run until both ids
+    resolve to currently-discovered probes)."""
+    global probe_hot_id
+    if not args:
+        return
+    rom_id = _validate_rom_id(args[0])
+    if rom_id is None:
+        raise ValueError(f"invalid ROM id: {args[0]!r} (expected 28-xxxxxxxxxxxx)")
+    if rom_id == probe_cold_id:
+        raise ValueError(f"{rom_id} is already assigned as cold probe")
+    probe_hot_id = rom_id
+    _save_prefs()
+    if rom_id not in _probes:
+        logger.warning("Hot probe assigned to %s but not currently discovered",
+                       rom_id)
+    else:
+        logger.info("Hot probe → %s (saved)", rom_id)
+
+
+@_safe("probe_assign_cold")
+def handle_probe_assign_cold(address, *args):
+    """Assign a probe ROM id to the cold face. Symmetrical to assign_hot."""
+    global probe_cold_id
+    if not args:
+        return
+    rom_id = _validate_rom_id(args[0])
+    if rom_id is None:
+        raise ValueError(f"invalid ROM id: {args[0]!r} (expected 28-xxxxxxxxxxxx)")
+    if rom_id == probe_hot_id:
+        raise ValueError(f"{rom_id} is already assigned as hot probe")
+    probe_cold_id = rom_id
+    _save_prefs()
+    if rom_id not in _probes:
+        logger.warning("Cold probe assigned to %s but not currently discovered",
+                       rom_id)
+    else:
+        logger.info("Cold probe → %s (saved)", rom_id)
+
+
+@_safe("probe_clear")
+def handle_probe_clear(address, *args):
+    """Clear one or both probe assignments. Argument is 'hot', 'cold', or 'both'."""
+    global probe_hot_id, probe_cold_id
+    if not args:
+        return
+    which = str(args[0]).strip().lower()
+    if which not in ("hot", "cold", "both"):
+        raise ValueError(f"probe_clear must be 'hot'|'cold'|'both', got {which!r}")
+    if which in ("hot", "both"):
+        probe_hot_id = None
+    if which in ("cold", "both"):
+        probe_cold_id = None
+    _save_prefs()
+    logger.info("Probe assignment cleared (%s)", which)
 
 
 @_safe("max_temp")
@@ -648,8 +867,13 @@ def register_osc(dispatcher):
     dispatcher.map("/vents/fan/1", handle_fan_1)
     dispatcher.map("/vents/fan/2", handle_fan_2)
     dispatcher.map("/vents/mode", handle_mode)
-    dispatcher.map("/vents/target", handle_target)
+    dispatcher.map("/vents/target", handle_target)              # alias → hot
+    dispatcher.map("/vents/target/hot", handle_target_hot)
+    dispatcher.map("/vents/target/cold", handle_target_cold)
     dispatcher.map("/vents/max_temp", handle_max_temp)
+    dispatcher.map("/vents/probe/assign_hot", handle_probe_assign_hot)
+    dispatcher.map("/vents/probe/assign_cold", handle_probe_assign_cold)
+    dispatcher.map("/vents/probe/clear", handle_probe_clear)
     dispatcher.map("/vents/config/min_fan_pct", handle_min_fan_pct)
     dispatcher.map("/vents/config/max_fan_pct", handle_max_fan_pct)
     dispatcher.map("/vents/config/over_temp_fan_pct", handle_over_temp_fan_pct)
@@ -659,10 +883,15 @@ def register_osc(dispatcher):
 
 def handle_http_test(body):
     """Direct probe mirroring the OSC surface. Body:
-        {command: "peltier"|"peltier_mask"|"fan"|"mode"|"target"|"max_temp",
+        {command: "peltier"|"peltier_mask"|"fan"|"mode"
+                 |"target"|"target_hot"|"target_cold"|"max_temp"
+                 |"probe_assign_hot"|"probe_assign_cold"|"probe_clear"
+                 |"snapshot",
          index?: 1|2|3 (peltier) or 1|2 (fan),
          value: ...}
-    Returns current readings.
+
+    `snapshot` is a no-op used by the admin to fetch the full status
+    (including the discovered probes list). Returns current readings.
     """
     body = body or {}
     cmd = body.get("command")
@@ -684,14 +913,26 @@ def handle_http_test(body):
             handle_mode("/http", str(value))
         elif cmd == "target":
             handle_target("/http", float(value))
+        elif cmd == "target_hot":
+            handle_target_hot("/http", float(value))
+        elif cmd == "target_cold":
+            handle_target_cold("/http", float(value))
         elif cmd == "max_temp":
             handle_max_temp("/http", float(value))
+        elif cmd == "probe_assign_hot":
+            handle_probe_assign_hot("/http", str(value))
+        elif cmd == "probe_assign_cold":
+            handle_probe_assign_cold("/http", str(value))
+        elif cmd == "probe_clear":
+            handle_probe_clear("/http", str(value))
         elif cmd == "min_fan_pct":
             handle_min_fan_pct("/http", float(value))
         elif cmd == "max_fan_pct":
             handle_max_fan_pct("/http", float(value))
         elif cmd == "over_temp_fan_pct":
             handle_over_temp_fan_pct("/http", float(value))
+        elif cmd == "snapshot":
+            pass  # no-op: returns get_status() below
         else:
             return {"ok": False, "error": f"unknown command: {cmd!r}"}
     except Exception as e:
@@ -706,7 +947,13 @@ def _fan_pct_to_0_1(pct):
 
 
 def get_status():
-    """Used by both the /vents/status OSC broadcaster and HTTP /gpio/test."""
+    """Used by the /vents/status OSC broadcaster and HTTP /gpio/test.
+
+    `temp1_c` / `temp2_c` are the legacy raw probe-order view (kept for
+    back-compat with old admin builds). The role-based view (`temp_hot_c`,
+    `temp_cold_c`, `probe_hot_id`, `probe_cold_id`) is the canonical one.
+    `probes` is the full discovery list, used by the admin's assignment UI.
+    """
     return {
         "temp1_c": temp_c[0],
         "temp2_c": temp_c[1],
@@ -718,7 +965,17 @@ def get_status():
         "rpm1B": tacho_rpm[1],
         "rpm2A": tacho_rpm[2],
         "rpm2B": tacho_rpm[3],
-        "target_c": target_temp_c,
+        "target_c": hot_target_c,                # back-compat alias for hot
+        "hot_target_c": hot_target_c,
+        "cold_target_c": cold_target_c,
+        "temp_hot_c": _probe_temps.get(probe_hot_id) if probe_hot_id else None,
+        "temp_cold_c": _probe_temps.get(probe_cold_id) if probe_cold_id else None,
+        "probe_hot_id": probe_hot_id,
+        "probe_cold_id": probe_cold_id,
+        "probes": [
+            {"id": rid, "temp_c": _probe_temps.get(rid)}
+            for rid in sorted(_probes.keys())
+        ],
         "max_temp_c": max_temp_c,
         "min_fan_pct": min_fan_pct,
         "max_fan_pct": max_fan_pct,
@@ -733,7 +990,11 @@ def get_status_osc_args():
     """OSC argument list matching the documented /vents/status contract.
     Missing temperatures are encoded as -1.0 (python-osc rejects None).
     Backend `_handle_vents_status` parses arg 13 onward optionally so older
-    firmware (12 args, no max_temp_c) and pre-min-fan (13 args) both decode."""
+    firmware (12 args, no max_temp_c) and pre-min-fan (13 args) both decode.
+
+    Positions 16-19 are the dual-setpoint tail (temp_hot_c, temp_cold_c,
+    hot_target_c, cold_target_c) — admin builds older than this firmware
+    simply stop reading at position 15."""
     s = get_status()
     return [
         float(s["temp1_c"]) if s["temp1_c"] is not None else -1.0,
@@ -752,6 +1013,10 @@ def get_status_osc_args():
         float(s["min_fan_pct"]),
         float(s["over_temp_fan_pct"]),
         float(s["max_fan_pct"]),
+        float(s["temp_hot_c"]) if s["temp_hot_c"] is not None else -1.0,
+        float(s["temp_cold_c"]) if s["temp_cold_c"] is not None else -1.0,
+        float(s["hot_target_c"]),
+        float(s["cold_target_c"]),
     ]
 
 
@@ -769,6 +1034,10 @@ def describe():
         },
         "mode": mode,
         "state": state,
-        "target_c": target_temp_c,
+        "target_c": hot_target_c,
+        "hot_target_c": hot_target_c,
+        "cold_target_c": cold_target_c,
         "max_temp_c": max_temp_c,
+        "probe_hot_id": probe_hot_id,
+        "probe_cold_id": probe_cold_id,
     }

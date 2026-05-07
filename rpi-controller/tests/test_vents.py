@@ -18,8 +18,12 @@ def _reset():
     vents.tacho_rpm[:] = [0.0, 0.0, 0.0, 0.0]
     vents.tacho_last_t[:] = [0.0, 0.0, 0.0, 0.0]
     vents.temp_c[:] = [None, None]
-    vents._temp_files[:] = [None, None]
-    vents.target_temp_c = 25.0
+    vents._probes.clear()
+    vents._probe_temps.clear()
+    vents.probe_hot_id = None
+    vents.probe_cold_id = None
+    vents.hot_target_c = 25.0
+    vents.cold_target_c = 25.0
     vents.max_temp_c = 80.0
     vents.min_fan_pct = 20.0
     vents.max_fan_pct = 100.0
@@ -28,6 +32,30 @@ def _reset():
     vents.state = "idle"
     vents.last_osc_time = 0.0
     vents._shutdown_event.clear()
+
+
+# Test ROM ids — used throughout the dual-setpoint / probe assignment tests.
+HOT_ID = "28-aaaaaaaaaaaa"
+COLD_ID = "28-bbbbbbbbbbbb"
+THIRD_ID = "28-cccccccccccc"
+
+
+def _populate_probes(temps):
+    """Helper: seed _probes and _probe_temps from a {rom_id: temp_c} dict.
+    Also refreshes temp_c[0..1] to match the back-compat 2-slot view."""
+    vents._probes.clear()
+    vents._probe_temps.clear()
+    for rom_id, t in temps.items():
+        vents._probes[rom_id] = f"/sys/bus/w1/devices/{rom_id}/w1_slave"
+        vents._probe_temps[rom_id] = t
+    ordered = sorted(vents._probes.keys())
+    for i in range(2):
+        vents.temp_c[i] = vents._probe_temps.get(ordered[i]) if i < len(ordered) else None
+
+
+def _assign_both(hot=HOT_ID, cold=COLD_ID):
+    vents.probe_hot_id = hot
+    vents.probe_cold_id = cold
 
 
 def _make_gpio():
@@ -254,7 +282,51 @@ class TestOverTempFanFallback:
         save.assert_called_once()
 
 
+def _tick_auto():
+    """Run one /auto loop tick without spinning the thread. Mirrors the
+    branches in controllers/vents.py:_auto_loop."""
+    with patch.object(vents, "GPIO", _make_gpio()):
+        if vents.mode != "auto":
+            vents.state = "idle"
+            return
+        hot_present = vents.probe_hot_id is not None and vents.probe_hot_id in vents._probes
+        cold_present = vents.probe_cold_id is not None and vents.probe_cold_id in vents._probes
+        if not hot_present or not cold_present:
+            vents.state = "probe_unassigned"
+            vents._apply_peltier_mask(0)
+            vents._set_fan(0, 0.0); vents._set_fan(1, 0.0)
+            return
+        if any(t is not None and t > vents.max_temp_c for t in vents._probe_temps.values()):
+            vents.state = "over_temp"
+            vents._apply_peltier_mask(0)
+            fb = vents.over_temp_fan_pct / 100.0
+            vents._set_fan(0, fb); vents._set_fan(1, fb)
+            return
+        t_hot = vents._probe_temps.get(vents.probe_hot_id)
+        t_cold = vents._probe_temps.get(vents.probe_cold_id)
+        if t_hot is None or t_cold is None:
+            vents.state = "sensor_error"
+            vents._apply_peltier_mask(0)
+            vents._set_fan(0, 0.0); vents._set_fan(1, 0.0)
+            return
+        H = vents.VENTS_HYSTERESIS_C
+        need_on = (t_hot < vents.hot_target_c - H) or (t_cold > vents.cold_target_c + H)
+        need_off = (t_hot >= vents.hot_target_c + H) and (t_cold <= vents.cold_target_c - H)
+        if need_on:
+            vents.state = "heating"
+            vents._apply_peltier_mask(0b111)
+        elif need_off:
+            vents.state = "cooling"
+            vents._apply_peltier_mask(0)
+        else:
+            vents.state = "holding"
+
+
 class TestPerSensorOverTemp:
+    """The over-temp interlock fires on per-sensor max, including for an
+    unassigned probe still on the bus. Predates dual setpoints — kept
+    because the safety logic is unchanged."""
+
     def setup_method(self):
         _reset()
         vents.pwm_fan_1 = MagicMock()
@@ -262,53 +334,36 @@ class TestPerSensorOverTemp:
         vents.mode = "auto"
         vents.max_temp_c = 80.0
         vents.over_temp_fan_pct = 100.0
+        _assign_both()
 
-    def _tick_auto(self):
-        """Run one auto-loop iteration without spinning the thread."""
-        # Inline what _auto_loop does for one tick (mode == "auto").
-        # Mirrors controllers/vents.py:_auto_loop.
-        with patch.object(vents, "GPIO", _make_gpio()):
-            avg = vents._avg_temp()
-            if avg is None:
-                vents.state = "sensor_error"
-                vents._apply_peltier_mask(0)
-                vents._set_fan(0, 0.0); vents._set_fan(1, 0.0)
-            elif vents._any_temp_over_max():
-                vents.state = "over_temp"
-                vents._apply_peltier_mask(0)
-                fb = vents.over_temp_fan_pct / 100.0
-                vents._set_fan(0, fb); vents._set_fan(1, fb)
-            else:
-                vents.state = "holding"
+    def test_one_hot_probe_trips_interlock(self):
+        _populate_probes({HOT_ID: 90.0, COLD_ID: 25.0})
+        # Even one probe over max trips, regardless of avg.
+        assert vents._over_temp_interlock() is True
 
-    def test_one_hot_sensor_trips_interlock(self):
-        vents.temp_c[0] = 90.0
-        vents.temp_c[1] = 25.0
-        # avg = 57.5 < 80 (would not trip on average), but per-sensor must fire
-        assert vents._avg_temp() == pytest.approx(57.5)
-        assert vents._any_temp_over_max() is True
+    def test_unassigned_probe_over_max_still_trips(self):
+        # Hot/cold assigned to in-range probes; an unassigned third probe
+        # on the bus reads over max → safety still fires.
+        _populate_probes({HOT_ID: 25.0, COLD_ID: 20.0, THIRD_ID: 95.0})
+        assert vents._over_temp_interlock() is True
 
     def test_over_temp_pins_fans_and_clears_peltiers(self):
-        vents.temp_c[0] = 95.0
-        vents.temp_c[1] = 20.0
+        _populate_probes({HOT_ID: 95.0, COLD_ID: 20.0})
         vents.over_temp_fan_pct = 80.0
         vents.peltier_state[:] = [1, 1, 1]
-        self._tick_auto()
+        _tick_auto()
         assert vents.state == "over_temp"
         assert vents.peltier_state == [0, 0, 0]
-        # Both fans pinned to 80% — under the configured fallback
         vents.pwm_fan_1.ChangeDutyCycle.assert_called_with(80.0)
         vents.pwm_fan_2.ChangeDutyCycle.assert_called_with(80.0)
 
     def test_no_sensor_over_max_does_not_trip(self):
-        vents.temp_c[0] = 79.0
-        vents.temp_c[1] = 78.0
-        assert vents._any_temp_over_max() is False
+        _populate_probes({HOT_ID: 79.0, COLD_ID: 78.0})
+        assert vents._over_temp_interlock() is False
 
     def test_missing_sensor_alone_does_not_trip(self):
-        vents.temp_c[0] = None
-        vents.temp_c[1] = 20.0
-        assert vents._any_temp_over_max() is False
+        _populate_probes({HOT_ID: None, COLD_ID: 20.0})
+        assert vents._over_temp_interlock() is False
 
 
 class TestPrefsPersistence:
@@ -372,9 +427,33 @@ class TestModeTarget:
         vents.handle_mode("/vents/mode", "banana")
         vents._webhooks.fire.assert_called_once()
 
-    def test_target_sets_celsius(self):
+    def test_target_alias_routes_to_hot(self):
+        # Legacy /vents/target keeps working — sets the hot setpoint.
+        vents.cold_target_c = 5.0  # keep low so cross-clamp doesn't fire
         vents.handle_target("/vents/target", 18.5)
-        assert vents.target_temp_c == 18.5
+        assert vents.hot_target_c == 18.5
+
+    def test_target_hot_sets_celsius(self):
+        vents.cold_target_c = 5.0
+        vents.handle_target_hot("/vents/target/hot", 22.0)
+        assert vents.hot_target_c == 22.0
+
+    def test_target_cold_sets_celsius(self):
+        vents.hot_target_c = 30.0
+        vents.handle_target_cold("/vents/target/cold", 12.0)
+        assert vents.cold_target_c == 12.0
+
+    def test_target_hot_persists(self):
+        vents.cold_target_c = 5.0
+        with patch.object(vents, "_save_prefs") as save:
+            vents.handle_target_hot("/vents/target/hot", 24.0)
+        save.assert_called_once()
+
+    def test_target_cold_persists(self):
+        vents.hot_target_c = 30.0
+        with patch.object(vents, "_save_prefs") as save:
+            vents.handle_target_cold("/vents/target/cold", 12.0)
+        save.assert_called_once()
 
 
 # ── status + describe ────────────────────────────────────────────────────
@@ -388,42 +467,91 @@ class TestStatus:
         s = vents.get_status()
         for k in (
             "temp1_c", "temp2_c", "fan1", "fan2", "peltier_mask", "peltier",
-            "rpm1A", "rpm1B", "rpm2A", "rpm2B", "target_c", "max_temp_c",
-            "min_fan_pct", "max_fan_pct", "over_temp_fan_pct",
+            "rpm1A", "rpm1B", "rpm2A", "rpm2B",
+            "target_c", "hot_target_c", "cold_target_c",
+            "temp_hot_c", "temp_cold_c", "probe_hot_id", "probe_cold_id",
+            "probes",
+            "max_temp_c", "min_fan_pct", "max_fan_pct", "over_temp_fan_pct",
             "mode", "state", "sensors_ok",
         ):
             assert k in s
 
-    def test_osc_args_encode_missing_temp_as_neg1(self):
-        args = vents.get_status_osc_args()
-        # temp1 and temp2 are the first two args; both None → -1.0
-        assert args[0] == -1.0
-        assert args[1] == -1.0
-        # Status payload tail layout: ..., target, mode, state, max_temp_c,
-        # min_fan_pct, over_temp_fan_pct, max_fan_pct (max_fan_pct appended
-        # at the end so older receivers ignoring extras still parse).
-        assert isinstance(args[-6], str)   # mode
-        assert isinstance(args[-5], str)   # state
-        assert isinstance(args[-4], float) # max_temp_c
-        assert isinstance(args[-3], float) # min_fan_pct
-        assert isinstance(args[-2], float) # over_temp_fan_pct
-        assert isinstance(args[-1], float) # max_fan_pct
+    def test_status_target_c_aliases_hot_target(self):
+        # Back-compat: legacy `target_c` field mirrors `hot_target_c` so old
+        # admin builds keep working unchanged.
+        vents.cold_target_c = 10.0
+        vents.hot_target_c = 22.5
+        s = vents.get_status()
+        assert s["target_c"] == 22.5
+        assert s["hot_target_c"] == 22.5
 
-    def test_osc_args_include_fan_settings(self):
+    def test_status_probes_lists_discovered_ids_with_temps(self):
+        _populate_probes({HOT_ID: 24.0, THIRD_ID: 26.5})
+        s = vents.get_status()
+        ids = [p["id"] for p in s["probes"]]
+        assert ids == sorted([HOT_ID, THIRD_ID])
+        temps = {p["id"]: p["temp_c"] for p in s["probes"]}
+        assert temps[HOT_ID] == 24.0
+        assert temps[THIRD_ID] == 26.5
+
+    def test_status_temp_hot_cold_resolve_via_probe_ids(self):
+        vents.cold_target_c = 5.0
+        _assign_both()
+        _populate_probes({HOT_ID: 28.0, COLD_ID: 18.0})
+        s = vents.get_status()
+        assert s["temp_hot_c"] == 28.0
+        assert s["temp_cold_c"] == 18.0
+        assert s["probe_hot_id"] == HOT_ID
+        assert s["probe_cold_id"] == COLD_ID
+
+    def test_osc_args_encode_missing_temp_as_neg1(self):
+        # All 4 nullable temp fields (temp1, temp2, temp_hot_c, temp_cold_c)
+        # encode to -1.0 when missing.
+        args = vents.get_status_osc_args()
+        assert args[0] == -1.0    # temp1_c
+        assert args[1] == -1.0    # temp2_c
+        assert args[16] == -1.0   # temp_hot_c
+        assert args[17] == -1.0   # temp_cold_c
+        # Tail layout (positions 16-19) is the dual-setpoint addition.
+        assert isinstance(args[18], float)  # hot_target_c
+        assert isinstance(args[19], float)  # cold_target_c
+
+    def test_osc_args_layout_positions(self):
+        # Spot-check critical positions used by admin's _VENTS_OPTIONAL_STATUS_FIELDS.
+        vents.cold_target_c = 5.0
+        vents.hot_target_c = 25.0
+        vents.max_temp_c = 80.0
         vents.min_fan_pct = 35.0
         vents.over_temp_fan_pct = 75.0
         vents.max_fan_pct = 60.0
         args = vents.get_status_osc_args()
-        assert args[-3] == 35.0
-        assert args[-2] == 75.0
-        assert args[-1] == 60.0
+        assert len(args) == 20
+        assert args[10] == "raw"             # mode
+        assert args[11] == "idle"            # state
+        assert args[12] == 80.0              # max_temp_c
+        assert args[13] == 35.0              # min_fan_pct
+        assert args[14] == 75.0              # over_temp_fan_pct
+        assert args[15] == 60.0              # max_fan_pct
+        assert args[18] == 25.0              # hot_target_c
+        assert args[19] == 5.0               # cold_target_c
 
     def test_osc_args_encode_present_temp(self):
-        vents.temp_c[0] = 22.5
-        vents.temp_c[1] = 18.0
+        # Populate via the canonical path: _probes + _probe_temps. The
+        # temp_c[] back-compat view is rebuilt by _populate_probes helper.
+        _populate_probes({HOT_ID: 22.5, COLD_ID: 18.0})
         args = vents.get_status_osc_args()
+        # sorted(_probes) → temp1 = HOT_ID's reading (sorted alphabetically),
+        # which lands in args[0]; temp2 in args[1].
         assert args[0] == 22.5
         assert args[1] == 18.0
+
+    def test_osc_args_include_temp_hot_cold_when_assigned(self):
+        vents.cold_target_c = 5.0
+        _assign_both()
+        _populate_probes({HOT_ID: 30.0, COLD_ID: 15.0})
+        args = vents.get_status_osc_args()
+        assert args[16] == 30.0
+        assert args[17] == 15.0
 
     def test_peltier_mask_reflects_state(self):
         vents.peltier_state[:] = [1, 0, 1]
@@ -479,6 +607,47 @@ class TestHttpTest:
         r = vents.handle_http_test({"command": "teleport"})
         assert r["ok"] is False
 
+    def test_target_hot_via_http(self):
+        vents.cold_target_c = 5.0
+        r = vents.handle_http_test({"command": "target_hot", "value": 22.0})
+        assert r["ok"] is True
+        assert r["hot_target_c"] == 22.0
+
+    def test_target_cold_via_http(self):
+        vents.hot_target_c = 30.0
+        r = vents.handle_http_test({"command": "target_cold", "value": 12.0})
+        assert r["ok"] is True
+        assert r["cold_target_c"] == 12.0
+
+    def test_probe_assign_hot_via_http(self):
+        with patch.object(vents, "_save_prefs"):
+            r = vents.handle_http_test({"command": "probe_assign_hot", "value": HOT_ID})
+        assert r["ok"] is True
+        assert r["probe_hot_id"] == HOT_ID
+
+    def test_probe_assign_cold_via_http(self):
+        with patch.object(vents, "_save_prefs"):
+            r = vents.handle_http_test({"command": "probe_assign_cold", "value": COLD_ID})
+        assert r["ok"] is True
+        assert r["probe_cold_id"] == COLD_ID
+
+    def test_probe_clear_via_http(self):
+        vents.probe_hot_id = HOT_ID
+        vents.probe_cold_id = COLD_ID
+        with patch.object(vents, "_save_prefs"):
+            r = vents.handle_http_test({"command": "probe_clear", "value": "both"})
+        assert r["ok"] is True
+        assert r["probe_hot_id"] is None
+        assert r["probe_cold_id"] is None
+
+    def test_snapshot_returns_status_no_op(self):
+        # Snapshot must not change any state — admin uses it to read probes.
+        vents.peltier_state[:] = [0, 0, 0]
+        r = vents.handle_http_test({"command": "snapshot"})
+        assert r["ok"] is True
+        assert "probes" in r
+        assert vents.peltier_state == [0, 0, 0]
+
 
 class TestDescribe:
     def test_describe(self):
@@ -511,3 +680,324 @@ class TestDS18B20Parser:
 
     def test_missing_file(self):
         assert vents._read_ds18b20("/nope/missing") is None
+
+
+# ── dual-setpoint auto loop ──────────────────────────────────────────────
+
+
+class TestDualSetpointAuto:
+    """The dual-setpoint OR rule. _tick_auto inlines the loop body so we
+    don't have to spin a thread; the production loop's branch ordering is
+    mirrored exactly."""
+
+    def setup_method(self):
+        _reset()
+        vents.pwm_fan_1 = MagicMock()
+        vents.pwm_fan_2 = MagicMock()
+        vents.mode = "auto"
+        vents.max_temp_c = 80.0
+        vents.hot_target_c = 25.0
+        vents.cold_target_c = 18.0
+        vents.over_temp_fan_pct = 100.0
+
+    def test_probe_unassigned_when_ids_null(self):
+        # No assignment + probes discovered → still unassigned.
+        _populate_probes({HOT_ID: 22.0, COLD_ID: 19.0})
+        _tick_auto()
+        assert vents.state == "probe_unassigned"
+        assert vents.peltier_state == [0, 0, 0]
+
+    def test_probe_unassigned_when_assigned_id_not_in_probes(self):
+        # Assigned but the probe isn't on the bus right now.
+        _assign_both()
+        _populate_probes({})
+        _tick_auto()
+        assert vents.state == "probe_unassigned"
+
+    def test_probe_unassigned_when_only_one_role_assigned(self):
+        vents.probe_hot_id = HOT_ID
+        vents.probe_cold_id = None
+        _populate_probes({HOT_ID: 22.0})
+        _tick_auto()
+        assert vents.state == "probe_unassigned"
+
+    def test_or_rule_both_unhappy_drives_on(self):
+        _assign_both()
+        _populate_probes({HOT_ID: 22.0, COLD_ID: 22.0})  # hot too cool, cold too warm
+        _tick_auto()
+        assert vents.state == "heating"
+        assert vents.peltier_state == [1, 1, 1]
+
+    def test_or_rule_only_hot_drives_on(self):
+        _assign_both()
+        _populate_probes({HOT_ID: 22.0, COLD_ID: 17.5})  # hot too cool, cold inside band
+        _tick_auto()
+        assert vents.state == "heating"
+        assert vents.peltier_state == [1, 1, 1]
+
+    def test_or_rule_only_cold_drives_on(self):
+        _assign_both()
+        _populate_probes({HOT_ID: 26.0, COLD_ID: 22.0})  # hot inside, cold too warm
+        _tick_auto()
+        assert vents.state == "heating"
+        assert vents.peltier_state == [1, 1, 1]
+
+    def test_off_when_both_in_upper_band(self):
+        # hot >= hot_target+H, cold <= cold_target-H → cooling (mask 0).
+        _assign_both()
+        _populate_probes({HOT_ID: 26.0, COLD_ID: 17.0})
+        vents.peltier_state[:] = [1, 1, 1]  # presumed previous state
+        _tick_auto()
+        assert vents.state == "cooling"
+        assert vents.peltier_state == [0, 0, 0]
+
+    def test_holding_keeps_previous_mask(self):
+        # Both probes inside their deadbands, neither fully on the "off" side.
+        # Previous mask must be preserved.
+        _assign_both()
+        _populate_probes({HOT_ID: 24.8, COLD_ID: 18.2})
+        vents.peltier_state[:] = [1, 1, 1]
+        _tick_auto()
+        assert vents.state == "holding"
+        assert vents.peltier_state == [1, 1, 1]
+
+    def test_over_temp_supersedes_or_rule(self):
+        # An unassigned third probe over max trips safety even when both
+        # assigned probes are happy.
+        _assign_both()
+        _populate_probes({HOT_ID: 25.0, COLD_ID: 18.0, THIRD_ID: 95.0})
+        _tick_auto()
+        assert vents.state == "over_temp"
+        assert vents.peltier_state == [0, 0, 0]
+
+    def test_sensor_error_when_assigned_probe_reads_none(self):
+        # Both assigned, both discovered, but one read failed (None reading).
+        _assign_both()
+        _populate_probes({HOT_ID: 25.0, COLD_ID: None})
+        _tick_auto()
+        assert vents.state == "sensor_error"
+        assert vents.peltier_state == [0, 0, 0]
+
+    def test_mode_raw_returns_idle(self):
+        _assign_both()
+        _populate_probes({HOT_ID: 22.0, COLD_ID: 22.0})
+        vents.mode = "raw"
+        _tick_auto()
+        assert vents.state == "idle"
+
+
+# ── cross-clamp invariants ───────────────────────────────────────────────
+
+
+class TestCrossClampInvariants:
+    """The two cross-clamp invariants enforced on every save:
+      (1) hot_target + H + margin < max_temp_c
+      (2) cold_target + H + margin <= hot_target
+    Always pulls values down, never raises max_temp_c.
+    """
+
+    def setup_method(self):
+        _reset()
+
+    def test_hot_target_clamps_below_max_minus_H_minus_margin(self):
+        vents.max_temp_c = 30.0
+        vents.cold_target_c = 5.0
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_target_hot("/vents/target/hot", 35.0)  # > max
+        # ceiling = 30 - 0.5 - 0.05 = 29.45
+        assert vents.hot_target_c == pytest.approx(29.45)
+
+    def test_cold_target_clamps_below_hot_minus_H_minus_margin(self):
+        vents.hot_target_c = 25.0
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_target_cold("/vents/target/cold", 30.0)  # > hot
+        # ceiling = 25 - 0.5 - 0.05 = 24.45
+        assert vents.cold_target_c == pytest.approx(24.45)
+
+    def test_lowering_max_temp_cascades_to_hot_then_cold(self):
+        vents.hot_target_c = 60.0
+        vents.cold_target_c = 50.0
+        vents._set_max_temp_c(40.0)
+        # hot must drop to 40 - 0.55 = 39.45; cold must drop to 39.45 - 0.55 = 38.9.
+        assert vents.hot_target_c == pytest.approx(39.45)
+        assert vents.cold_target_c == pytest.approx(38.9)
+
+    def test_setting_hot_below_cold_pulls_cold_down(self):
+        vents.cold_target_c = 20.0
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_target_hot("/vents/target/hot", 18.0)
+        # cold_ceiling = 18 - 0.55 = 17.45 → cold falls there
+        assert vents.hot_target_c == 18.0
+        assert vents.cold_target_c == pytest.approx(17.45)
+
+
+# ── probe assignment ─────────────────────────────────────────────────────
+
+
+class TestProbeAssignment:
+    def setup_method(self):
+        _reset()
+
+    def test_assign_hot_persists(self):
+        _populate_probes({HOT_ID: 22.0})
+        with patch.object(vents, "_save_prefs") as save:
+            vents.handle_probe_assign_hot("/vents/probe/assign_hot", HOT_ID)
+        assert vents.probe_hot_id == HOT_ID
+        save.assert_called_once()
+
+    def test_assign_cold_persists(self):
+        _populate_probes({COLD_ID: 18.0})
+        with patch.object(vents, "_save_prefs") as save:
+            vents.handle_probe_assign_cold("/vents/probe/assign_cold", COLD_ID)
+        assert vents.probe_cold_id == COLD_ID
+        save.assert_called_once()
+
+    def test_assign_same_id_to_both_roles_rejected(self):
+        # Hot already assigned to HOT_ID; assigning the same id as cold must
+        # raise (caught by @_safe → fires webhooks.fire("error", ...)).
+        vents.probe_hot_id = HOT_ID
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_probe_assign_cold("/vents/probe/assign_cold", HOT_ID)
+        # @_safe captures the exception; cold remains unset.
+        assert vents.probe_cold_id is None
+        vents._webhooks.fire.assert_called_once()
+
+    def test_assign_invalid_rom_id_rejected(self):
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_probe_assign_hot("/vents/probe/assign_hot", "not-a-rom-id")
+        assert vents.probe_hot_id is None
+        vents._webhooks.fire.assert_called_once()
+
+    def test_clear_both(self):
+        vents.probe_hot_id = HOT_ID
+        vents.probe_cold_id = COLD_ID
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_probe_clear("/vents/probe/clear", "both")
+        assert vents.probe_hot_id is None
+        assert vents.probe_cold_id is None
+
+    def test_clear_only_hot(self):
+        vents.probe_hot_id = HOT_ID
+        vents.probe_cold_id = COLD_ID
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_probe_clear("/vents/probe/clear", "hot")
+        assert vents.probe_hot_id is None
+        assert vents.probe_cold_id == COLD_ID
+
+    def test_clear_invalid_value_rejected(self):
+        vents.probe_hot_id = HOT_ID
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_probe_clear("/vents/probe/clear", "garbage")
+        # @_safe captures; assignment unchanged.
+        assert vents.probe_hot_id == HOT_ID
+        vents._webhooks.fire.assert_called_once()
+
+    def test_assign_id_not_in_probes_persists_with_warning(self):
+        # Operator may configure before the probe is wired in.
+        _populate_probes({})  # nothing discovered
+        with patch.object(vents, "_save_prefs") as save:
+            vents.handle_probe_assign_hot("/vents/probe/assign_hot", HOT_ID)
+        assert vents.probe_hot_id == HOT_ID  # persisted anyway
+        save.assert_called_once()
+
+
+# ── probe discovery ──────────────────────────────────────────────────────
+
+
+class TestProbeDiscovery:
+    def setup_method(self):
+        _reset()
+
+    def test_discover_keys_by_rom_id(self, monkeypatch):
+        # Stub glob to return two fake DS18B20 device folders.
+        fake = ["/sys/bus/w1/devices/28-aaaaaaaaaaaa",
+                "/sys/bus/w1/devices/28-bbbbbbbbbbbb"]
+        monkeypatch.setattr(vents.glob, "glob", lambda pattern: fake)
+        vents._discover_sensors()
+        assert set(vents._probes.keys()) == {"28-aaaaaaaaaaaa", "28-bbbbbbbbbbbb"}
+        assert vents._probes["28-aaaaaaaaaaaa"].endswith("/w1_slave")
+
+    def test_rediscovery_drops_stale_temps(self, monkeypatch):
+        # First scan: two probes present, both with cached temps.
+        fake = ["/sys/bus/w1/devices/28-aaaaaaaaaaaa",
+                "/sys/bus/w1/devices/28-bbbbbbbbbbbb"]
+        monkeypatch.setattr(vents.glob, "glob", lambda pattern: fake)
+        vents._discover_sensors()
+        vents._probe_temps["28-aaaaaaaaaaaa"] = 24.0
+        vents._probe_temps["28-bbbbbbbbbbbb"] = 19.0
+        # Second scan: only one probe still on the bus.
+        monkeypatch.setattr(
+            vents.glob, "glob",
+            lambda pattern: ["/sys/bus/w1/devices/28-aaaaaaaaaaaa"],
+        )
+        vents._discover_sensors()
+        assert "28-bbbbbbbbbbbb" not in vents._probe_temps
+        assert vents._probe_temps["28-aaaaaaaaaaaa"] == 24.0  # surviving probe untouched
+
+    def test_get_status_includes_probes_array(self):
+        _populate_probes({HOT_ID: 24.0, COLD_ID: 18.5})
+        s = vents.get_status()
+        assert len(s["probes"]) == 2
+        # sorted by id
+        assert s["probes"][0]["id"] < s["probes"][1]["id"]
+
+
+# ── prefs migration / round-trip ─────────────────────────────────────────
+
+
+class TestPrefsMigrationAndRoundTrip:
+    def setup_method(self):
+        _reset()
+
+    def test_legacy_target_temp_c_migrates_to_both(self, tmp_path):
+        # Legacy single setpoint seeds both targets identically; the
+        # post-load _clamp_setpoints then pulls cold down to hot - H - margin
+        # so the OR rule has a deadband to work with. Operator can split
+        # them deliberately later.
+        path = tmp_path / "prefs.json"
+        path.write_text(
+            '{"target_temp_c": 22.5, "max_temp_c": 80.0}'
+        )
+        vents.hot_target_c = 99.0
+        vents.cold_target_c = 99.0
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._load_prefs()
+        assert vents.hot_target_c == 22.5
+        # 22.5 - 0.5 - 0.05 = 21.95 (cold pulled below hot by H + margin).
+        assert vents.cold_target_c == pytest.approx(21.95)
+
+    def test_save_includes_dual_setpoints_and_probe_ids(self, tmp_path):
+        vents.hot_target_c = 28.0
+        vents.cold_target_c = 12.0
+        vents.probe_hot_id = HOT_ID
+        vents.probe_cold_id = COLD_ID
+        path = tmp_path / "prefs.json"
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._save_prefs()
+        import json as _json
+        data = _json.loads(path.read_text())
+        assert data["hot_target_c"] == 28.0
+        assert data["cold_target_c"] == 12.0
+        assert data["probe_hot_id"] == HOT_ID
+        assert data["probe_cold_id"] == COLD_ID
+
+    def test_load_restores_probe_ids(self, tmp_path):
+        path = tmp_path / "prefs.json"
+        path.write_text(
+            f'{{"max_temp_c": 80, "hot_target_c": 25, "cold_target_c": 18,'
+            f' "probe_hot_id": "{HOT_ID}", "probe_cold_id": "{COLD_ID}"}}'
+        )
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._load_prefs()
+        assert vents.probe_hot_id == HOT_ID
+        assert vents.probe_cold_id == COLD_ID
+
+    def test_load_ignores_malformed_probe_id(self, tmp_path):
+        path = tmp_path / "prefs.json"
+        path.write_text(
+            '{"max_temp_c": 80, "probe_hot_id": "garbage", "probe_cold_id": null}'
+        )
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._load_prefs()
+        assert vents.probe_hot_id is None
+        assert vents.probe_cold_id is None
