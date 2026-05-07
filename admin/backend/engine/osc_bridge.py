@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 RING_BUFFER_SIZE = 500
 VALID_ROUTING = ("passthrough", "type-match", "none")
+# Rate limit per source IP: at most this many events/second logged to the
+# ring buffer and SSE subscribers. Device forwarding is NOT rate-limited —
+# the Pi controllers are the natural bottleneck for that path.
+BRIDGE_RATE_LIMIT_HZ = 200
 
 
 def _address_matches_type(address: str, device_type: str) -> bool:
@@ -62,11 +66,21 @@ def _parse_targeted(address: str) -> "tuple[str, str] | None":
 
 
 def _match_device(devices: list, identifier: str) -> "dict | None":
-    """Find a device by id, name, ip_address, or hardware_id (in that order)."""
+    """Find a device by id, name, ip_address, or hardware_id (in that order).
+
+    Prefers exact id match. Falls back to other fields in order; warns if
+    multiple devices share the same non-id key so ambiguous routing is visible.
+    """
     for key in ("id", "name", "ip_address", "hardware_id"):
-        for d in devices:
-            if d.get(key) == identifier:
-                return d
+        matches = [d for d in devices if d.get(key) == identifier]
+        if len(matches) > 1:
+            logger.warning(
+                "OSC bridge: %d devices share %s=%r — routing to first match; "
+                "use unique device IDs to avoid ambiguity",
+                len(matches), key, identifier,
+            )
+        if matches:
+            return matches[0]
     return None
 
 
@@ -99,6 +113,11 @@ class OscBridge:
         self._events: "collections.deque[dict]" = collections.deque(maxlen=RING_BUFFER_SIZE)
         self._subscribers: "list[queue.Queue]" = []
         self._lock = threading.Lock()
+
+        # Per-source-IP rate limiting for ring-buffer/SSE fan-out.
+        # Stores {ip: last_event_time}. Device forwarding is not throttled.
+        self._rate_state: "dict[str, float]" = {}
+        self._rate_min_interval = 1.0 / BRIDGE_RATE_LIMIT_HZ
 
         self._server: Optional[BlockingOSCUDPServer] = None
         self._thread: Optional[threading.Thread] = None
@@ -261,8 +280,20 @@ class OscBridge:
             if not targets and dropped is None and self._routing == "type-match":
                 dropped = "no type-matching device"
 
+        # Rate-limit ring-buffer and SSE fan-out per source IP.
+        # Device forwarding (above) is never throttled.
+        now = time.time()
+        with self._lock:
+            last = self._rate_state.get(src_ip, 0.0)
+            rate_ok = (now - last) >= self._rate_min_interval
+            if rate_ok:
+                self._rate_state[src_ip] = now
+
+        if not rate_ok:
+            return
+
         event = {
-            "t": time.time(),
+            "t": now,
             "src": src_ip,
             "address": address,
             "args": list(args),
