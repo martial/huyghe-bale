@@ -50,13 +50,25 @@ const faqItems: FAQItem[] = [
     category: "Vents devices",
     question: "What does a vents timeline actually control?",
     answer:
-      "Lanes A and B drive the two PWM fans only: lane A maps to /vents/fan/1 and lane B to /vents/fan/2 (duty cycle 0–1). Auto temperature regulation uses Peltiers only toward /vents/target; timelines never drive Peltiers or target/max — set those on the vents device panel.",
+      "Lanes A and B drive the two PWM fans only: lane A maps to /vents/fan/1 and lane B to /vents/fan/2 (duty cycle 0–1). Auto temperature regulation uses Peltiers only against the hot/cold setpoints — timelines never drive Peltiers, setpoints, or max. Set those on the vents device panel.",
   },
   {
     category: "Vents devices",
     question: "What's the difference between raw and auto mode?",
     answer:
-      "Peltier modules always have a cold side and a hot side when powered; the cold-side fan and hot-side fan vent those paths (see Docs). In raw mode you control cells and fans manually (including timeline fan lanes). In auto, the Pi compares the average of the two temperature probes to /vents/target (±0.5°C): too cold → all cells on (thermoelectric pumping on), too warm but under max → all off, in between → hold. Auto does not PWM fans for that loop — switching to auto zeros fans once. Max (Settings or /vents/max_temp) is a separate safety ceiling. Sending /vents/fan/* or other raw overrides switches back to raw mode.",
+      "Peltier modules always have a cold side and a hot side when powered; one DS18B20 probe reads each, pinned to its role via the touch-test panel on the device card. In raw mode you control cells and fans manually (including timeline fan lanes). In auto, the Pi runs a dual-setpoint bang-bang on the Peltier bank: ON whenever temp_hot < hot_target − 0.5°C OR temp_cold > cold_target + 0.5°C (drive gradient if either side wants more); OFF only when both probes are inside their bands; otherwise hold. Auto refuses to run if either probe role is unassigned (state probe_unassigned — banner appears). Max (Settings or /vents/max_temp) is a separate safety ceiling — any probe over max trips over_temp (Peltiers off, fans pinned to over_temp_fan_pct). Sending /vents/fan/* or other raw overrides switches back to raw mode.",
+  },
+  {
+    category: "Vents devices",
+    question: "How do I assign a probe to the hot or cold face?",
+    answer:
+      "Open the device card and find the Probe assignment panel. Touch one of the DS18B20 probes physically with a finger — its row's live temperature will rise visibly within a couple of seconds. Click 'Assign as hot' on the row that just rose. Repeat for the other probe with 'Assign as cold'. Per-Pi: each install pins its own pair of ROM ids (28-xxxxxxxxxxxx) into vents_prefs.json on the device. The pinning survives reboots and 1-Wire enumeration order changes.",
+  },
+  {
+    category: "Vents devices",
+    question: "Why does auto refuse to run after a fresh install or upgrade?",
+    answer:
+      "Auto requires both probe roles to be explicitly assigned and currently present on the bus. On a fresh install, probe_hot_id and probe_cold_id default to null. On upgrade from older firmware, the legacy single setpoint migrates to hot_target_c=cold_target_c, but probe ids are not auto-detected — you must run the touch test once. The state probe_unassigned and an amber banner make this visible.",
   },
   {
     category: "Vents devices",

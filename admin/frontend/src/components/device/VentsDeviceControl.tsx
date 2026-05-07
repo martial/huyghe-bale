@@ -6,6 +6,7 @@ import VentsHero from "./VentsHero";
 import VentsTestPanel from "./VentsTestPanel";
 import VentsAlarmBadge from "./VentsAlarmBadge";
 import VentsConfigPanel from "./VentsConfigPanel";
+import VentsProbeAssignmentPanel from "./VentsProbeAssignmentPanel";
 
 /**
  * Single vents device: hero status block + raw-control panel. Same
@@ -22,6 +23,7 @@ export default function VentsDeviceControl({ device }: { device: Device }) {
         {alarms && alarms.active.length > 0 && <VentsAlarmBadge alarms={alarms} />}
         <VentsHero status={status} stale={stale} lastPushAgeS={lastPushAgeS} />
         <VentsConfigPanel status={status} rpmAlarmThreshold={alarms?.threshold} />
+        <VentsProbeAssignmentPanel device={device} status={status} />
         <VentsTestPanel device={device} status={status} />
       </div>
     </DeviceControlCard>

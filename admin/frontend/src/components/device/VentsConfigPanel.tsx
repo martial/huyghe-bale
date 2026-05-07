@@ -32,7 +32,10 @@ export default function VentsConfigPanel({ status, rpmAlarmThreshold }: Props) {
   const minFan = status?.min_fan_pct;
   const maxFan = status?.max_fan_pct;
   const overTempFan = status?.over_temp_fan_pct;
-  const target = status?.target_c;
+  // Prefer the dual setpoints when available; legacy firmware only carries
+  // `target_c` (the back-compat alias for hot).
+  const hotTarget = status?.hot_target_c ?? status?.target_c;
+  const coldTarget = status?.cold_target_c;
 
   const fmt = (n: number | null | undefined, digits = 0) =>
     typeof n === "number" ? n.toFixed(digits) : "—";
@@ -46,7 +49,8 @@ export default function VentsConfigPanel({ status, rpmAlarmThreshold }: Props) {
         <span className="text-[10px] text-zinc-600">live from /vents/status</span>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        <Stat label="Target" value={fmt(target, 1)} unit="°C" dim={target == null} />
+        <Stat label="Hot target" value={fmt(hotTarget, 1)} unit="°C" dim={hotTarget == null} />
+        <Stat label="Cold target" value={fmt(coldTarget, 1)} unit="°C" dim={coldTarget == null} />
         <Stat label="Max temp" value={fmt(max, 1)} unit="°C" dim={max == null} />
         <Stat label="Min fan PWM" value={fmt(minFan)} unit="%" dim={minFan == null} />
         <Stat label="Max fan PWM" value={fmt(maxFan)} unit="%" dim={maxFan == null} />

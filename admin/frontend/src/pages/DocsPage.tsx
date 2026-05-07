@@ -44,7 +44,7 @@ const VENTS: Section = {
   id: "vents",
   title: "Vents",
   subtitle:
-    "Thermoelectric stacks (3 cells on GPIO 26/25/24): each module has a cold face and a hot face — powered, heat is pumped from one side to the other. Fan 1 (GPIO 20) serves the cold-side heat exchanger, fan 2 (GPIO 18) the hot-side box (see tachos A/B per fan). Two DS18B20 probes read those air paths (temp1 / temp2 in status). Auto mode compares the average of both readings to /vents/target with bang‑bang Peltier power (states heating = all cells on, cooling = all off, holding = deadband); it does not PWM fans for regulation. Max (persisted on the Pi) is a separate safety ceiling — above max, over_temp (Peltiers off; fan duty unchanged) and the admin banner.",
+    "Thermoelectric stacks (3 cells on GPIO 26/25/24): each module has a cold face and a hot face — powered, heat is pumped from one side to the other. Fan 1 (GPIO 20) serves the cold-side heat exchanger, fan 2 (GPIO 18) the hot-side box (see tachos A/B per fan). Two DS18B20 probes — one pinned to the hot face, one to the cold face — by 64-bit ROM serial via the touch-test panel in the device card. Auto runs a dual-setpoint bang-bang on the Peltier bank: ON when temp_hot < hot_target − H OR temp_cold > cold_target + H (drive gradient if either side wants more), OFF only when both probes are inside their bands; deadband holds the previous mask. Auto refuses to run while either role is unassigned. Max (persisted on the Pi) is a separate safety ceiling — any probe above max trips over_temp (Peltiers off; fans pinned to over_temp_fan_pct).",
   transport: { osc: "UDP 9000 (admin → Pi) · UDP 9001 (Pi → admin)", http: "http://<ip>:9001" },
   groups: [
     {
@@ -110,14 +110,48 @@ const VENTS: Section = {
           direction: "admin-to-pi",
           args: "string raw|auto",
           description:
-            "'raw' = manual Peltiers and fans. 'auto' = bang‑bang uses Peltiers only toward /vents/target (±0.5°C band); fans are not driven for thermoregulation — switching to auto zeros fan PWM once. Use /vents/fan/* or raw mode for airflow.",
+            "'raw' = manual Peltiers and fans. 'auto' = dual-setpoint bang-bang on the Peltier bank using /vents/target/hot and /vents/target/cold; fans are not driven for thermoregulation — switching to auto zeros fan PWM once. Auto refuses to run while either probe role is unassigned (state probe_unassigned). Use /vents/fan/* or raw mode for airflow.",
         },
         {
           address: "/vents/target",
           direction: "admin-to-pi",
           args: "float °C",
           description:
-            "Regulation setpoint (°C): auto bang-bang on cell power — below target−0.5°C all cells on (state heating: thermoelectric heat pump active); above target+0.5°C and under max all off (state cooling: no pumping). Deadband holds the previous mask. Labels refer to control action, not which physical face is hot/cold. Fans unchanged by auto. Safety max separate (Settings, /vents/max_temp). Pi clamps target/max so the band stays below max.",
+            "Back-compat alias — routes to /vents/target/hot. Existing scripts and saved orchestrations keep working unchanged. Pi clamps against max_temp_c (and pulls cold below if needed).",
+        },
+        {
+          address: "/vents/target/hot",
+          direction: "admin-to-pi",
+          args: "float °C",
+          description:
+            "Hot-side setpoint (°C). Auto regulates the probe pinned to the hot face against this value. ON when temp_hot < hot_target − 0.5°C. Persisted in vents_prefs.json. Pi cross-clamps: hot stays below max_temp_c − H − margin, and pulls cold_target_c down with it if needed.",
+        },
+        {
+          address: "/vents/target/cold",
+          direction: "admin-to-pi",
+          args: "float °C",
+          description:
+            "Cold-side setpoint (°C). Auto regulates the probe pinned to the cold face against this value. ON when temp_cold > cold_target + 0.5°C. Persisted. Cross-clamped: cold ≤ hot − 0.55°C, otherwise the OR rule would be permanently triggered. Operator-set independently of hot.",
+        },
+        {
+          address: "/vents/probe/assign_hot",
+          direction: "admin-to-pi",
+          args: "string rom_id (28-xxxxxxxxxxxx)",
+          description:
+            "Pin the probe with the given DS18B20 ROM serial to the hot face. Persisted per-Pi in vents_prefs.json. Same id can't be assigned to both roles. The id may be saved before the probe is wired in — auto refuses to run until it's actually on the bus. Touch-test workflow: warm a probe with a finger, watch its row tick up in the assignment panel, click Assign as hot.",
+        },
+        {
+          address: "/vents/probe/assign_cold",
+          direction: "admin-to-pi",
+          args: "string rom_id",
+          description: "Symmetrical to assign_hot — pins the probe to the cold face.",
+        },
+        {
+          address: "/vents/probe/clear",
+          direction: "admin-to-pi",
+          args: "string \"hot\"|\"cold\"|\"both\"",
+          description:
+            "Clear one or both role assignments. Persists. Auto immediately falls into state probe_unassigned for whichever role is now null.",
         },
       ],
     },
@@ -129,9 +163,9 @@ const VENTS: Section = {
           address: "/vents/status",
           direction: "pi-to-admin",
           args:
-            "float temp1_c, float temp2_c, float fan1, float fan2, int peltier_mask, int rpm1A, int rpm1B, int rpm2A, int rpm2B, float target_c, string mode, string state, float max_temp_c",
+            "float temp1_c, float temp2_c, float fan1, float fan2, int peltier_mask, int rpm1A, int rpm1B, int rpm2A, int rpm2B, float target_c, string mode, string state, float max_temp_c, float min_fan_pct, float over_temp_fan_pct, float max_fan_pct, float temp_hot_c, float temp_cold_c, float hot_target_c, float cold_target_c",
           description:
-            "Broadcast at 5 Hz to the last admin that pinged. Missing DS18B20 sensors report -1.0. state ∈ {idle, heating, cooling, holding, sensor_error, over_temp}. Older firmware omits the final max_temp_c arg. GET /health lists vents in over_temp for the banner.",
+            "20 args, broadcast at 5 Hz to the last admin that pinged. Missing temps (temp1, temp2, temp_hot_c, temp_cold_c) encode as -1.0. state ∈ {idle, heating, cooling, holding, sensor_error, probe_unassigned, over_temp}. target_c at position 9 mirrors hot_target_c for back-compat. Old firmware sends fewer args (12-16); the admin parses positions 12-19 as optional. probes[] (the discovered ROM ids + per-probe live temps) doesn't fit on this broadcast — admin fetches it via the HTTP snapshot command. GET /api/v1/health lists vents in over_temp and probe_unassigned for the banner.",
         },
       ],
     },
@@ -149,11 +183,11 @@ const VENTS: Section = {
           address: "POST /gpio/test",
           direction: "http",
           args:
-            '{command: "peltier"|"peltier_mask"|"fan"|"mode"|"target"|"max_temp", index?: 1..3, value: …}',
+            '{command: "peltier"|"peltier_mask"|"fan"|"mode"|"target"|"target_hot"|"target_cold"|"max_temp"|"probe_assign_hot"|"probe_assign_cold"|"probe_clear"|"snapshot", index?: 1..3, value: …}',
           description:
-            "Runs the same handler as the matching OSC address, bypassing UDP. Returns {ok, …current status snapshot}.",
+            "Runs the same handler as the matching OSC address, bypassing UDP. Returns {ok, …current status snapshot} including probes[]. The 'snapshot' command is a no-op used by the admin to fetch the full discovered-probes list (which can't ride OSC).",
           example:
-            'curl -XPOST -d \'{"command":"target","value":22.0}\' http://<ip>:9001/gpio/test',
+            'curl -XPOST -d \'{"command":"snapshot"}\' http://<ip>:9001/gpio/test',
         },
         {
           address: "POST /update",
@@ -367,7 +401,7 @@ const BRIDGE: Section = {
           description:
             "Prefix any address with /to/<identifier>/ and the bridge forwards only to that one device, regardless of routing mode. <identifier> matches (in order): device id, name, IP address, or hardware id. Match is exact and case-sensitive. Name renames take effect immediately — the bridge re-reads the device store on every message. Unknown identifier → event logged with dropped=\"no device matching '<x>'\" and not forwarded.",
           example:
-            "oscsend <admin-ip> 9002 /to/vents-1/vents/fan/1 f 0.5\noscsend <admin-ip> 9002 /to/192.168.1.74/vents/target f 20\noscsend <admin-ip> 9002 /to/vents_a1b2c3d4/vents/mode s auto",
+            "oscsend <admin-ip> 9002 /to/vents-1/vents/fan/1 f 0.5\noscsend <admin-ip> 9002 /to/192.168.1.74/vents/target/hot f 25\noscsend <admin-ip> 9002 /to/vents_a1b2c3d4/vents/mode s auto",
         },
         {
           address: "Name constraints",

@@ -5,9 +5,30 @@ export type VentsState =
   | "cooling"
   | "holding"
   | "sensor_error"
+  | "probe_unassigned"
   | "over_temp";
 
-export type VentsCommand = "peltier" | "peltier_mask" | "fan" | "mode" | "target";
+export type VentsCommand =
+  | "peltier"
+  | "peltier_mask"
+  | "fan"
+  | "mode"
+  | "target"
+  | "target_hot"
+  | "target_cold"
+  | "max_temp"
+  | "probe_assign_hot"
+  | "probe_assign_cold"
+  | "probe_clear";
+
+/** A DS18B20 probe discovered on the 1-Wire bus. `id` is the 64-bit ROM
+ *  serial (`28-xxxxxxxxxxxx`) — stable across boots, used to pin the probe
+ *  to its physical role (hot face vs cold face). `temp_c` is the most
+ *  recent reading (null on parse/IO failure). */
+export interface VentsProbe {
+  id: string;
+  temp_c: number | null;
+}
 
 /** Display labels for the four fan-tach channels echoed in /vents/status.
  *  Channels 0/1 → fan 1's two tachometer signals; 2/3 → fan 2's two. */
@@ -29,7 +50,26 @@ export interface VentsStatus {
   rpm1B: number;
   rpm2A: number;
   rpm2B: number;
+  /** Back-compat alias for `hot_target_c`. Always equals it on new firmware. */
   target_c: number;
+  /** Hot-side regulation setpoint (°C). Regulates the probe assigned to the
+   *  hot face. */
+  hot_target_c?: number;
+  /** Cold-side regulation setpoint (°C). Regulates the probe assigned to the
+   *  cold face. */
+  cold_target_c?: number;
+  /** Live reading from the probe assigned to hot face. Null when the probe is
+   *  unassigned or its assigned ROM id isn't currently on the bus. */
+  temp_hot_c?: number | null;
+  /** Live reading from the probe assigned to cold face. Same null rules. */
+  temp_cold_c?: number | null;
+  /** ROM id of the probe assigned to hot. Null = unassigned. */
+  probe_hot_id?: string | null;
+  /** ROM id of the probe assigned to cold. Null = unassigned. */
+  probe_cold_id?: string | null;
+  /** Every DS18B20 currently discovered on the bus. Drives the probe
+   *  assignment UI. Absent on legacy firmware (the panel hides itself). */
+  probes?: VentsProbe[];
   max_temp_c?: number | null;
   /** PWM floor (% duty) the Pi enforces on every non-zero fan command. */
   min_fan_pct?: number | null;

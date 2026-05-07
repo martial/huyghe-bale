@@ -29,8 +29,33 @@ export function setVentsMode(deviceId: string, mode: VentsMode) {
   return sendVentsCommand(deviceId, { command: "mode", value: mode });
 }
 
+/** Back-compat alias — sets the hot setpoint via the legacy `/vents/target`
+ *  address. New code should prefer setVentsHotTarget. */
 export function setVentsTarget(deviceId: string, celsius: number) {
   return sendVentsCommand(deviceId, { command: "target", value: celsius });
+}
+
+export function setVentsHotTarget(deviceId: string, celsius: number) {
+  return sendVentsCommand(deviceId, { command: "target_hot", value: celsius });
+}
+
+export function setVentsColdTarget(deviceId: string, celsius: number) {
+  return sendVentsCommand(deviceId, { command: "target_cold", value: celsius });
+}
+
+export function assignVentsProbe(
+  deviceId: string,
+  role: "hot" | "cold",
+  romId: string,
+) {
+  return sendVentsCommand(deviceId, {
+    command: role === "hot" ? "probe_assign_hot" : "probe_assign_cold",
+    value: romId,
+  });
+}
+
+export function clearVentsProbe(deviceId: string, role: "hot" | "cold" | "both") {
+  return sendVentsCommand(deviceId, { command: "probe_clear", value: role });
 }
 
 export function fetchVentsStatus(deviceId: string) {

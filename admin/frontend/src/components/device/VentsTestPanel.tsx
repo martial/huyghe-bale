@@ -5,7 +5,8 @@ import {
   setVentsPeltier,
   setVentsFan,
   setVentsMode,
-  setVentsTarget,
+  setVentsHotTarget,
+  setVentsColdTarget,
   sendVentsCommand,
 } from "../../api/vents";
 
@@ -20,15 +21,26 @@ interface Props {
  * this by VentsHero — so this component is pure controls.
  */
 export default function VentsTestPanel({ device, status }: Props) {
-  const [target, setTarget] = useState(25);
+  const [hotTarget, setHotTarget] = useState(25);
+  const [coldTarget, setColdTarget] = useState(20);
   const [busy, setBusy] = useState(false);
   const [fanSlider, setFanSlider] = useState<[number, number]>([0.2, 0.2]);
 
   // Seed local slider state from the first sensible status push so the
-  // controls reflect what the Pi is actually doing.
+  // controls reflect what the Pi is actually doing. New firmware sends
+  // hot_target_c / cold_target_c separately; legacy firmware only carries
+  // `target_c` (the back-compat alias for hot — cold falls through to its
+  // initial value until the operator moves the slider).
   useEffect(() => {
-    if (status && typeof status.target_c === "number") {
-      setTarget((t) => (t === 25 && status.target_c !== 25 ? status.target_c : t));
+    if (status) {
+      const hot = status.hot_target_c ?? status.target_c;
+      if (typeof hot === "number") {
+        setHotTarget((t) => (t === 25 && hot !== 25 ? hot : t));
+      }
+      if (typeof status.cold_target_c === "number") {
+        const cold = status.cold_target_c;
+        setColdTarget((t) => (t === 20 && cold !== 20 ? cold : t));
+      }
     }
     if (status && typeof status.fan1 === "number" && typeof status.fan2 === "number") {
       setFanSlider(([a, b]) => [
@@ -78,23 +90,44 @@ export default function VentsTestPanel({ device, status }: Props) {
         </button>
       </div>
 
-      {/* Target slider */}
+      {/* Hot target slider — orange accent (matches Peltier "ON" colour). */}
       <div className="flex items-center gap-2">
-        <span className="text-[10px] text-zinc-500 uppercase tracking-wider w-14">Target</span>
+        <span className="text-[10px] text-orange-300 uppercase tracking-wider w-14 font-semibold">Hot</span>
         <input
           type="range"
           min={5}
           max={35}
           step={0.5}
-          value={target}
-          onChange={(e) => setTarget(Number(e.target.value))}
-          onMouseUp={() => wrap(() => setVentsTarget(device.id, target))}
-          onTouchEnd={() => wrap(() => setVentsTarget(device.id, target))}
+          value={hotTarget}
+          onChange={(e) => setHotTarget(Number(e.target.value))}
+          onMouseUp={() => wrap(() => setVentsHotTarget(device.id, hotTarget))}
+          onTouchEnd={() => wrap(() => setVentsHotTarget(device.id, hotTarget))}
           disabled={!online || busy}
           className="flex-1 accent-orange-400"
         />
         <span className="text-xs text-zinc-300 font-mono w-12 text-right">
-          {target.toFixed(1)}°C
+          {hotTarget.toFixed(1)}°C
+        </span>
+      </div>
+
+      {/* Cold target slider — sky accent. Pi-side clamp (cold ≤ hot − H − margin)
+          is authoritative; we don't gate the slider client-side. */}
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] text-sky-300 uppercase tracking-wider w-14 font-semibold">Cold</span>
+        <input
+          type="range"
+          min={5}
+          max={35}
+          step={0.5}
+          value={coldTarget}
+          onChange={(e) => setColdTarget(Number(e.target.value))}
+          onMouseUp={() => wrap(() => setVentsColdTarget(device.id, coldTarget))}
+          onTouchEnd={() => wrap(() => setVentsColdTarget(device.id, coldTarget))}
+          disabled={!online || busy}
+          className="flex-1 accent-sky-400"
+        />
+        <span className="text-xs text-zinc-300 font-mono w-12 text-right">
+          {coldTarget.toFixed(1)}°C
         </span>
       </div>
 
