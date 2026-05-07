@@ -218,7 +218,7 @@ Two files under `~/.config/gpio-osc/`:
 | File | Personality | Contents | Updated by |
 |---|---|---|---|
 | `device.json` | both | `{type, id}` + the entire `trolley` settings block (rail length, microsteps, calibration_direction, accel/decel, soft_limit_pct, permissive_mode, …) | `identity.py` (boot) and `/trolley/config/save` |
-| `vents_prefs.json` | vents only | `{max_temp_c, min_fan_pct, max_fan_pct, over_temp_fan_pct}` | `/vents/max_temp` and `/vents/config/*` |
+| `vents_prefs.json` | vents only | `{max_temp_c, min_fan_pct, max_fan_pct, over_temp_fan_pct, hot_target_c, cold_target_c, probe_hot_id, probe_cold_id}` | `/vents/max_temp`, `/vents/target/{hot,cold}`, `/vents/probe/{assign_hot,assign_cold,clear}`, `/vents/config/*` |
 
 Both writers use the **temp-file-then-rename** pattern, so a power cut
 mid-write can't corrupt the file. Load is forward-compat (missing keys
