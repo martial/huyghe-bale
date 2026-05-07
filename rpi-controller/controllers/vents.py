@@ -64,6 +64,7 @@ import glob
 import json
 import logging
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -454,9 +455,9 @@ def setup(webhooks):
     # 1-Wire setup for DS18B20 temperature probes. The modprobe calls are
     # no-ops if already loaded (idempotent); still log failures for visibility.
     for mod in ("w1-gpio", "w1-therm"):
-        rc = os.system(f"modprobe {mod} > /dev/null 2>&1")
-        if rc != 0:
-            logger.warning("modprobe %s returned %d — w1 may not be available", mod, rc)
+        result = subprocess.run(["modprobe", mod], capture_output=True, timeout=5)
+        if result.returncode != 0:
+            logger.warning("modprobe %s returned %d — w1 may not be available", mod, result.returncode)
     _discover_sensors()
 
     _temp_thread = threading.Thread(target=_temp_loop, name="vents-temp", daemon=True)

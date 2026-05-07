@@ -128,6 +128,21 @@ class PlaybackEngine:
             devices_map: Dict of device_id -> device dict.
         """
         self.stop()
+
+        # Validate all timeline references before starting.
+        missing = [
+            step.get("timeline_id")
+            for step in orchestration.get("steps", [])
+            if step.get("timeline_id") and step.get("timeline_id") not in resolved_timelines
+        ]
+        if missing:
+            logger.error(
+                "Orchestration %s: missing timeline(s): %s — refusing to start",
+                orchestration.get("id"), missing,
+            )
+            self._last_error = f"Missing timelines: {missing}"
+            return
+
         with self._lock:
             self._playback_type = "orchestration"
             self._playback_id = orchestration.get("id")
