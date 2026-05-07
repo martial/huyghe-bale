@@ -1,13 +1,27 @@
-"""Check latest version from GitHub remote, local git, or embedded VERSION file."""
+"""Resolve the latest commit on `main` for the admin's "update available" pill.
+
+Resolution order (first non-None wins):
+  1. Local git checkout — dev mode (`python app.py` from the repo).
+  2. GitHub public API — bundled .app on a host with internet.
+  3. Embedded VERSION file baked in at build time — offline kiosk fallback.
+"""
 
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
+import urllib.request
+
+logger = logging.getLogger("version_checker")
 
 _cache = {"data": None, "ts": 0}
 CACHE_TTL = 60
+
+_GITHUB_REPO = "martial/huyghe-bale"
+_GITHUB_BRANCH = "main"
+_GITHUB_TIMEOUT = 5
 
 # Path to the VERSION file embedded at build time
 _MEIPASS = getattr(sys, "_MEIPASS", None)
@@ -32,52 +46,78 @@ def _read_embedded_version():
             "date": data.get("date", "unknown"),
             "message": data.get("message", ""),
         }
-    except Exception:
+    except Exception as e:
+        logger.debug("Embedded VERSION read failed: %s", e)
         return None
 
 
 def _git_root():
-    """Find the git repo root from this file's location."""
+    """Find the git repo root from this file's location, or None if we're
+    not inside a git checkout (e.g. running from inside _MEIPASS)."""
     cwd = os.path.dirname(os.path.abspath(__file__))
     try:
         return subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"], cwd=cwd, text=True
+            ["git", "rev-parse", "--show-toplevel"], cwd=cwd, text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
     except Exception:
-        return cwd
+        return None
 
 
 def _fetch_from_local_git():
-    """Fetch + read origin/main from local git."""
+    """Fetch + read origin/main from a local git checkout."""
     root = _git_root()
-    subprocess.check_output(["git", "fetch", "origin", "main"], cwd=root, text=True, timeout=10)
-    h = subprocess.check_output(
-        ["git", "rev-parse", "--short", "origin/main"], cwd=root, text=True
-    ).strip()
-    log = subprocess.check_output(
-        ["git", "log", "-1", "--format=%ci\n%s", "origin/main"], cwd=root, text=True
-    ).strip().split("\n", 1)
-    return {"hash": h, "date": log[0], "message": log[1] if len(log) > 1 else ""}
+    if not root:
+        return None
+    try:
+        subprocess.check_output(["git", "fetch", "origin", _GITHUB_BRANCH],
+                                cwd=root, text=True, timeout=10,
+                                stderr=subprocess.DEVNULL)
+        h = subprocess.check_output(
+            ["git", "rev-parse", "--short", f"origin/{_GITHUB_BRANCH}"],
+            cwd=root, text=True,
+        ).strip()
+        log = subprocess.check_output(
+            ["git", "log", "-1", "--format=%ci\n%s", f"origin/{_GITHUB_BRANCH}"],
+            cwd=root, text=True,
+        ).strip().split("\n", 1)
+        return {"hash": h, "date": log[0], "message": log[1] if len(log) > 1 else ""}
+    except Exception as e:
+        logger.debug("Local git fetch failed: %s", e)
+        return None
+
+
+def _fetch_from_github():
+    """Hit GitHub's public API for the latest commit on the configured branch."""
+    url = f"https://api.github.com/repos/{_GITHUB_REPO}/commits/{_GITHUB_BRANCH}"
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "huyghe-bale-admin",
+        "Accept": "application/vnd.github+json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=_GITHUB_TIMEOUT) as resp:
+            data = json.load(resp)
+        return {
+            "hash": data["sha"][:7],
+            "date": data["commit"]["committer"]["date"],
+            "message": data["commit"]["message"].split("\n", 1)[0],
+        }
+    except Exception as e:
+        logger.debug("GitHub API fetch failed: %s", e)
+        return None
 
 
 def get_latest_version():
-    """Return latest commit on main. Uses embedded VERSION in packaged app, local git in dev. Cached for 60s."""
+    """Return latest commit on main, cached for 60s. See module docstring."""
     now = time.time()
     if _cache["data"] and now - _cache["ts"] < CACHE_TTL:
         return _cache["data"]
 
-    # Packaged app: use embedded VERSION file
-    embedded = _read_embedded_version()
-    if embedded:
-        _cache["data"] = embedded
-        _cache["ts"] = now
-        return embedded
+    for fetcher in (_fetch_from_local_git, _fetch_from_github, _read_embedded_version):
+        result = fetcher()
+        if result:
+            _cache["data"] = result
+            _cache["ts"] = now
+            return result
 
-    # Dev mode: git fetch + read origin/main locally
-    try:
-        result = _fetch_from_local_git()
-        _cache["data"] = result
-        _cache["ts"] = now
-        return result
-    except Exception:
-        return {"hash": "unknown", "date": "unknown", "message": ""}
+    return {"hash": "unknown", "date": "unknown", "message": ""}
