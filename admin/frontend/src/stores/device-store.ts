@@ -27,7 +27,7 @@ interface DeviceState {
   scan: (subnet?: string) => void;
   clearScanResults: () => void;
   addDiscovered: (hosts: { ip: string; osc_port: number; name: string }[]) => Promise<void>;
-  fetchLatestVersion: () => Promise<void>;
+  fetchLatestVersion: (opts?: { force?: boolean }) => Promise<void>;
   updateSoftware: (id: string) => Promise<void>;
   updateAllOutdated: () => Promise<void>;
 }
@@ -106,9 +106,9 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     await get().fetchList();
   },
 
-  async fetchLatestVersion() {
+  async fetchLatestVersion(opts?: { force?: boolean }) {
     try {
-      const latest = await api.getLatestVersion();
+      const latest = await api.getLatestVersion(opts?.force);
       set({ latestVersion: latest });
     } catch (e) {
       console.error("Failed to fetch latest version:", e);

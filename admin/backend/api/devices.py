@@ -269,7 +269,14 @@ def device_status_stream():
 
 @bp.route("/version/latest", methods=["GET"])
 def latest_version():
-    """Return latest commit info from GitHub."""
+    """Return latest commit info on main.
+
+    Query: refresh=1 invalidates the 60s cache before fetching, so the
+    "Refresh versions" button feels responsive even when re-clicked
+    within the cache window.
+    """
+    if (request.args.get("refresh") or "").lower() in ("1", "true", "yes"):
+        invalidate_version_cache()
     return jsonify(get_latest_version())
 
 
