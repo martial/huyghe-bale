@@ -106,6 +106,35 @@ if [ -n "$APT_DEPS" ]; then
     fi
 fi
 
+# --- 1-Wire bus for DS18B20 temperature probes (vents only) ---
+# Imager doesn't enable w1-gpio by default. Without this, the kernel never
+# instantiates a 1-wire bus master on GPIO 4, the controller logs
+# "No DS18B20 sensors found." on every startup, and the admin device card
+# shows no temperature.
+if [ "$DEVICE_TYPE" = "vents" ]; then
+    BOOT_CONFIG=""
+    for f in /boot/firmware/config.txt /boot/config.txt; do
+        [ -f "$f" ] && BOOT_CONFIG="$f" && break
+    done
+    if [ -z "$BOOT_CONFIG" ]; then
+        echo "AVERTISSEMENT: aucun config.txt trouve dans /boot/firmware ou /boot — 1-Wire non configure."
+    elif grep -qE "^[[:space:]]*dtoverlay=w1-gpio([[:space:],]|$)" "$BOOT_CONFIG"; then
+        echo "1-Wire deja active dans $BOOT_CONFIG."
+    else
+        echo "Activation du bus 1-Wire (dtoverlay=w1-gpio) dans $BOOT_CONFIG..."
+        sudo sh -c "printf '\n# 1-Wire bus for DS18B20 temperature probes (huyghe-bale vents)\ndtoverlay=w1-gpio\n' >> '$BOOT_CONFIG'"
+    fi
+    # Load now so the controller sees the probes without requiring a reboot.
+    # If the bus master is already up (e.g. re-running the installer), skip.
+    if ! ls /sys/bus/w1/devices/w1_bus_master* >/dev/null 2>&1; then
+        if command -v dtoverlay >/dev/null 2>&1 && sudo dtoverlay w1-gpio 2>/dev/null; then
+            echo "Bus 1-Wire active a chaud — pas de reboot necessaire."
+        else
+            echo "Reboot requis pour activer le bus 1-Wire (dtoverlay -l indisponible ou a echoue)."
+        fi
+    fi
+fi
+
 echo "Creation de l'environnement virtuel..."
 if [ -d "$APP_DIR/venv" ] && [ -n "$VENV_OPTS" ]; then
     if [ -f "$APP_DIR/venv/pyvenv.cfg" ] && grep -q "include-system-site-packages = false" "$APP_DIR/venv/pyvenv.cfg"; then
