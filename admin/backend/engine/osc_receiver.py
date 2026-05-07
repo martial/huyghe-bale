@@ -17,14 +17,26 @@ _RPM_ALARM_DEBOUNCE_S = 3.0
 # unbounded-grow this dict.
 _RECENT_ALARMS_CAP = 50
 
-# /vents/status optional trailing args. Firmware may send 12, 13, 14, 15 or 16
-# args; each entry here is appended to the snapshot only when present.
+# /vents/status optional trailing args. Firmware iterations have appended
+# fields over time without renumbering; each entry here is read out of
+# `args[idx]` only when present, so old firmware (12 args, no max_temp_c)
+# through new firmware (20 args, dual setpoints) both decode.
+#
+# Positions 16-19 are the dual-setpoint tail. temp_hot_c / temp_cold_c
+# nullable (encoded -1.0 → None). target_c at position 9 is the back-compat
+# alias and equals hot_target_c.
 _VENTS_OPTIONAL_STATUS_FIELDS = (
     (12, "max_temp_c"),
     (13, "min_fan_pct"),
     (14, "over_temp_fan_pct"),
     (15, "max_fan_pct"),
+    (16, "temp_hot_c"),
+    (17, "temp_cold_c"),
+    (18, "hot_target_c"),
+    (19, "cold_target_c"),
 )
+# Subset of the above that are nullable (-1.0 sentinel → None).
+_VENTS_NULLABLE_STATUS_FIELDS = frozenset({"temp_hot_c", "temp_cold_c"})
 
 
 class OscReceiver:
@@ -120,10 +132,12 @@ class OscReceiver:
         controllers.vents.get_status_osc_args():
           (temp1, temp2, fan1, fan2, peltier_mask,
            rpm1A, rpm1B, rpm2A, rpm2B, target_c, mode, state
-           [, max_temp_c [, min_fan_pct, over_temp_fan_pct]])
-        Missing temperatures arrive encoded as -1.0 and are exposed as None.
-        Older firmware sends 12 payload args (no max_temp_c); pre-min-fan
-        firmware sends 13. Newer firmware sends 15.
+           [, max_temp_c, min_fan_pct, over_temp_fan_pct, max_fan_pct
+            [, temp_hot_c, temp_cold_c, hot_target_c, cold_target_c]])
+        Missing temperatures (temp1, temp2, temp_hot_c, temp_cold_c) arrive
+        encoded as -1.0 and are exposed as None.
+        Firmware iterations: 12 args (legacy, no max_temp_c) → 13 (min_fan)
+        → 15 (over_temp_fan_pct) → 16 (max_fan_pct) → 20 (dual setpoints).
         """
         ip = client_address[0]
         now = time.time()
@@ -167,14 +181,20 @@ class OscReceiver:
             "state": state,
             "timestamp": now,
         }
-        # Optional config echoes appended by newer firmware. Older firmware
-        # may send 12 args (no max_temp_c) up through 16 args (with max_fan_pct).
+        # Optional tail appended by newer firmware. Old admins reading new
+        # firmware ignore positions past their understanding; this loop only
+        # populates fields present in the actual arg list, so old firmware
+        # (12 args) through current (20 args) both decode.
         for idx, key in _VENTS_OPTIONAL_STATUS_FIELDS:
             if len(args) > idx:
                 try:
-                    row[key] = float(args[idx])
+                    val = float(args[idx])
                 except (TypeError, ValueError):
-                    pass
+                    continue
+                if key in _VENTS_NULLABLE_STATUS_FIELDS and val < 0:
+                    row[key] = None
+                else:
+                    row[key] = val
         self.vents_status[ip] = row
 
     def _update_rpm_alarms(self, ip, now, rpms, commanded):

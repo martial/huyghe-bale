@@ -24,15 +24,29 @@ def _fresh_receiver():
 def _vents_args(*, fan1=0.5, fan2=0.5, rpms=(800, 800, 800, 800),
                 temp1=22.0, temp2=22.0, target=25.0, mode="auto", state="holding",
                 max_temp=80.0, min_fan_pct=20.0, over_temp_fan_pct=100.0,
-                max_fan_pct=100.0):
-    """Helper: assemble a /vents/status arg tuple matching the Pi's contract."""
-    return (
+                max_fan_pct=100.0,
+                temp_hot=None, temp_cold=None,
+                hot_target=None, cold_target=None):
+    """Helper: assemble a /vents/status arg tuple matching the Pi's contract.
+
+    The dual-setpoint tail (temp_hot, temp_cold, hot_target, cold_target) is
+    appended only when at least one of the four is provided — keeps the
+    short-form variant available for legacy-firmware tests."""
+    head = (
         float(temp1), float(temp2), float(fan1), float(fan2), 0,
         int(rpms[0]), int(rpms[1]), int(rpms[2]), int(rpms[3]),
         float(target), str(mode), str(state),
         float(max_temp), float(min_fan_pct), float(over_temp_fan_pct),
         float(max_fan_pct),
     )
+    if any(v is not None for v in (temp_hot, temp_cold, hot_target, cold_target)):
+        return head + (
+            float(temp_hot if temp_hot is not None else -1.0),
+            float(temp_cold if temp_cold is not None else -1.0),
+            float(hot_target if hot_target is not None else target),
+            float(cold_target if cold_target is not None else (target - 5.0)),
+        )
+    return head
 
 
 class TestHandlePong:
@@ -152,6 +166,40 @@ class TestHandleVentsStatus:
         s = r.vents_status["10.1.0.3"]
         assert s["temp1_c"] is None
         assert s["temp2_c"] == 22.0
+
+    def test_dual_setpoint_tail_decodes(self):
+        r = _fresh_receiver()
+        r._handle_vents_status(
+            ("10.1.0.5", 5000), "/vents/status",
+            *_vents_args(
+                temp1=28.0, temp2=18.0,
+                target=25.0, hot_target=25.0, cold_target=18.0,
+                temp_hot=28.0, temp_cold=18.0,
+            ),
+        )
+        s = r.vents_status["10.1.0.5"]
+        assert s["temp_hot_c"] == 28.0
+        assert s["temp_cold_c"] == 18.0
+        assert s["hot_target_c"] == 25.0
+        assert s["cold_target_c"] == 18.0
+        # Legacy `target_c` slot still mirrors hot for back-compat.
+        assert s["target_c"] == 25.0
+
+    def test_dual_setpoint_temp_neg1_decoded_as_none(self):
+        # Probe missing/unassigned: Pi encodes temp_hot/cold as -1.0.
+        r = _fresh_receiver()
+        r._handle_vents_status(
+            ("10.1.0.6", 5000), "/vents/status",
+            *_vents_args(
+                temp_hot=-1.0, temp_cold=-1.0,
+                hot_target=25.0, cold_target=18.0,
+            ),
+        )
+        s = r.vents_status["10.1.0.6"]
+        assert s["temp_hot_c"] is None
+        assert s["temp_cold_c"] is None
+        assert s["hot_target_c"] == 25.0
+        assert s["cold_target_c"] == 18.0
 
 
 class TestRpmAlarmDetection:

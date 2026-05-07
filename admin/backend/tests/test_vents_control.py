@@ -135,6 +135,113 @@ def test_target_dispatches_float(ctx):
         assert args[3] == pytest.approx(18.5)
 
 
+def test_target_hot_dispatches_to_hot_address(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc") as mock_osc:
+        client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "target_hot", "value": 22.0}),
+            content_type="application/json",
+        )
+        args = mock_osc.send.call_args[0]
+        assert args[2] == "/vents/target/hot"
+        assert args[3] == pytest.approx(22.0)
+
+
+def test_target_cold_dispatches_to_cold_address(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc") as mock_osc:
+        client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "target_cold", "value": 12.0}),
+            content_type="application/json",
+        )
+        args = mock_osc.send.call_args[0]
+        assert args[2] == "/vents/target/cold"
+        assert args[3] == pytest.approx(12.0)
+
+
+_VALID_ID = "28-aaaaaaaaaaaa"
+
+
+def test_probe_assign_hot_dispatches_rom_id(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc") as mock_osc:
+        client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "probe_assign_hot", "value": _VALID_ID}),
+            content_type="application/json",
+        )
+        args = mock_osc.send.call_args[0]
+        assert args[2] == "/vents/probe/assign_hot"
+        assert args[3] == _VALID_ID
+
+
+def test_probe_assign_cold_dispatches_rom_id(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc") as mock_osc:
+        client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "probe_assign_cold", "value": "28-bbbbbbbbbbbb"}),
+            content_type="application/json",
+        )
+        args = mock_osc.send.call_args[0]
+        assert args[2] == "/vents/probe/assign_cold"
+        assert args[3] == "28-bbbbbbbbbbbb"
+
+
+def test_probe_assign_rejects_invalid_rom_id(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc"):
+        resp = client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "probe_assign_hot", "value": "not-a-rom"}),
+            content_type="application/json",
+        )
+    assert resp.status_code == 400
+
+
+def test_probe_assign_rejects_wrong_family_prefix(ctx):
+    # DS18B20 family is 28-; a 10- (DS18S20) prefix must be rejected.
+    client, dev = ctx
+    with patch("api.vents_control._osc"):
+        resp = client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "probe_assign_hot", "value": "10-aaaaaaaaaaaa"}),
+            content_type="application/json",
+        )
+    assert resp.status_code == 400
+
+
+def test_probe_clear_accepts_hot_cold_both(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc") as mock_osc:
+        for v in ("hot", "cold", "both"):
+            resp = client.post(
+                f"/api/v1/vents-control/{dev['id']}/command",
+                data=json.dumps({"command": "probe_clear", "value": v}),
+                content_type="application/json",
+            )
+            assert resp.status_code == 200
+        # Three OSC sends, each to /vents/probe/clear with the value
+        assert mock_osc.send.call_count == 3
+        for call_args, expected in zip(mock_osc.send.call_args_list, ("hot", "cold", "both")):
+            args = call_args[0]
+            assert args[2] == "/vents/probe/clear"
+            assert args[3] == expected
+
+
+def test_probe_clear_rejects_garbage(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc"):
+        resp = client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "probe_clear", "value": "all"}),
+            content_type="application/json",
+        )
+    assert resp.status_code == 400
+
+
 def test_status_reads_receiver(ctx):
     client, dev = ctx
     from engine.osc_receiver import OscReceiver
@@ -148,7 +255,8 @@ def test_status_reads_receiver(ctx):
         "timestamp": 1e12,
     }
     r.last_seen["192.168.1.50"] = 1e12
-    with patch("api.vents_control._osc"):
+    with patch("api.vents_control._osc"), \
+         patch("api.vents_control._fetch_snapshot", return_value=None):
         resp = client.get(f"/api/v1/vents-control/{dev['id']}/status")
     assert resp.status_code == 200
     body = resp.get_json()
@@ -156,3 +264,60 @@ def test_status_reads_receiver(ctx):
     assert body["mode"] == "auto"
     assert body["state"] == "cooling"
     assert body["online"] is True
+
+
+def test_status_merges_snapshot_probe_fields(ctx):
+    """When the Pi's HTTP snapshot returns probes[] + dual-setpoint fields,
+    /status merges them on top of the OSC snapshot — this is how the admin
+    learns about the discovered ROM ids and per-probe live temps."""
+    client, dev = ctx
+    from engine.osc_receiver import OscReceiver
+    r = OscReceiver(port=9001)
+    r.vents_status["192.168.1.50"] = {
+        "temp1_c": 22.1, "temp2_c": 18.3,
+        "fan1": 0.0, "fan2": 0.0,
+        "peltier_mask": 0, "peltier": [False, False, False],
+        "rpm1A": 0, "rpm1B": 0, "rpm2A": 0, "rpm2B": 0,
+        "target_c": 22.0, "mode": "auto", "state": "probe_unassigned",
+        "timestamp": 1e12,
+    }
+    r.last_seen["192.168.1.50"] = 1e12
+    snapshot = {
+        "ok": True,
+        "probes": [
+            {"id": "28-aaaaaaaaaaaa", "temp_c": 22.1},
+            {"id": "28-bbbbbbbbbbbb", "temp_c": 18.3},
+        ],
+        "probe_hot_id": None,
+        "probe_cold_id": None,
+        "temp_hot_c": None,
+        "temp_cold_c": None,
+        "hot_target_c": 22.0,
+        "cold_target_c": 18.0,
+    }
+    with patch("api.vents_control._osc"), \
+         patch("api.vents_control._fetch_snapshot", return_value=snapshot):
+        resp = client.get(f"/api/v1/vents-control/{dev['id']}/status")
+    body = resp.get_json()
+    assert body["state"] == "probe_unassigned"
+    assert body["hot_target_c"] == 22.0
+    assert body["cold_target_c"] == 18.0
+    assert body["probe_hot_id"] is None
+    assert len(body["probes"]) == 2
+    assert body["probes"][0]["id"] == "28-aaaaaaaaaaaa"
+
+
+def test_status_skips_snapshot_fetch_when_offline(ctx):
+    """If the device is offline (no OSC pong within timeout) we skip the
+    HTTP call — there's no Pi to talk to and connect-timeout would slow
+    every poll."""
+    client, dev = ctx
+    from engine.osc_receiver import OscReceiver
+    r = OscReceiver(port=9001)
+    # OscReceiver is a singleton — clear any leftover last_seen from sibling
+    # tests so this device reads as offline.
+    r.last_seen.pop("192.168.1.50", None)
+    with patch("api.vents_control._osc"), \
+         patch("api.vents_control._fetch_snapshot") as mock_fetch:
+        client.get(f"/api/v1/vents-control/{dev['id']}/status")
+    mock_fetch.assert_not_called()

@@ -52,6 +52,7 @@ def get_health():
         playback_state["last_error"] = f"playback introspection failed: {e}"
 
     vents_over_temp = []
+    vents_probe_unassigned = []
     try:
         for dev in device_store.list_all():
             if dev.get("type") != "vents":
@@ -60,20 +61,33 @@ def get_health():
             if not ip:
                 continue
             snap = receiver.get_vents_status(ip)
-            if snap.get("state") != "over_temp":
-                continue
-            vents_over_temp.append(
-                {
-                    "device_id": dev.get("id"),
-                    "name": dev.get("name") or dev.get("id"),
-                    "temp1_c": snap.get("temp1_c"),
-                    "temp2_c": snap.get("temp2_c"),
-                    "target_c": snap.get("target_c"),
-                    "max_temp_c": snap.get("max_temp_c"),
-                }
-            )
+            if snap.get("state") == "over_temp":
+                vents_over_temp.append(
+                    {
+                        "device_id": dev.get("id"),
+                        "name": dev.get("name") or dev.get("id"),
+                        "temp1_c": snap.get("temp1_c"),
+                        "temp2_c": snap.get("temp2_c"),
+                        "target_c": snap.get("target_c"),
+                        "max_temp_c": snap.get("max_temp_c"),
+                        "temp_hot_c": snap.get("temp_hot_c"),
+                        "temp_cold_c": snap.get("temp_cold_c"),
+                        "hot_target_c": snap.get("hot_target_c"),
+                        "cold_target_c": snap.get("cold_target_c"),
+                    }
+                )
+            if snap.get("state") == "probe_unassigned":
+                vents_probe_unassigned.append(
+                    {
+                        "device_id": dev.get("id"),
+                        "name": dev.get("name") or dev.get("id"),
+                        "probe_hot_id": snap.get("probe_hot_id"),
+                        "probe_cold_id": snap.get("probe_cold_id"),
+                        "discovered": [p.get("id") for p in (snap.get("probes") or [])],
+                    }
+                )
     except Exception as e:
-        logger.warning("vents_over_temp aggregation failed: %s", e)
+        logger.warning("vents health aggregation failed: %s", e)
 
     payload = {
         "osc_receiver": {
@@ -84,6 +98,7 @@ def get_health():
         "bridge": bridge_state,
         "playback": playback_state,
         "vents_over_temp": vents_over_temp,
+        "vents_probe_unassigned": vents_probe_unassigned,
         "log_path": LOG_PATH,
         # Read live from config so a late-override is reflected, not the
         # value captured at module-import time.
