@@ -26,7 +26,7 @@ Temperature control — dual setpoints:
     for this loop (use raw or /vents/fan/*).
   - **max_temp_c**: **safety** ceiling (persisted on the Pi). If **any
     discovered probe** (assigned or not) reads above max, state is "over_temp":
-    all Peltiers off and both fans pinned to `over_temp_fan_pct`.
+    all Peltiers off and both fans pinned to `over_temp_fan_pct` in any mode.
     Peltier "on" commands are ignored while above max (interlock).
   - **probe_unassigned**: auto refuses to run unless both `probe_hot_id` and
     `probe_cold_id` are set AND currently in the discovered probes set.
@@ -73,9 +73,9 @@ OSC protocol:
     Missing temps (incl. temp_hot_c / temp_cold_c) are encoded as -1.0.
 
 Auto loop branches (first match wins):
-  mode != "auto"        → idle.
-  either probe id null/missing → probe_unassigned (Peltiers off, fans off).
   ANY discovered probe > max_temp_c → over_temp (Peltiers off, fans → over_temp_fan_pct).
+  mode != "auto"        → idle.
+  either probe id null/missing → probe_unassigned (Peltiers off, fans unchanged).
   assigned probe reads None         → sensor_error (Peltiers off, fans off).
   t_hot < hot_target − H OR t_cold > cold_target + H → heating (mask 0b111).
   t_hot ≥ hot_target + H AND t_cold ≤ cold_target − H → cooling (mask 0).
@@ -448,12 +448,12 @@ def _auto_loop():
 
     Per-tick branches, first match wins:
 
-      1. mode != "auto"            → state=idle, return.
-      2. probe_unassigned          → either role's id is null OR not currently
-                                     in _probes. Peltiers off, fans off.
-      3. over_temp                 → ANY probe (incl. unassigned) > max_temp_c.
+      1. over_temp                 → ANY probe (incl. unassigned) > max_temp_c.
                                      Peltiers off, both fans pinned to
-                                     over_temp_fan_pct.
+                                     over_temp_fan_pct. Enforced in raw and auto.
+      2. mode != "auto"            → state=idle, return.
+      3. probe_unassigned          → either role's id is null OR not currently
+                                     in _probes. Peltiers off, fans off.
       4. sensor_error              → an assigned probe currently reads None.
                                      Peltiers off, fans off.
       5. heating (need_on, OR)     → t_hot < hot_target_c − H
@@ -470,6 +470,17 @@ def _auto_loop():
     period = 1.0 / max(1, VENTS_AUTO_LOOP_HZ)
     H = VENTS_HYSTERESIS_C
     while not _shutdown_event.is_set():
+        # Safety interlock is always enforced, regardless of raw/auto mode.
+        if _over_temp_interlock():
+            state = "over_temp"
+            _apply_peltier_mask(0)
+            fallback_0_1 = over_temp_fan_pct / 100.0
+            _set_fan(0, fallback_0_1)
+            _set_fan(1, fallback_0_1)
+            _tacho_decay_tick()
+            _shutdown_event.wait(period)
+            continue
+
         if mode != "auto":
             state = "idle"
             _tacho_decay_tick()
@@ -488,17 +499,6 @@ def _auto_loop():
             _apply_peltier_mask(0)
             _set_fan(0, 0.0)
             _set_fan(1, 0.0)
-            _tacho_decay_tick()
-            _shutdown_event.wait(period)
-            continue
-
-        # Safety interlock — ANY probe (assigned or not) over max.
-        if any(t is not None and t > max_temp_c for t in _probe_temps.values()):
-            state = "over_temp"
-            _apply_peltier_mask(0)
-            fallback_0_1 = over_temp_fan_pct / 100.0
-            _set_fan(0, fallback_0_1)
-            _set_fan(1, fallback_0_1)
             _tacho_decay_tick()
             _shutdown_event.wait(period)
             continue
@@ -692,23 +692,23 @@ def handle_peltier_mask(address, *args):
 
 @_safe("fan_1")
 def handle_fan_1(address, *args):
-    global mode
     if not args:
         return
-    if mode == "auto":
-        logger.info("Fan 1 override → switching mode to raw")
-        mode = "raw"
+    if _over_temp_interlock():
+        logger.info("Fan 1 override suppressed (over temperature interlock)")
+        _set_fan(0, over_temp_fan_pct / 100.0)
+        return
     _set_fan(0, _clamp(float(args[0]), 0.0, 1.0))
 
 
 @_safe("fan_2")
 def handle_fan_2(address, *args):
-    global mode
     if not args:
         return
-    if mode == "auto":
-        logger.info("Fan 2 override → switching mode to raw")
-        mode = "raw"
+    if _over_temp_interlock():
+        logger.info("Fan 2 override suppressed (over temperature interlock)")
+        _set_fan(1, over_temp_fan_pct / 100.0)
+        return
     _set_fan(1, _clamp(float(args[0]), 0.0, 1.0))
 
 
@@ -721,9 +721,6 @@ def handle_mode(address, *args):
     if requested not in ("raw", "auto"):
         raise ValueError(f"mode must be 'raw' or 'auto', got {requested!r}")
     mode = requested
-    if mode == "auto":
-        _set_fan(0, 0.0)
-        _set_fan(1, 0.0)
     logger.info("Vents mode → %s", mode)
 
 
@@ -771,47 +768,40 @@ def _validate_rom_id(value):
     return v if _ROM_ID_RE.match(v) else None
 
 
-@_safe("probe_assign_hot")
-def handle_probe_assign_hot(address, *args):
-    """Assign a probe ROM id to the hot face. Rejected if the same id is
-    already the cold probe. Persisted unconditionally — the probe doesn't
-    have to be wired in yet (auto loop refuses to run until both ids
-    resolve to currently-discovered probes)."""
-    global probe_hot_id
-    if not args:
-        return
-    rom_id = _validate_rom_id(args[0])
+def _assign_probe(role, value):
+    """Assign a ROM id to `role` ("hot" or "cold"). Persists. Rejects an
+    id already assigned to the other role. Persists ids whose probe isn't
+    currently on the bus too — operator may be configuring before wiring."""
+    global probe_hot_id, probe_cold_id
+    rom_id = _validate_rom_id(value)
     if rom_id is None:
-        raise ValueError(f"invalid ROM id: {args[0]!r} (expected 28-xxxxxxxxxxxx)")
-    if rom_id == probe_cold_id:
-        raise ValueError(f"{rom_id} is already assigned as cold probe")
-    probe_hot_id = rom_id
+        raise ValueError(f"invalid ROM id: {value!r} (expected 28-xxxxxxxxxxxx)")
+    other = probe_cold_id if role == "hot" else probe_hot_id
+    if rom_id == other:
+        other_label = "cold" if role == "hot" else "hot"
+        raise ValueError(f"{rom_id} is already assigned as {other_label} probe")
+    if role == "hot":
+        probe_hot_id = rom_id
+    else:
+        probe_cold_id = rom_id
     _save_prefs()
     if rom_id not in _probes:
-        logger.warning("Hot probe assigned to %s but not currently discovered",
-                       rom_id)
+        logger.warning("%s probe assigned to %s but not currently discovered",
+                       role.capitalize(), rom_id)
     else:
-        logger.info("Hot probe → %s (saved)", rom_id)
+        logger.info("%s probe → %s (saved)", role.capitalize(), rom_id)
+
+
+@_safe("probe_assign_hot")
+def handle_probe_assign_hot(address, *args):
+    if args:
+        _assign_probe("hot", args[0])
 
 
 @_safe("probe_assign_cold")
 def handle_probe_assign_cold(address, *args):
-    """Assign a probe ROM id to the cold face. Symmetrical to assign_hot."""
-    global probe_cold_id
-    if not args:
-        return
-    rom_id = _validate_rom_id(args[0])
-    if rom_id is None:
-        raise ValueError(f"invalid ROM id: {args[0]!r} (expected 28-xxxxxxxxxxxx)")
-    if rom_id == probe_hot_id:
-        raise ValueError(f"{rom_id} is already assigned as hot probe")
-    probe_cold_id = rom_id
-    _save_prefs()
-    if rom_id not in _probes:
-        logger.warning("Cold probe assigned to %s but not currently discovered",
-                       rom_id)
-    else:
-        logger.info("Cold probe → %s (saved)", rom_id)
+    if args:
+        _assign_probe("cold", args[0])
 
 
 @_safe("probe_clear")

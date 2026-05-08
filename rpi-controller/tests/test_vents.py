@@ -179,10 +179,18 @@ class TestFanHandlers:
         vents.handle_fan_1("/vents/fan/1", 0.0)
         vents.pwm_fan_1.ChangeDutyCycle.assert_called_once_with(20.0)
 
-    def test_manual_fan_forces_mode_raw(self):
+    def test_manual_fan_keeps_auto_mode(self):
         vents.mode = "auto"
         vents.handle_fan_1("/vents/fan/1", 0.3)
-        assert vents.mode == "raw"
+        assert vents.mode == "auto"
+
+    def test_fan_override_suppressed_during_over_temp_lock(self):
+        _populate_probes({HOT_ID: 95.0})
+        vents.max_temp_c = 80.0
+        vents.over_temp_fan_pct = 70.0
+        vents.handle_fan_1("/vents/fan/1", 0.2)
+        vents.pwm_fan_1.ChangeDutyCycle.assert_called_once_with(70.0)
+        assert vents.fan_duty[0] == 70.0
 
 
 class TestDynamicMinFanPct:
@@ -286,6 +294,12 @@ def _tick_auto():
     """Run one /auto loop tick without spinning the thread. Mirrors the
     branches in controllers/vents.py:_auto_loop."""
     with patch.object(vents, "GPIO", _make_gpio()):
+        if any(t is not None and t > vents.max_temp_c for t in vents._probe_temps.values()):
+            vents.state = "over_temp"
+            vents._apply_peltier_mask(0)
+            fb = vents.over_temp_fan_pct / 100.0
+            vents._set_fan(0, fb); vents._set_fan(1, fb)
+            return
         if vents.mode != "auto":
             vents.state = "idle"
             return
@@ -295,12 +309,6 @@ def _tick_auto():
             vents.state = "probe_unassigned"
             vents._apply_peltier_mask(0)
             vents._set_fan(0, 0.0); vents._set_fan(1, 0.0)
-            return
-        if any(t is not None and t > vents.max_temp_c for t in vents._probe_temps.values()):
-            vents.state = "over_temp"
-            vents._apply_peltier_mask(0)
-            fb = vents.over_temp_fan_pct / 100.0
-            vents._set_fan(0, fb); vents._set_fan(1, fb)
             return
         t_hot = vents._probe_temps.get(vents.probe_hot_id)
         t_cold = vents._probe_temps.get(vents.probe_cold_id)
@@ -360,6 +368,17 @@ class TestPerSensorOverTemp:
     def test_no_sensor_over_max_does_not_trip(self):
         _populate_probes({HOT_ID: 79.0, COLD_ID: 78.0})
         assert vents._over_temp_interlock() is False
+
+    def test_raw_mode_still_enforces_over_temp_lock(self):
+        vents.mode = "raw"
+        _populate_probes({HOT_ID: 95.0, COLD_ID: 20.0})
+        vents.peltier_state[:] = [1, 1, 1]
+        vents.over_temp_fan_pct = 80.0
+        _tick_auto()
+        assert vents.state == "over_temp"
+        assert vents.peltier_state == [0, 0, 0]
+        vents.pwm_fan_1.ChangeDutyCycle.assert_called_with(80.0)
+        vents.pwm_fan_2.ChangeDutyCycle.assert_called_with(80.0)
 
     def test_missing_sensor_alone_does_not_trip(self):
         _populate_probes({HOT_ID: None, COLD_ID: 20.0})
@@ -422,6 +441,15 @@ class TestModeTarget:
     def test_mode_accepts_auto(self):
         vents.handle_mode("/vents/mode", "auto")
         assert vents.mode == "auto"
+
+    def test_switching_to_auto_does_not_reset_fans(self):
+        vents.pwm_fan_1 = MagicMock()
+        vents.pwm_fan_2 = MagicMock()
+        vents.handle_fan_1("/vents/fan/1", 0.6)
+        vents.handle_fan_2("/vents/fan/2", 0.4)
+        vents.handle_mode("/vents/mode", "auto")
+        assert vents.fan_duty[0] == 60.0
+        assert vents.fan_duty[1] == 40.0
 
     def test_mode_rejects_garbage(self):
         vents.handle_mode("/vents/mode", "banana")
