@@ -20,6 +20,20 @@ echo "========================================"
 echo "  $APP_NAME — Local (unsigned) build"
 echo "========================================"
 
+# --- Bootstrap backend venv if missing ---
+if [ ! -x "$VENV/pip" ]; then
+    echo "=== Bootstrapping backend venv ==="
+    python3 -m venv "$BACKEND_DIR/.venv"
+    "$VENV/pip" install --quiet --upgrade pip
+    "$VENV/pip" install --quiet -r "$BACKEND_DIR/requirements.txt"
+fi
+
+# --- Bootstrap frontend node_modules if missing ---
+if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
+    echo "=== Installing frontend dependencies ==="
+    (cd "$FRONTEND_DIR" && npm install)
+fi
+
 # --- Build deps ---
 "$VENV/pip" install --quiet Pillow pywebview pyinstaller
 
