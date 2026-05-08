@@ -163,12 +163,13 @@ def _set_enable(on):
 
 
 def _pulse_once(delay_s):
-    """One PUL high-low cycle. Returns False if aborted (limit hit or stop)."""
+    """One PUL high-low cycle. Returns False if aborted.
+
+    Any held limit switch (home or far) aborts motion regardless of direction.
+    To move away from a held switch, physically release it first."""
     if _abort_event.is_set():
         return False
-    if limit_error and _current_dir == DIR_REVERSE:
-        return False
-    if far_limit_error and _current_dir == DIR_FORWARD:
+    if limit_error or far_limit_error:
         return False
     GPIO.output(PIN_STEP_PUL, GPIO.HIGH)
     time.sleep(delay_s)

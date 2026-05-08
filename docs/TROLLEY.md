@@ -309,7 +309,7 @@ it to `false` for the production show by sending
 | Home limit ISR | `_limit_switch_isr` in `controllers/trolley.py` | resets `position_steps=0`, sets `homed=1`, stops reverse motion |
 | Far limit ISR | `_far_limit_switch_isr` | pins `position_steps=rail_length_steps`, sets `homed=1`, stops forward motion |
 | Soft forward limit | `_soft_limit_steps()` | `/trolley/position 1.0` lands at `rail_length_steps × soft_limit_pct` (default 98%) |
-| Pulse-loop abort | `_pulse_once` | every commanded pulse checks `_abort_event` first; aborts on whichever limit-error flag matches the current direction |
+| Pulse-loop abort | `_pulse_once` | every commanded pulse checks `_abort_event` first; aborts on **any** held limit switch regardless of direction. To move away from a held switch, release it physically first. |
 | Race-proof stop | `_drain_queue + _abort_event.set()` | `/trolley/stop` *clears* the queue and *aborts* — no wasted commands picked up after stop |
 
 What is **not** guarded yet (known gaps):

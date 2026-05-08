@@ -531,6 +531,23 @@ class TestFarLimitSwitch:
         # Symmetric guard: forward pulses must abort when far_limit_error is high
         assert trolley.position_steps == 100
 
+    def test_forward_aborts_when_home_limit_held(self, running_trolley):
+        # Any held limit must abort motion regardless of direction.
+        trolley.limit_error = 1
+        trolley._current_dir = trolley.DIR_FORWARD
+        trolley.position_steps = 100
+        trolley.handle_step("/trolley/step", 200)
+        assert _wait_idle()
+        assert trolley.position_steps == 100
+
+    def test_reverse_aborts_when_far_limit_held(self, running_trolley):
+        trolley.far_limit_error = 1
+        trolley._current_dir = trolley.DIR_REVERSE
+        trolley.position_steps = 100
+        trolley.handle_step("/trolley/step", 200)
+        assert _wait_idle()
+        assert trolley.position_steps == 100
+
 
 # ── home command ────────────────────────────────────────────────────────────
 
