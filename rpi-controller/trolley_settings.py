@@ -53,6 +53,12 @@ DEFAULTS = {
     "max_speed_hz": 2000,
     "home_speed_hz": 600,
     "calibration_direction": "forward",  # wiring polarity for "away from home"
+    # Swap which physical limit-switch pin acts as home vs far. Defaults to
+    # True for this project's wiring (home switch is on PIN_LIM_SWITCH_FAR /
+    # BCM 21, far switch on PIN_LIM_SWITCH / BCM 20). Set False on rigs that
+    # wire the home switch to PIN_LIM_SWITCH directly.
+    # Takes effect on service restart (ISR registration is at setup time).
+    "limit_switches_swapped": True,
     "soft_limit_pct": 0.98,
     # When True, /trolley/position runs even on an unconfigured rig
     # (uses TROLLEY_MAX_STEPS as the rail length). For bench testing.
@@ -111,7 +117,7 @@ def _coerce(key, value):
         if not (0.0 <= v <= 10.0):
             raise ValueError(f"{key} must be in [0, 10] seconds")
         return v
-    if key == "permissive_mode":
+    if key in ("permissive_mode", "limit_switches_swapped"):
         if isinstance(value, bool):
             return value
         if isinstance(value, (int, float)):
@@ -121,7 +127,7 @@ def _coerce(key, value):
             return True
         if s in ("false", "0", "no", "off", ""):
             return False
-        raise ValueError("permissive_mode must be a boolean")
+        raise ValueError(f"{key} must be a boolean")
     raise ValueError(f"unknown setting: {key!r}")
 
 

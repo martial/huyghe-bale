@@ -177,6 +177,7 @@ truth: `rpi-controller/trolley_settings.py`.
 | `max_speed_hz` | float > 0 | `2000` | playback ceiling for position-follow speed |
 | `home_speed_hz` | float > 0 | `600` | speed used during `/trolley/home` (deliberately slower) |
 | `calibration_direction` | `"forward"\|"reverse"` | `"forward"` | wiring polarity — which DIR-pin level drives **away** from the home end-stop |
+| `limit_switches_swapped` | bool | **`true`** | when true, the home switch is read on `PIN_LIM_SWITCH_FAR` (BCM 21) and the far switch on `PIN_LIM_SWITCH` (BCM 20). Default matches this project's wiring. Set false on rigs that wire the home switch directly to BCM 20. **Takes effect on service restart.** |
 | `soft_limit_pct` | float in (0, 1] | `0.98` | safety margin: `/trolley/position 1.0` lands at `rail_length_steps × soft_limit_pct` |
 | `permissive_mode` | bool | **`true`** | allow `/trolley/position` to run on an unhomed/unconfigured rig (bench testing) |
 | `accel_time_s` | float in [0, 10] | `0.0` | persisted default for the linear ramp-up time on `/trolley/step` and `/trolley/position`. Live override via `/trolley/accel` |
@@ -309,7 +310,7 @@ it to `false` for the production show by sending
 | Home limit ISR | `_limit_switch_isr` in `controllers/trolley.py` | resets `position_steps=0`, sets `homed=1`, stops reverse motion |
 | Far limit ISR | `_far_limit_switch_isr` | pins `position_steps=rail_length_steps`, sets `homed=1`, stops forward motion |
 | Soft forward limit | `_soft_limit_steps()` | `/trolley/position 1.0` lands at `rail_length_steps × soft_limit_pct` (default 98%) |
-| Pulse-loop abort | `_pulse_once` | every commanded pulse checks `_abort_event` first; aborts on **any** held limit switch regardless of direction. To move away from a held switch, release it physically first. |
+| Pulse-loop abort | `_pulse_once` | every commanded pulse checks `_abort_event` first; aborts on whichever limit-error flag matches the current direction (so you can still move away from a held switch) |
 | Race-proof stop | `_drain_queue + _abort_event.set()` | `/trolley/stop` *clears* the queue and *aborts* — no wasted commands picked up after stop |
 
 What is **not** guarded yet (known gaps):

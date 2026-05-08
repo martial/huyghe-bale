@@ -100,6 +100,20 @@ def _away_pin_high() -> bool:
     return _settings.get("calibration_direction", "forward") != "reverse"
 
 
+def _home_pin() -> int:
+    """Physical GPIO pin currently acting as the home-end limit switch."""
+    if _settings.get("limit_switches_swapped"):
+        return PIN_LIM_SWITCH_FAR
+    return PIN_LIM_SWITCH
+
+
+def _far_pin() -> int:
+    """Physical GPIO pin currently acting as the far-end limit switch."""
+    if _settings.get("limit_switches_swapped"):
+        return PIN_LIM_SWITCH
+    return PIN_LIM_SWITCH_FAR
+
+
 # --- state (module-level, parallel to vents) ------------------------------
 
 position_steps = 0
@@ -163,13 +177,12 @@ def _set_enable(on):
 
 
 def _pulse_once(delay_s):
-    """One PUL high-low cycle. Returns False if aborted.
-
-    Any held limit switch (home or far) aborts motion regardless of direction.
-    To move away from a held switch, physically release it first."""
+    """One PUL high-low cycle. Returns False if aborted (limit hit or stop)."""
     if _abort_event.is_set():
         return False
-    if limit_error or far_limit_error:
+    if limit_error and _current_dir == DIR_REVERSE:
+        return False
+    if far_limit_error and _current_dir == DIR_FORWARD:
         return False
     GPIO.output(PIN_STEP_PUL, GPIO.HIGH)
     time.sleep(delay_s)
@@ -202,7 +215,7 @@ def _limit_switch_isr(channel):
     """Home-end limit switch ISR. Fires on both edges. Keep it short."""
     global limit_error, position_steps, homed
     try:
-        gpio_state = GPIO.input(PIN_LIM_SWITCH)
+        gpio_state = GPIO.input(_home_pin())
         if gpio_state == GPIO.HIGH:
             limit_error = 1
             if _current_dir == DIR_REVERSE:
@@ -221,7 +234,7 @@ def _far_limit_switch_isr(channel):
     """Far-end limit switch ISR. Fires on both edges. Keep it short."""
     global far_limit_error, position_steps, homed
     try:
-        gpio_state = GPIO.input(PIN_LIM_SWITCH_FAR)
+        gpio_state = GPIO.input(_far_pin())
         if gpio_state == GPIO.HIGH:
             far_limit_error = 1
             if _current_dir == DIR_FORWARD:
@@ -403,12 +416,14 @@ def setup(webhooks):
     GPIO.setup(PIN_STEP_DIR, GPIO.OUT, initial=GPIO.HIGH)
     GPIO.setup(PIN_STEP_PUL, GPIO.OUT, initial=GPIO.LOW)
     GPIO.setup(PIN_STEP_ENA, GPIO.OUT, initial=GPIO.HIGH)
-    GPIO.setup(PIN_LIM_SWITCH, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-    GPIO.setup(PIN_LIM_SWITCH_FAR, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    home_pin = _home_pin()
+    far_pin = _far_pin()
+    GPIO.setup(home_pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    GPIO.setup(far_pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
     try:
         GPIO.add_event_detect(
-            PIN_LIM_SWITCH, GPIO.BOTH,
+            home_pin, GPIO.BOTH,
             callback=_limit_switch_isr,
             bouncetime=STEP_DEBOUNCE_MS,
         )
@@ -417,7 +432,7 @@ def setup(webhooks):
 
     try:
         GPIO.add_event_detect(
-            PIN_LIM_SWITCH_FAR, GPIO.BOTH,
+            far_pin, GPIO.BOTH,
             callback=_far_limit_switch_isr,
             bouncetime=STEP_DEBOUNCE_MS,
         )
@@ -428,9 +443,10 @@ def setup(webhooks):
     _motion_thread.start()
 
     logger.info(
-        "Trolley GPIO: DIR=%d PUL=%d ENA=%d LIM_HOME=%d LIM_FAR=%d rail_length=%d calib_dir=%s configured=%s",
-        PIN_STEP_DIR, PIN_STEP_PUL, PIN_STEP_ENA, PIN_LIM_SWITCH, PIN_LIM_SWITCH_FAR,
-        _rail_length_steps(), _settings.get("calibration_direction"), _is_calibrated(),
+        "Trolley GPIO: DIR=%d PUL=%d ENA=%d LIM_HOME=%d LIM_FAR=%d rail_length=%d calib_dir=%s swapped=%s configured=%s",
+        PIN_STEP_DIR, PIN_STEP_PUL, PIN_STEP_ENA, home_pin, far_pin,
+        _rail_length_steps(), _settings.get("calibration_direction"),
+        bool(_settings.get("limit_switches_swapped")), _is_calibrated(),
     )
 
     if TROLLEY_AUTO_HOME_ON_BOOT:
@@ -450,7 +466,7 @@ def cleanup():
         GPIO.output(PIN_STEP_ENA, GPIO.HIGH)
     except Exception as e:
         logger.error("Trolley cleanup GPIO.output error: %s", e)
-    for pin in (PIN_LIM_SWITCH, PIN_LIM_SWITCH_FAR):
+    for pin in (_home_pin(), _far_pin()):
         try:
             GPIO.remove_event_detect(pin)
         except Exception as e:
@@ -736,12 +752,13 @@ def describe():
             "dir": PIN_STEP_DIR,
             "pul": PIN_STEP_PUL,
             "ena": PIN_STEP_ENA,
-            "limit": PIN_LIM_SWITCH,
-            "limit_far": PIN_LIM_SWITCH_FAR,
+            "limit": _home_pin(),
+            "limit_far": _far_pin(),
         },
         "rail_length_steps": _rail_length_steps(),
         "calibrated": _is_calibrated(),
         "calibration_direction": _settings.get("calibration_direction"),
+        "limit_switches_swapped": bool(_settings.get("limit_switches_swapped")),
         "position": position_steps,
         "homed": homed,
         "limit": limit_error,

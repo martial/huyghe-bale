@@ -531,22 +531,21 @@ class TestFarLimitSwitch:
         # Symmetric guard: forward pulses must abort when far_limit_error is high
         assert trolley.position_steps == 100
 
-    def test_forward_aborts_when_home_limit_held(self, running_trolley):
-        # Any held limit must abort motion regardless of direction.
-        trolley.limit_error = 1
-        trolley._current_dir = trolley.DIR_FORWARD
-        trolley.position_steps = 100
-        trolley.handle_step("/trolley/step", 200)
-        assert _wait_idle()
-        assert trolley.position_steps == 100
 
-    def test_reverse_aborts_when_far_limit_held(self, running_trolley):
-        trolley.far_limit_error = 1
-        trolley._current_dir = trolley.DIR_REVERSE
-        trolley.position_steps = 100
-        trolley.handle_step("/trolley/step", 200)
-        assert _wait_idle()
-        assert trolley.position_steps == 100
+class TestLimitSwitchSwap:
+    def setup_method(self):
+        _reset()
+
+    def test_default_is_swapped_for_this_rig(self):
+        # Project wiring: home switch is on PIN_LIM_SWITCH_FAR by default.
+        assert trolley._settings["limit_switches_swapped"] is True
+        assert trolley._home_pin() == trolley.PIN_LIM_SWITCH_FAR
+        assert trolley._far_pin() == trolley.PIN_LIM_SWITCH
+
+    def test_unswapped_uses_direct_mapping(self):
+        trolley._settings["limit_switches_swapped"] = False
+        assert trolley._home_pin() == trolley.PIN_LIM_SWITCH
+        assert trolley._far_pin() == trolley.PIN_LIM_SWITCH_FAR
 
 
 # ── home command ────────────────────────────────────────────────────────────
@@ -720,7 +719,10 @@ class TestDescribeAndStatus:
         d = trolley.describe()
         assert d["controller"] == "trolley"
         assert "pins" in d
-        assert d["pins"]["limit_far"] == trolley.PIN_LIM_SWITCH_FAR
+        # Default config is swapped: home switch on PIN_LIM_SWITCH_FAR, far on PIN_LIM_SWITCH.
+        assert d["pins"]["limit"] == trolley.PIN_LIM_SWITCH_FAR
+        assert d["pins"]["limit_far"] == trolley.PIN_LIM_SWITCH
+        assert d["limit_switches_swapped"] is True
         assert d["calibrated"] is True
         assert d["calibration_direction"] == "forward"
 
