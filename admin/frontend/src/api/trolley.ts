@@ -4,6 +4,7 @@ import type {
   TrolleyTimelineSummary,
   TrolleyCommand,
   TrolleyStatus,
+  TrolleySettings,
 } from "../types/trolley";
 
 // ── timelines ──────────────────────────────────────────────────────────────
@@ -61,4 +62,11 @@ export function setTrolleyConfig(
 
 export function fetchTrolleyStatus(deviceId: string) {
   return get<TrolleyStatus>(`/trolley-control/${deviceId}/status`);
+}
+
+/** Fetch the persisted settings dict from the Pi (live read of device.json). */
+export function fetchTrolleyConfig(deviceId: string) {
+  return get<{ ok: boolean; config: TrolleySettings; error?: string }>(
+    `/trolley-control/${deviceId}/config`,
+  );
 }

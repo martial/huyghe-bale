@@ -24,9 +24,13 @@ export interface TrolleySettings {
   max_speed_hz: number;
   home_speed_hz: number;
   calibration_direction: CalibrationDirection;
+  limit_switches_swapped: boolean;
   soft_limit_pct: number;
+  permissive_mode: boolean;
   accel_time_s: number;
   decel_time_s: number;
+  /** Derived on the Pi from rail_length_mm + wheel_radius_mm + steps. */
+  rail_length_steps?: number;
 }
 
 /** Subset of TrolleyCommand that can appear in a timeline. Calibration and

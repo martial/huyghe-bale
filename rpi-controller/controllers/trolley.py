@@ -723,7 +723,21 @@ def handle_http_test(body):
         elif command == "config_save":
             handle_config_save("/http")
         elif command == "config_get":
-            handle_config_get("/http")
+            # Return the full settings dict in the HTTP response so the admin
+            # frontend can read back the persisted config without OSC plumbing.
+            payload = dict(_settings)
+            payload["rail_length_steps"] = trolley_settings.derived_rail_length_steps(_settings)
+            return {
+                "ok": True,
+                "config": payload,
+                "position_steps": position_steps,
+                "homed": homed,
+                "calibrated": _is_calibrated(),
+                "limit": limit_error,
+                "far_limit": far_limit_error,
+                "enabled": _enabled,
+                "state": state,
+            }
         else:
             return {"ok": False, "error": f"unknown command: {command!r}"}
     except Exception as e:

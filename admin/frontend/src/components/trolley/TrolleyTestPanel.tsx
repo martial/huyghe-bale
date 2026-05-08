@@ -4,6 +4,7 @@ import type { TrolleyStatus } from "../../types/trolley";
 import {
   sendTrolleyCommand,
   fetchTrolleyStatus,
+  fetchTrolleyConfig,
   setTrolleyConfig,
 } from "../../api/trolley";
 
@@ -16,7 +17,7 @@ const DEFAULT_MOTOR = {
   steps_per_rev: 200,
   microsteps: 16,
   max_speed_hz: 2000,
-  home_speed_hz: 600,
+  home_speed_hz: 100,
   soft_limit_pct: 0.98,
   accel_time_s: 0,
   decel_time_s: 0,
@@ -62,6 +63,37 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
     return () => {
       cancelled = true;
       clearInterval(t);
+    };
+  }, [device.id]);
+
+  // Prefill rail/motor form from the Pi's persisted settings on mount, so a
+  // page reload shows what's actually saved instead of the hardcoded defaults.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetchTrolleyConfig(device.id);
+        if (cancelled || !r.ok || !r.config) return;
+        const c = r.config;
+        setRail({
+          rail_length_mm: c.rail_length_mm ?? 0,
+          wheel_radius_mm: c.wheel_radius_mm ?? 0,
+        });
+        setMotor({
+          steps_per_rev: c.steps_per_rev,
+          microsteps: c.microsteps,
+          max_speed_hz: c.max_speed_hz,
+          home_speed_hz: c.home_speed_hz,
+          soft_limit_pct: c.soft_limit_pct,
+          accel_time_s: c.accel_time_s,
+          decel_time_s: c.decel_time_s,
+        });
+      } catch {
+        /* unreachable Pi → keep defaults; status badge will show offline */
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
   }, [device.id]);
 

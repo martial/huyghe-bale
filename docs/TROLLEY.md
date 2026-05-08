@@ -175,7 +175,7 @@ truth: `rpi-controller/trolley_settings.py`.
 | `steps_per_rev` | int > 0 | `200` | motor full-step count (NEMA 34 = 200) |
 | `microsteps` | int > 0 | `16` | CL86Y driver microstep dip-switch setting |
 | `max_speed_hz` | float > 0 | `2000` | playback ceiling for position-follow speed |
-| `home_speed_hz` | float > 0 | `600` | speed used during `/trolley/home` (deliberately slower) |
+| `home_speed_hz` | float > 0 | `100` | speed used during `/trolley/home` (deliberately slow) |
 | `calibration_direction` | `"forward"\|"reverse"` | `"forward"` | wiring polarity — which DIR-pin level drives **away** from the home end-stop |
 | `limit_switches_swapped` | bool | **`true`** | when true, the home switch is read on `PIN_LIM_SWITCH_FAR` (BCM 21) and the far switch on `PIN_LIM_SWITCH` (BCM 20). Default matches this project's wiring. Set false on rigs that wire the home switch directly to BCM 20. **Takes effect on service restart.** |
 | `soft_limit_pct` | float in (0, 1] | `0.98` | safety margin: `/trolley/position 1.0` lands at `rail_length_steps × soft_limit_pct` |

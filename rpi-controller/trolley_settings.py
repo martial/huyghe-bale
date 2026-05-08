@@ -51,7 +51,7 @@ DEFAULTS = {
     "steps_per_rev": 200,
     "microsteps": 16,
     "max_speed_hz": 2000,
-    "home_speed_hz": 600,
+    "home_speed_hz": 100,
     "calibration_direction": "forward",  # wiring polarity for "away from home"
     # Swap which physical limit-switch pin acts as home vs far. Defaults to
     # True for this project's wiring (home switch is on PIN_LIM_SWITCH_FAR /

@@ -9,7 +9,9 @@ read from the OscReceiver's trolley_status dict, which is populated by the
 Pi-pushed /trolley/status OSC broadcasts.
 """
 
+import json
 import logging
+import urllib.request
 
 from flask import Blueprint, request, jsonify
 
@@ -106,6 +108,42 @@ def send_command(device_id):
     except Exception as e:
         logger.warning("Trolley command to %s failed: %s", ip, e)
         return jsonify({"ok": False, "error": str(e)}), 502
+
+
+@bp.route("/<device_id>/config", methods=["GET"])
+def get_config(device_id):
+    """Return the trolley's persisted settings dict, fetched live from the Pi.
+
+    Proxies to the Pi's /gpio/test {command:"config_get"} which returns the
+    full settings dict including the derived rail_length_steps. Used by the
+    admin UI to prefill the rail/motor settings form on mount.
+    """
+    device = device_store.get(device_id)
+    if not device:
+        return jsonify({"error": "Device not found"}), 404
+    if device.get("type") != "trolley":
+        return jsonify({"error": "Device is not a trolley"}), 400
+    ip = device.get("ip_address")
+    if not ip:
+        return jsonify({"error": "Device has no IP address"}), 400
+
+    url = f"http://{ip}:9001/gpio/test"
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"command": "config_get"}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read())
+    except Exception as e:
+        logger.warning("Trolley config fetch from %s failed: %s", ip, e)
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+    if not body.get("ok") or "config" not in body:
+        return jsonify({"ok": False, "error": "Pi did not return config"}), 502
+    return jsonify({"ok": True, "config": body["config"]})
 
 
 @bp.route("/<device_id>/status", methods=["GET"])
