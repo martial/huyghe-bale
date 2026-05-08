@@ -20,6 +20,12 @@ def _reset():
     vents.temp_c[:] = [None, None]
     vents._probes.clear()
     vents._probe_temps.clear()
+    # Keep the controller unlocked by default in tests that are not about
+    # probe safety. Specific tests can override via _populate_probes().
+    default_probe = "28-000000000001"
+    vents._probes[default_probe] = f"/sys/bus/w1/devices/{default_probe}/w1_slave"
+    vents._probe_temps[default_probe] = 20.0
+    vents.temp_c[0] = 20.0
     vents.probe_hot_id = None
     vents.probe_cold_id = None
     vents.hot_target_c = 25.0
@@ -141,6 +147,13 @@ class TestPeltierHandlers:
         with patch.object(vents, "GPIO", _make_gpio()):
             vents.handle_peltier_1("/vents/peltier/1", 1)
         assert vents.mode == "raw"
+
+    def test_peltier_on_suppressed_when_probe_fault_active(self):
+        _populate_probes({HOT_ID: None})
+        with patch.object(vents, "GPIO", _make_gpio()) as gpio:
+            vents.handle_peltier_1("/vents/peltier/1", 1)
+            gpio.output.assert_called_with(vents.PIN_PELTIER_1, 0)
+        assert vents.peltier_state[0] == 0
 
     def test_updates_last_osc_time(self):
         before = time.time()
@@ -294,6 +307,12 @@ def _tick_auto():
     """Run one /auto loop tick without spinning the thread. Mirrors the
     branches in controllers/vents.py:_auto_loop."""
     with patch.object(vents, "GPIO", _make_gpio()):
+        if vents._probe_safety_fault():
+            vents.state = "sensor_error"
+            vents._apply_peltier_mask(0)
+            fb = vents.over_temp_fan_pct / 100.0
+            vents._set_fan(0, fb); vents._set_fan(1, fb)
+            return
         if any(t is not None and t > vents.max_temp_c for t in vents._probe_temps.values()):
             vents.state = "over_temp"
             vents._apply_peltier_mask(0)
@@ -380,9 +399,32 @@ class TestPerSensorOverTemp:
         vents.pwm_fan_1.ChangeDutyCycle.assert_called_with(80.0)
         vents.pwm_fan_2.ChangeDutyCycle.assert_called_with(80.0)
 
-    def test_missing_sensor_alone_does_not_trip(self):
+    def test_missing_sensor_trips_probe_safety_lock(self):
         _populate_probes({HOT_ID: None, COLD_ID: 20.0})
         assert vents._over_temp_interlock() is False
+        assert vents._probe_safety_fault() is True
+        assert vents._safety_lock_state() == "sensor_error"
+
+    def test_no_discovered_probe_trips_probe_safety_lock(self):
+        _populate_probes({})
+        assert vents._probe_safety_fault() is True
+        assert vents._safety_lock_state() == "sensor_error"
+
+    def test_abnormal_probe_value_trips_probe_safety_lock(self):
+        _populate_probes({HOT_ID: 200.0, COLD_ID: 20.0})
+        assert vents._probe_safety_fault() is True
+        assert vents._safety_lock_state() == "sensor_error"
+
+    def test_raw_mode_sensor_fault_still_enforces_lock(self):
+        vents.mode = "raw"
+        _populate_probes({HOT_ID: None, COLD_ID: 20.0})
+        vents.peltier_state[:] = [1, 1, 1]
+        vents.over_temp_fan_pct = 80.0
+        _tick_auto()
+        assert vents.state == "sensor_error"
+        assert vents.peltier_state == [0, 0, 0]
+        vents.pwm_fan_1.ChangeDutyCycle.assert_called_with(80.0)
+        vents.pwm_fan_2.ChangeDutyCycle.assert_called_with(80.0)
 
 
 class TestPrefsPersistence:
@@ -535,6 +577,9 @@ class TestStatus:
     def test_osc_args_encode_missing_temp_as_neg1(self):
         # All 4 nullable temp fields (temp1, temp2, temp_hot_c, temp_cold_c)
         # encode to -1.0 when missing.
+        vents._probes.clear()
+        vents._probe_temps.clear()
+        vents.temp_c[:] = [None, None]
         args = vents.get_status_osc_args()
         assert args[0] == -1.0    # temp1_c
         assert args[1] == -1.0    # temp2_c
@@ -735,12 +780,12 @@ class TestDualSetpointAuto:
         assert vents.state == "probe_unassigned"
         assert vents.peltier_state == [0, 0, 0]
 
-    def test_probe_unassigned_when_assigned_id_not_in_probes(self):
-        # Assigned but the probe isn't on the bus right now.
+    def test_assigned_id_missing_with_no_discovered_probe_is_sensor_error(self):
+        # With strict probe safety enabled, an empty discovery set is a lock.
         _assign_both()
         _populate_probes({})
         _tick_auto()
-        assert vents.state == "probe_unassigned"
+        assert vents.state == "sensor_error"
 
     def test_probe_unassigned_when_only_one_role_assigned(self):
         vents.probe_hot_id = HOT_ID

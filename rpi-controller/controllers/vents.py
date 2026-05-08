@@ -85,6 +85,7 @@ Auto loop branches (first match wins):
 import glob
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -117,6 +118,8 @@ PELTIER_PINS = (PIN_PELTIER_1, PIN_PELTIER_2, PIN_PELTIER_3)
 _PREFS_PATH = Path(os.path.expanduser("~/.config/gpio-osc/vents_prefs.json"))
 # Keep max_temp_c strictly above the upper regulation edge (target + H).
 _BAND_MARGIN_C = 0.05
+_PROBE_MIN_C = -55.0
+_PROBE_MAX_C = 125.0
 
 # ── state (module-level, read by OSC/HTTP handlers + status broadcaster) ──
 
@@ -443,6 +446,34 @@ def _over_temp_interlock():
     return any(t is not None and t > max_temp_c for t in _probe_temps.values())
 
 
+def _probe_safety_fault():
+    """Fail-safe probe validation for safety lock."""
+    if not _probes:
+        return True
+    for rom_id in _probes.keys():
+        t = _probe_temps.get(rom_id)
+        if t is None:
+            return True
+        try:
+            temp = float(t)
+        except (TypeError, ValueError):
+            return True
+        if not math.isfinite(temp):
+            return True
+        if temp < _PROBE_MIN_C or temp > _PROBE_MAX_C:
+            return True
+    return False
+
+
+def _safety_lock_state():
+    """Return active safety lock state name, or None when unlocked."""
+    if _probe_safety_fault():
+        return "sensor_error"
+    if _over_temp_interlock():
+        return "over_temp"
+    return None
+
+
 def _auto_loop():
     """Dual-setpoint bang-bang regulator with role-pinned probes (OR rule).
 
@@ -470,9 +501,10 @@ def _auto_loop():
     period = 1.0 / max(1, VENTS_AUTO_LOOP_HZ)
     H = VENTS_HYSTERESIS_C
     while not _shutdown_event.is_set():
-        # Safety interlock is always enforced, regardless of raw/auto mode.
-        if _over_temp_interlock():
-            state = "over_temp"
+        # Safety lock is always enforced, regardless of raw/auto mode.
+        lock_state = _safety_lock_state()
+        if lock_state is not None:
+            state = lock_state
             _apply_peltier_mask(0)
             fallback_0_1 = over_temp_fan_pct / 100.0
             _set_fan(0, fallback_0_1)
@@ -513,8 +545,9 @@ def _auto_loop():
                 )
             state = "sensor_error"
             _apply_peltier_mask(0)
-            _set_fan(0, 0.0)
-            _set_fan(1, 0.0)
+            fallback_0_1 = over_temp_fan_pct / 100.0
+            _set_fan(0, fallback_0_1)
+            _set_fan(1, fallback_0_1)
             _tacho_decay_tick()
             _shutdown_event.wait(period)
             continue
@@ -644,9 +677,9 @@ def _handle_peltier_one(index, value):
     """Manual peltier control; switches auto → raw unless over-temperature interlock applies."""
     global mode
     want_on = bool(int(value))
-    if _over_temp_interlock():
+    if _safety_lock_state() is not None:
         if want_on:
-            logger.info("Peltier on suppressed (over temperature interlock)")
+            logger.info("Peltier on suppressed (safety lock active)")
         _set_peltier(index, False)
         return
     if mode == "auto":
@@ -679,9 +712,9 @@ def handle_peltier_mask(address, *args):
     if not args:
         return
     mask = int(args[0]) & 0b111
-    if _over_temp_interlock():
+    if _safety_lock_state() is not None:
         if mask != 0:
-            logger.info("Peltier mask suppressed (over temperature interlock)")
+            logger.info("Peltier mask suppressed (safety lock active)")
         _apply_peltier_mask(0)
         return
     if mode == "auto":
@@ -694,8 +727,8 @@ def handle_peltier_mask(address, *args):
 def handle_fan_1(address, *args):
     if not args:
         return
-    if _over_temp_interlock():
-        logger.info("Fan 1 override suppressed (over temperature interlock)")
+    if _safety_lock_state() is not None:
+        logger.info("Fan 1 override suppressed (safety lock active)")
         _set_fan(0, over_temp_fan_pct / 100.0)
         return
     _set_fan(0, _clamp(float(args[0]), 0.0, 1.0))
@@ -705,8 +738,8 @@ def handle_fan_1(address, *args):
 def handle_fan_2(address, *args):
     if not args:
         return
-    if _over_temp_interlock():
-        logger.info("Fan 2 override suppressed (over temperature interlock)")
+    if _safety_lock_state() is not None:
+        logger.info("Fan 2 override suppressed (safety lock active)")
         _set_fan(1, over_temp_fan_pct / 100.0)
         return
     _set_fan(1, _clamp(float(args[0]), 0.0, 1.0))
