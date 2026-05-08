@@ -8,6 +8,10 @@ import {
   setTrolleyConfig,
 } from "../../api/trolley";
 
+// Mirrors MAX_SPEED_PCT in the admin backend and the rpi firmware. Hard cap
+// applied at every layer; if you raise this, raise it in all three places.
+const MAX_SPEED_PCT = 0.4;
+
 const DEFAULT_RAIL = {
   rail_length_mm: 0,
   wheel_radius_mm: 0,
@@ -39,7 +43,7 @@ function deriveRailLengthSteps(
 export default function TrolleyTestPanel({ device }: { device: Device }) {
   const [enabled, setEnabled] = useState(false);
   const [direction, setDirection] = useState<0 | 1>(1);
-  const [speed, setSpeed] = useState(0.5);
+  const [speed, setSpeed] = useState(0.2);
   const [steps, setSteps] = useState(1000);
   const [position, setPosition] = useState(0.5);
   const [showSettings, setShowSettings] = useState(false);
@@ -122,8 +126,9 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
   }
 
   async function handleSpeed(next: number) {
-    setSpeed(next);
-    await send("speed", next);
+    const clamped = Math.max(0, Math.min(MAX_SPEED_PCT, next));
+    setSpeed(clamped);
+    await send("speed", clamped);
   }
 
   async function handleStep() {
@@ -359,13 +364,15 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
         </label>
       </div>
 
-      {/* Speed */}
+      {/* Speed — capped at MAX_SPEED_PCT for safety. */}
       <div className="flex items-center gap-3 mb-4">
-        <span className="text-xs text-zinc-500 w-20">Speed</span>
+        <span className="text-xs text-zinc-500 w-20">
+          Speed <span className="text-zinc-600">(max {MAX_SPEED_PCT.toFixed(2)})</span>
+        </span>
         <input
           type="range"
           min={0}
-          max={1}
+          max={MAX_SPEED_PCT}
           step={0.01}
           value={speed}
           onChange={(e) => handleSpeed(Number(e.target.value))}

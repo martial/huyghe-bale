@@ -25,6 +25,11 @@ bp = Blueprint("trolley_control", __name__)
 _osc = OscSender()
 _receiver = OscReceiver(port=9001)
 
+# Hard safety cap on /trolley/speed (0..1). Mirrors MAX_SPEED_PCT in the
+# firmware (rpi-controller/controllers/trolley.py). Any value above this is
+# clamped before being sent to the Pi.
+MAX_SPEED_PCT = 0.4
+
 # Maps user-facing command names → (OSC address, arg coercion).
 # Config uses slash-namespaced sub-addresses to stay tidy and avoid colliding
 # with raw motion commands like "stop".
@@ -101,6 +106,10 @@ def send_command(device_id):
         value = _coerce(raw, kind)
     except (TypeError, ValueError) as e:
         return jsonify({"error": f"bad value for {command}: {e}"}), 400
+
+    if command == "speed" and isinstance(value, (int, float)) and value > MAX_SPEED_PCT:
+        logger.info("Trolley speed %.3f clamped to safety cap %.2f", value, MAX_SPEED_PCT)
+        value = MAX_SPEED_PCT
 
     try:
         _osc.send(ip, port, address, value)

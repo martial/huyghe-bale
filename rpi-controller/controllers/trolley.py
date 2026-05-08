@@ -50,6 +50,12 @@ NAME = "trolley"
 STATUS_BROADCAST_ADDRESS = "/trolley/status"
 STATUS_BROADCAST_HZ = TROLLEY_STATUS_HZ
 
+# Hard safety cap on the /trolley/speed 0..1 input. Even if a client sends 1.0,
+# the firmware clamps it here. Also enforced in the admin backend and frontend
+# slider, but this is the only enforcement that applies to raw OSC traffic
+# (e.g. external bridge messages or scripted clients).
+MAX_SPEED_PCT = 0.4
+
 # Semantic directions — independent of which DIR-pin level drives the carriage.
 # DIR_FORWARD always means "away from home / toward far limit switch."
 # DIR_REVERSE always means "toward home / home limit switch."
@@ -150,11 +156,17 @@ def _clamp(value, lo, hi):
 
 
 def _speed_to_delay(speed_hz):
-    """Convert speed (Hz) to one half-period (seconds). 0 → slowest allowed."""
+    """Convert speed (Hz) to one half-period (seconds). 0 → slowest allowed.
+
+    Clamps the half-period so the effective frequency never exceeds
+    MAX_SPEED_PCT × full firmware bandwidth, regardless of caller. This is the
+    last line of defense for the speed cap: home, step, and position-follow
+    all funnel through here."""
     if speed_hz <= 0:
         return TROLLEY_MAX_PULSE_DELAY_S
     delay = 1.0 / (2.0 * speed_hz)
-    return _clamp(delay, TROLLEY_MIN_PULSE_DELAY_S, TROLLEY_MAX_PULSE_DELAY_S)
+    safety_min_delay = TROLLEY_MIN_PULSE_DELAY_S / MAX_SPEED_PCT
+    return _clamp(delay, safety_min_delay, TROLLEY_MAX_PULSE_DELAY_S)
 
 
 def _set_dir(direction):
@@ -517,9 +529,13 @@ def handle_speed(address, *args):
     global _current_speed_hz
     if not args:
         return
-    speed_01 = _clamp(float(args[0]), 0.0, 1.0)
+    raw = float(args[0])
+    speed_01 = _clamp(raw, 0.0, MAX_SPEED_PCT)
     max_hz = 1.0 / (2.0 * TROLLEY_MIN_PULSE_DELAY_S)
     _current_speed_hz = speed_01 * max_hz
+    if raw > MAX_SPEED_PCT:
+        logger.warning("OSC %s: %.3f exceeds safety cap %.2f, clamped",
+                       address, raw, MAX_SPEED_PCT)
     logger.info("OSC %s: %.3f → %.0f Hz", address, speed_01, _current_speed_hz)
 
 

@@ -124,6 +124,29 @@ def test_duplicate_preserves_events(client):
     assert dup["events"][0]["command"] == "home"
 
 
+def test_speed_events_clamped_to_safety_cap(client):
+    from api.trolley_timelines import MAX_SPEED_PCT
+    tl = client.post(
+        "/api/v1/trolley-timelines",
+        data=json.dumps({"name": "S", "duration": 10}),
+        content_type="application/json",
+    ).get_json()
+    payload = {
+        **tl,
+        "events": [
+            {"id": "s1", "time": 0, "command": "speed", "value": 0.9},
+            {"id": "s2", "time": 1, "command": "speed", "value": 0.2},
+        ],
+    }
+    resp = client.put(
+        f"/api/v1/trolley-timelines/{tl['id']}",
+        data=json.dumps(payload),
+        content_type="application/json",
+    ).get_json()
+    assert resp["events"][0]["value"] == pytest.approx(MAX_SPEED_PCT)
+    assert resp["events"][1]["value"] == pytest.approx(0.2)
+
+
 def test_delete(client):
     tl = client.post(
         "/api/v1/trolley-timelines",

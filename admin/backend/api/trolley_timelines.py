@@ -41,6 +41,9 @@ _examples_seeded = False
 VALID_COMMANDS = ("enable", "dir", "speed", "step", "stop", "home", "position")
 COMMANDS_WITH_VALUE = {"enable", "dir", "speed", "step", "position"}
 
+# Mirrors MAX_SPEED_PCT in the firmware and trolley_control.
+MAX_SPEED_PCT = 0.4
+
 
 def set_engine(engine):
     global _engine
@@ -106,7 +109,10 @@ def _normalize_event(ev: dict) -> dict:
     if cmd in COMMANDS_WITH_VALUE:
         if "value" not in ev or ev["value"] is None:
             raise ValueError(f"command {cmd!r} requires a value")
-        out["value"] = float(ev["value"])
+        value = float(ev["value"])
+        if cmd == "speed":
+            value = max(0.0, min(MAX_SPEED_PCT, value))
+        out["value"] = value
     return out
 
 

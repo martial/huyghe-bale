@@ -29,11 +29,12 @@ export const TROLLEY_TRACKS: BangTrack[] = [
         defaultValue: 1,
       },
       {
+        // Hard safety cap mirrors MAX_SPEED_PCT in the firmware.
         command: "speed",
         color: "#f97316",
         valueKind: "float",
-        valueRange: [0, 1],
-        defaultValue: 0.5,
+        valueRange: [0, 0.4],
+        defaultValue: 0.2,
       },
       {
         command: "step",

@@ -190,3 +190,30 @@ def test_config_set_rejects_missing_key(ctx):
         content_type="application/json",
     )
     assert resp.status_code == 400
+
+
+def test_speed_command_clamps_to_safety_cap(ctx):
+    client, dev = ctx
+    from api.trolley_control import MAX_SPEED_PCT
+    with patch("api.trolley_control._osc") as mock_osc:
+        resp = client.post(
+            f"/api/v1/trolley-control/{dev['id']}/command",
+            data=json.dumps({"command": "speed", "value": 1.0}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        args = mock_osc.send.call_args[0]
+        assert args[2] == "/trolley/speed"
+        assert args[3] == pytest.approx(MAX_SPEED_PCT)
+
+
+def test_speed_command_passes_below_cap(ctx):
+    client, dev = ctx
+    with patch("api.trolley_control._osc") as mock_osc:
+        client.post(
+            f"/api/v1/trolley-control/{dev['id']}/command",
+            data=json.dumps({"command": "speed", "value": 0.2}),
+            content_type="application/json",
+        )
+        args = mock_osc.send.call_args[0]
+        assert args[3] == pytest.approx(0.2)

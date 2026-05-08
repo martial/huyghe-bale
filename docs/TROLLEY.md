@@ -132,7 +132,7 @@ listener is on **port 9001**.
 | `/sys/ping` | `reply_port:int` | Pi answers with `/sys/pong [origin_ip, type, hardware_id]` to the supplied port |
 | `/trolley/enable` | `int 0\|1` | drive ENA pin (0 = disable, 1 = enable) |
 | `/trolley/dir` | `int 0\|1` | raw DIR pin level (the firmware re-maps this through `calibration_direction`) |
-| `/trolley/speed` | `float 0..1` | maps to pulse frequency, 0 = stopped, 1 = `1 / (2 × MIN_PULSE_DELAY_S)` |
+| `/trolley/speed` | `float 0..1` | maps to pulse frequency, 0 = stopped, 1 = `1 / (2 × MIN_PULSE_DELAY_S)`. **Hard-capped at `MAX_SPEED_PCT = 0.4`** in firmware (`_speed_to_delay`), admin backend, and frontend. Values above 0.4 are silently clamped. |
 | `/trolley/accel` | `float 0..10` | linear ramp-up time in seconds applied to subsequent `/trolley/step` and `/trolley/position` moves. `0` = no ramp |
 | `/trolley/decel` | `float 0..10` | linear ramp-down time in seconds applied to subsequent `/trolley/step` and `/trolley/position` moves. `0` = no ramp |
 | `/trolley/step` | `int N` | pulse `N` steps at the current speed/direction; aborts on whichever limit switch is in the direction of travel |
@@ -312,6 +312,7 @@ it to `false` for the production show by sending
 | Soft forward limit | `_soft_limit_steps()` | `/trolley/position 1.0` lands at `rail_length_steps × soft_limit_pct` (default 98%) |
 | Pulse-loop abort | `_pulse_once` | every commanded pulse checks `_abort_event` first; aborts on whichever limit-error flag matches the current direction (so you can still move away from a held switch) |
 | Race-proof stop | `_drain_queue + _abort_event.set()` | `/trolley/stop` *clears* the queue and *aborts* — no wasted commands picked up after stop |
+| Speed cap | `MAX_SPEED_PCT` in `_speed_to_delay` | every pulse half-period is clamped so the effective frequency never exceeds 40% of the firmware's max bandwidth, regardless of `/trolley/speed`, `home_speed_hz`, or any other speed source |
 
 What is **not** guarded yet (known gaps):
 - `ALARM_1` / `ALARM_2` are unread. Driver faults during a show won't halt the

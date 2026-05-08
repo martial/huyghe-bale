@@ -238,19 +238,31 @@ class TestHandleSpeed:
     def setup_method(self):
         _reset()
 
-    def test_scales_mid(self):
-        trolley.handle_speed("/trolley/speed", 0.5)
+    def test_scales_below_cap(self):
+        trolley.handle_speed("/trolley/speed", 0.2)
         max_hz = 1.0 / (2.0 * trolley.TROLLEY_MIN_PULSE_DELAY_S)
-        assert trolley._current_speed_hz == pytest.approx(max_hz * 0.5)
+        assert trolley._current_speed_hz == pytest.approx(max_hz * 0.2)
 
     def test_zero(self):
         trolley.handle_speed("/trolley/speed", 0.0)
         assert trolley._current_speed_hz == 0.0
 
-    def test_clamps_high(self):
+    def test_clamps_to_safety_cap(self):
+        # Hard safety cap: any /trolley/speed above MAX_SPEED_PCT is clamped.
         trolley.handle_speed("/trolley/speed", 2.0)
         max_hz = 1.0 / (2.0 * trolley.TROLLEY_MIN_PULSE_DELAY_S)
-        assert trolley._current_speed_hz == pytest.approx(max_hz)
+        assert trolley._current_speed_hz == pytest.approx(max_hz * trolley.MAX_SPEED_PCT)
+
+    def test_speed_to_delay_floor_enforces_cap(self):
+        # Even if a caller passes a Hz value above the firmware's full bandwidth
+        # × MAX_SPEED_PCT, _speed_to_delay clamps the half-period.
+        max_hz = 1.0 / (2.0 * trolley.TROLLEY_MIN_PULSE_DELAY_S)
+        capped_hz = max_hz * trolley.MAX_SPEED_PCT
+        capped_min_delay = 1.0 / (2.0 * capped_hz)
+        # Asking for max_hz returns the capped delay (slower) not the raw min.
+        assert trolley._speed_to_delay(max_hz) == pytest.approx(capped_min_delay)
+        # Asking below the cap is unchanged.
+        assert trolley._speed_to_delay(capped_hz / 2) == pytest.approx(1.0 / (2.0 * (capped_hz / 2)))
 
 
 class TestHandleAccelDecel:

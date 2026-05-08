@@ -260,6 +260,10 @@ class PlaybackEngine:
         items.sort()
         return items
 
+    # Mirrors MAX_SPEED_PCT in the firmware and trolley_control. Defensive cap
+    # in case an older timeline file has values above the safety threshold.
+    _TROLLEY_MAX_SPEED_PCT = 0.4
+
     def _fire_trolley_event(self, ev):
         """Send one /trolley/<command> OSC message per active device."""
         cmd = ev.get("command")
@@ -273,6 +277,8 @@ class PlaybackEngine:
             osc_value = int(value) if value is not None else 0
         else:  # speed, position
             osc_value = float(value) if value is not None else 0.0
+            if cmd == "speed" and osc_value > self._TROLLEY_MAX_SPEED_PCT:
+                osc_value = self._TROLLEY_MAX_SPEED_PCT
         for device in self._devices:
             try:
                 self.osc.send(
