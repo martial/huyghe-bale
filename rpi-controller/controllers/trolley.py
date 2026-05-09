@@ -149,6 +149,14 @@ _enabled = False
 _accel_time_s = 0.0
 _decel_time_s = 0.0
 
+# Frequency of the last emitted pulse. Read by _run_pulse_train when a new
+# motion command arrives in the same direction, so the new ramp continues
+# from the current speed instead of dropping to 0 first. Reset to 0 when a
+# pulse train completes normally (rotor at rest). Direction reversals,
+# /trolley/stop, limit hits, and alarm latches all bypass this and remain
+# hard aborts — the no-overshoot guarantee depends on it.
+_current_pulse_hz = 0.0
+
 last_osc_time = 0.0
 _webhooks = None
 _pinger_provider = None  # callable returning (ip, port) or None
@@ -237,11 +245,12 @@ def _apply_step_delta():
 
 def _limit_switch_isr(channel):
     """Home-end limit switch ISR. Fires on both edges. Keep it short."""
-    global limit_error, position_steps, homed
+    global limit_error, position_steps, homed, _current_pulse_hz
     try:
         gpio_state = GPIO.input(_home_pin())
         if gpio_state == GPIO.HIGH:
             limit_error = 1
+            _current_pulse_hz = 0.0
             if _current_dir == DIR_REVERSE:
                 position_steps = 0
                 homed = True
@@ -256,11 +265,12 @@ def _limit_switch_isr(channel):
 
 def _far_limit_switch_isr(channel):
     """Far-end limit switch ISR. Fires on both edges. Keep it short."""
-    global far_limit_error, position_steps, homed
+    global far_limit_error, position_steps, homed, _current_pulse_hz
     try:
         gpio_state = GPIO.input(_far_pin())
         if gpio_state == GPIO.HIGH:
             far_limit_error = 1
+            _current_pulse_hz = 0.0
             if _current_dir == DIR_FORWARD:
                 rail = trolley_settings.derived_rail_length_steps(_settings)
                 if rail:
@@ -316,13 +326,14 @@ def _alarm_isr(channel):
     `alarm_polarity`). Aborts current motion and disables the driver
     immediately. The lock is sticky: even after the pin de-asserts the
     firmware keeps refusing commands until /trolley/alarm/reset is sent."""
-    global alarm_locked
+    global alarm_locked, _current_pulse_hz
     if _alarm_polarity() == "disabled":
         return
     try:
         a1, a2 = _read_alarm_pins()
         if (a1 | a2) and not alarm_locked:
             alarm_locked = True
+            _current_pulse_hz = 0.0
             _abort_event.set()
             try:
                 GPIO.output(PIN_STEP_ENA, GPIO.HIGH)  # active LOW → HIGH disables
@@ -379,15 +390,20 @@ def _motion_loop():
                 _idle_event.set()
 
 
-def _run_pulse_train(total_steps, target_hz, accel_s, decel_s):
+def _run_pulse_train(total_steps, target_hz, accel_s, decel_s, start_hz=0.0):
     """Emit `total_steps` pulses with a trapezoidal velocity profile.
 
     Direction must be set by the caller. With accel_s == decel_s == 0 this
     falls back to the legacy constant-rate loop (identical wire timing).
-    Otherwise: ramp velocity linearly in TIME from 0 → target_hz over
-    accel_s seconds (frequency follows √(k/N) over N = target_hz × accel_s / 2
-    steps), cruise, then ramp down to 0 over decel_s seconds. If the move is
-    too short to fit both ramps, the profile becomes triangular."""
+    Otherwise: ramp velocity linearly in TIME from `start_hz` → target_hz
+    (kinematic v² = u² + 2as), cruise, then ramp down to 0 over decel_s
+    seconds. `start_hz` lets a same-direction retarget continue from the
+    current speed instead of dropping to 0 first; pass 0 for a fresh start.
+    If the move is too short to fit both ramps, falls back to either a
+    classic triangular profile (when starting from rest) or a pure decel
+    from `start_hz` to 0 (when continuing). Total emitted pulse count is
+    always exactly `total_steps`."""
+    global _current_pulse_hz
     if total_steps <= 0:
         return
 
@@ -396,44 +412,85 @@ def _run_pulse_train(total_steps, target_hz, accel_s, decel_s):
         for _ in range(total_steps):
             if not _pulse_once(delay):
                 return
+            _current_pulse_hz = target_hz
             _apply_step_delta()
+        _current_pulse_hz = 0.0
         return
 
-    # Avg frequency during a 0→target linear ramp is target/2, so the step
-    # count for a given ramp time is target_hz * t / 2.
-    steps_a = int(target_hz * accel_s / 2) if accel_s > 0 else 0
+    # Caller may pass start_hz > target_hz when retargeting to a slower speed.
+    # Skip accel rather than decel back down — the velocity drop is small and
+    # the cruise+decel phases handle the rest exactly.
+    if start_hz > target_hz:
+        start_hz = target_hz
+
+    # Step budget: kinematic v² = u² + 2·a·s with a = target_hz / accel_s.
+    # Reduces to the classic target_hz × accel_s / 2 when start_hz = 0.
+    if accel_s > 0 and start_hz < target_hz:
+        steps_a = int((target_hz * target_hz - start_hz * start_hz) * accel_s / (2 * target_hz))
+    else:
+        steps_a = 0
     steps_d = int(target_hz * decel_s / 2) if decel_s > 0 else 0
+
     if steps_a + steps_d > total_steps:
-        # Triangular profile — scale the two ramps proportionally.
+        # Not enough room for full ramps.
+        if start_hz > 0 and decel_s > 0:
+            # Continuation case with a tight target — emit a pure decel from
+            # start_hz to 0 spread over the available steps. Faster than the
+            # configured rate if total_steps is small, but smoother than a
+            # hard stop and still lands on exactly total_steps pulses.
+            for i in range(total_steps):
+                f = start_hz * math.sqrt(1.0 - (i + 1) / total_steps)
+                if not _pulse_once(_speed_to_delay(f)):
+                    return
+                _current_pulse_hz = f
+                _apply_step_delta()
+            _current_pulse_hz = 0.0
+            return
+        # Classic triangular fallback (starting from rest): scale both ramps
+        # proportionally and skip the cruise phase.
+        steps_a = int(target_hz * accel_s / 2) if accel_s > 0 else 0
         ramp_total = steps_a + steps_d
         steps_a = int(steps_a * total_steps / ramp_total) if ramp_total else 0
         steps_d = total_steps - steps_a
+        start_hz = 0.0
     steps_c = total_steps - steps_a - steps_d
 
     for i in range(steps_a):
-        f = target_hz * math.sqrt((i + 1) / steps_a)
+        f = math.sqrt(start_hz * start_hz + 2 * target_hz * (i + 1) / accel_s)
         if not _pulse_once(_speed_to_delay(f)):
             return
+        _current_pulse_hz = f
         _apply_step_delta()
 
     cruise_delay = _speed_to_delay(target_hz)
     for _ in range(steps_c):
         if not _pulse_once(cruise_delay):
             return
+        _current_pulse_hz = target_hz
         _apply_step_delta()
 
     for i in range(steps_d):
         f = target_hz * math.sqrt(1.0 - (i + 1) / steps_d)
         if not _pulse_once(_speed_to_delay(f)):
             return
+        _current_pulse_hz = f
         _apply_step_delta()
+
+    _current_pulse_hz = 0.0
 
 
 def _run_step_burst(steps, direction, speed_hz):
     if steps <= 0:
         return
-    _set_dir(direction)
-    _run_pulse_train(steps, speed_hz, _accel_time_s, _decel_time_s)
+    # Same-direction continuation: keep the rotor's momentum so the new burst
+    # ramps from current speed instead of dropping to 0 first. Reversal must
+    # restart from 0 — closed-loop driver fights its own inertia otherwise.
+    if direction == _current_dir:
+        start_hz = _current_pulse_hz
+    else:
+        start_hz = 0.0
+        _set_dir(direction)
+    _run_pulse_train(steps, speed_hz, _accel_time_s, _decel_time_s, start_hz=start_hz)
 
 
 def _run_follow(target, speed_hz):
@@ -445,9 +502,12 @@ def _run_follow(target, speed_hz):
         target_steps = None
         return
     direction = DIR_FORWARD if delta > 0 else DIR_REVERSE
-    if direction != _current_dir:
+    if direction == _current_dir:
+        start_hz = _current_pulse_hz
+    else:
+        start_hz = 0.0
         _set_dir(direction)
-    _run_pulse_train(abs(delta), speed_hz, _accel_time_s, _decel_time_s)
+    _run_pulse_train(abs(delta), speed_hz, _accel_time_s, _decel_time_s, start_hz=start_hz)
     target_steps = None
 
 
@@ -490,7 +550,7 @@ def _enqueue(cmd):
 def setup(webhooks):
     """Configure pins, start the motion thread, leave driver disabled."""
     global _webhooks, _motion_thread, position_steps, homed, limit_error, far_limit_error, state
-    global alarm_locked
+    global alarm_locked, _current_pulse_hz
     _webhooks = webhooks
     _reload_settings()
 
@@ -499,6 +559,7 @@ def setup(webhooks):
     limit_error = 0
     far_limit_error = 0
     alarm_locked = False
+    _current_pulse_hz = 0.0
     state = STATE_IDLE
     _shutdown_event.clear()
     _abort_event.clear()
@@ -703,8 +764,10 @@ def handle_step(address, *args):
 @_safe("stop")
 def handle_stop(address, *args):
     """Halt motion."""
+    global _current_pulse_hz
     logger.info("OSC %s: stop", address)
     _drain_queue()
+    _current_pulse_hz = 0.0
     _abort_event.set()
 
 

@@ -45,6 +45,7 @@ def _reset(*, calibrated=True, calibration_direction="forward"):
     trolley.limit_error = 0
     trolley.far_limit_error = 0
     trolley.alarm_locked = False
+    trolley._current_pulse_hz = 0.0
     trolley.target_steps = None
     trolley.state = trolley.STATE_IDLE
     trolley._current_dir = trolley.DIR_FORWARD
@@ -311,7 +312,7 @@ class TestPulseTrainRamp:
     def setup_method(self):
         _reset()
 
-    def _capture_delays(self, total_steps, target_hz, accel_s, decel_s):
+    def _capture_delays(self, total_steps, target_hz, accel_s, decel_s, start_hz=0.0):
         delays = []
 
         def fake_pulse_once(delay_s):
@@ -320,7 +321,7 @@ class TestPulseTrainRamp:
 
         with patch.object(trolley, "_pulse_once", side_effect=fake_pulse_once), \
              patch.object(trolley, "_apply_step_delta"):
-            trolley._run_pulse_train(total_steps, target_hz, accel_s, decel_s)
+            trolley._run_pulse_train(total_steps, target_hz, accel_s, decel_s, start_hz=start_hz)
         return delays
 
     def test_zero_ramps_uses_constant_delay(self):
@@ -373,6 +374,62 @@ class TestPulseTrainRamp:
         steps_d = int(target_hz * decel_s / 2)
         decel_period_total = sum(2 * d for d in delays[-steps_d:])
         assert decel_period_total == pytest.approx(decel_s, rel=0.05)
+
+    def test_continuation_at_target_skips_accel_phase(self):
+        # When start_hz == target_hz the new pulse train must jump straight
+        # to cruise — no slow first pulse — and decel as planned.
+        target_hz = 500.0
+        delays = self._capture_delays(1000, target_hz, 1.0, 1.0, start_hz=target_hz)
+        cruise = trolley._speed_to_delay(target_hz)
+        # First pulse is at cruise speed (continuation, not ramp from 0).
+        assert delays[0] == pytest.approx(cruise)
+        # Tail still ramps down (decel phase intact).
+        assert delays[-1] > delays[-200]
+
+    def test_continuation_partial_accel_is_shorter(self):
+        # start_hz halfway up the ramp should shorten the accel phase by ~75%
+        # (kinematic v² = u² + 2as: budget = (T² - S²) × accel_s / (2T)).
+        target_hz = 500.0
+        accel_s = 1.0
+        delays_full = self._capture_delays(2000, target_hz, accel_s, 0.0, start_hz=0.0)
+        delays_half = self._capture_delays(2000, target_hz, accel_s, 0.0, start_hz=target_hz / 2)
+        cruise = trolley._speed_to_delay(target_hz)
+        accel_full = sum(1 for d in delays_full if d > cruise)
+        accel_half = sum(1 for d in delays_half if d > cruise)
+        # Half-target start ⇒ (1 - 0.25) = 0.75 of the original ramp budget.
+        assert 0.6 * accel_full < accel_half < 0.9 * accel_full
+        # First pulse is at start_hz, not slow.
+        assert delays_half[0] == pytest.approx(trolley._speed_to_delay(target_hz / 2), rel=0.02)
+
+    def test_continuation_tight_target_emits_pure_decel(self):
+        # When already running and the new target is too short for full ramps,
+        # emit pure decel from start_hz to 0 over total_steps. No initial
+        # velocity drop, exact step count, monotonically increasing delays.
+        delays = self._capture_delays(50, 500.0, 1.0, 1.0, start_hz=400.0)
+        assert len(delays) == 50
+        # Monotonic increase = monotonic frequency decrease (pure decel).
+        for i in range(1, len(delays)):
+            assert delays[i] >= delays[i - 1]
+        # First pulse is near start_hz, not target_hz.
+        assert delays[0] < trolley._speed_to_delay(300.0)
+
+    def test_current_pulse_hz_resets_after_normal_completion(self):
+        # After a full pulse train the rotor is at rest; the tracker must be 0
+        # so the *next* command sees a fresh start (unless explicitly continuing).
+        trolley._current_pulse_hz = 0.0
+        with patch.object(trolley, "_pulse_once", return_value=True), \
+             patch.object(trolley, "_apply_step_delta"):
+            trolley._run_pulse_train(500, 500.0, 0.5, 0.5)
+        assert trolley._current_pulse_hz == 0.0
+
+    def test_handle_stop_resets_current_pulse_hz(self):
+        # Hard-stop contract: a pretend-running trolley with non-zero
+        # _current_pulse_hz must drop to 0 after /trolley/stop, so a later
+        # same-direction command starts fresh (rotor has come to rest).
+        trolley._current_pulse_hz = 350.0
+        trolley.handle_stop("/trolley/stop")
+        assert trolley._current_pulse_hz == 0.0
+        assert trolley._abort_event.is_set()
 
 
 class TestRampedStepBurst:
@@ -535,6 +592,17 @@ class TestLimitSwitch:
         assert _wait_idle()
         assert trolley.position_steps == 0
 
+    def test_isr_resets_current_pulse_hz_on_hit(self, running_trolley):
+        # Continuation safety: a limit hit means the rotor is mechanically
+        # stopped, so the cached frequency must drop to 0. Otherwise a later
+        # same-direction command would lurch the rotor from rest at the
+        # stale speed.
+        trolley._current_pulse_hz = 250.0
+        trolley._current_dir = trolley.DIR_REVERSE
+        running_trolley.input.return_value = running_trolley.HIGH
+        trolley._limit_switch_isr(trolley.PIN_LIM_SWITCH)
+        assert trolley._current_pulse_hz == 0.0
+
 
 class TestFarLimitSwitch:
     def test_isr_pins_position_on_far(self, running_trolley):
@@ -560,6 +628,13 @@ class TestFarLimitSwitch:
         assert _wait_idle()
         # Symmetric guard: forward pulses must abort when far_limit_error is high
         assert trolley.position_steps == 100
+
+    def test_isr_resets_current_pulse_hz_on_hit(self, running_trolley):
+        trolley._current_pulse_hz = 250.0
+        trolley._current_dir = trolley.DIR_FORWARD
+        running_trolley.input.return_value = running_trolley.HIGH
+        trolley._far_limit_switch_isr(trolley.PIN_LIM_SWITCH_FAR)
+        assert trolley._current_pulse_hz == 0.0
 
 
 class TestAlarmLock:
