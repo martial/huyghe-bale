@@ -426,7 +426,7 @@ def _run_pulse_train(total_steps, target_hz, accel_s, decel_s):
         _apply_step_delta()
 
     for i in range(steps_d):
-        f = target_hz * math.sqrt(max(0.0, 1.0 - (i + 1) / steps_d))
+        f = target_hz * math.sqrt(1.0 - (i + 1) / steps_d)
         if not _pulse_once(_speed_to_delay(f)):
             return
         _apply_step_delta()
