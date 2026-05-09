@@ -271,8 +271,11 @@ def _far_limit_switch_isr(channel):
 
 
 def _alarm_polarity() -> str:
-    """One of 'active_high', 'active_low', 'disabled'."""
-    return _settings.get("alarm_polarity", "active_high")
+    """One of 'active_high', 'active_low', 'disabled'.
+
+    Defaults to 'disabled' to match trolley_settings.DEFAULTS — the auto-lock
+    is opt-in until rig wiring is verified."""
+    return _settings.get("alarm_polarity", "disabled")
 
 
 def _alarm_pin_raw(pin: int) -> int:

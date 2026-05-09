@@ -59,11 +59,13 @@ DEFAULTS = {
     # wire the home switch to PIN_LIM_SWITCH directly.
     # Takes effect on service restart (ISR registration is at setup time).
     "limit_switches_swapped": True,
-    # CL86Y ALARM optocoupler polarity:
-    #   "active_high" — pin reads HIGH on fault (firmware default)
+    # CL86Y ALARM optocoupler polarity. Defaults to "disabled" because the
+    # rig wiring/polarity hasn't been verified end-to-end yet — turning the
+    # auto-lock on with the wrong polarity bricks motion at boot.
+    #   "active_high" — pin reads HIGH on fault
     #   "active_low"  — pin reads LOW on fault (HIGH = OK)
     #   "disabled"    — ignore alarm pins entirely (no auto-lock)
-    "alarm_polarity": "active_high",
+    "alarm_polarity": "disabled",
     "soft_limit_pct": 0.98,
     # When True, /trolley/position runs even on an unconfigured rig
     # (uses TROLLEY_MAX_STEPS as the rail length). For bench testing.

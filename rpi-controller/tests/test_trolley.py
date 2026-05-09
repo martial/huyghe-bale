@@ -549,10 +549,14 @@ class TestFarLimitSwitch:
 class TestAlarmLock:
     def setup_method(self):
         _reset()
+        # Default polarity is "disabled" (opt-in); tests that exercise the
+        # latching behaviour need to flip it on explicitly.
+        trolley._settings["alarm_polarity"] = "active_high"
 
     def teardown_method(self):
         trolley.alarm_locked = False
         trolley.alarm_active = 0
+        trolley._settings["alarm_polarity"] = trolley_settings.DEFAULTS["alarm_polarity"]
 
     def _gpio_with_alarm(self, a1=False, a2=False):
         gpio = _make_gpio()
