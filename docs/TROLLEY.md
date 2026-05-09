@@ -142,13 +142,14 @@ listener is on **port 9001**.
 | `/trolley/config/set` | `str key`, value | stage one setting in memory (see §3 for valid keys) |
 | `/trolley/config/save` | — | persist staged settings to `device.json` |
 | `/trolley/config/get` | — | broadcast current settings as one `/trolley/config` JSON message |
+| `/trolley/alarm/reset` | — | clear a latched driver-alarm lock (only succeeds while both ALARM pins read LOW) |
 
 ### 2.2 Pi → backend (broadcasts)
 
 | Address | Args | Cadence |
 |---|---|---|
 | `/sys/pong` | `[ip, type, hardware_id]` | reply to `/sys/ping` |
-| `/trolley/status` | `[position, limit, homed, state, calibrated]` | unsolicited at 5 Hz once a `/sys/ping` has been received |
+| `/trolley/status` | `[position, limit, homed, state, calibrated, alarm, alarm_locked]` | unsolicited at 5 Hz once a `/sys/ping` has been received. The trailing `alarm` and `alarm_locked` fields are added by newer firmware; older admin parsers ignore them. |
 | `/trolley/config` | `[json_string]` | reply to `/trolley/config/get` |
 
 Status field semantics:
@@ -313,10 +314,9 @@ it to `false` for the production show by sending
 | Pulse-loop abort | `_pulse_once` | every commanded pulse checks `_abort_event` first; aborts on whichever limit-error flag matches the current direction (so you can still move away from a held switch) |
 | Race-proof stop | `_drain_queue + _abort_event.set()` | `/trolley/stop` *clears* the queue and *aborts* — no wasted commands picked up after stop |
 | Speed cap | `MAX_SPEED_PCT` in `_speed_to_delay` | every pulse half-period is clamped so the effective frequency never exceeds 40% of the firmware's max bandwidth, regardless of `/trolley/speed`, `home_speed_hz`, or any other speed source |
+| Alarm lock | `_alarm_isr` + `alarm_locked` flag | when either CL86Y `ALARM` GPIO goes HIGH, the firmware: (1) sets `alarm_locked=True`, (2) aborts current motion, (3) disables the driver, (4) refuses every motion command until `/trolley/alarm/reset` is sent. Reset only succeeds while both alarm pins are LOW. Status broadcasts `alarm` (live pin OR) and `alarm_locked` (sticky flag). The admin panel shows a red banner with a Reset button when locked. |
 
 What is **not** guarded yet (known gaps):
-- `ALARM_1` / `ALARM_2` are unread. Driver faults during a show won't halt the
-  pulse train.
 - `PEND_1` / `PEND_2` are unread. They wouldn't help with position sensing
   even if read — they're per-burst events, not continuous signals.
 

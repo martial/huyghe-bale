@@ -44,6 +44,8 @@ def _reset(*, calibrated=True, calibration_direction="forward"):
     trolley.homed = False
     trolley.limit_error = 0
     trolley.far_limit_error = 0
+    trolley.alarm_locked = False
+    trolley.alarm_active = 0
     trolley.target_steps = None
     trolley.state = trolley.STATE_IDLE
     trolley._current_dir = trolley.DIR_FORWARD
@@ -148,10 +150,10 @@ class TestSetup:
              patch.object(trolley, "trolley_settings", _settings_mock_with_real_helpers()):
             trolley.setup(MagicMock())
             assert mock_gpio.setmode.called
-            # DIR + PUL + ENA + LIM_HOME + LIM_FAR
-            assert mock_gpio.setup.call_count == 5
-            # Two ISRs: home + far
-            assert mock_gpio.add_event_detect.call_count == 2
+            # DIR + PUL + ENA + LIM_HOME + LIM_FAR + ALARM_1 + ALARM_2
+            assert mock_gpio.setup.call_count == 7
+            # Four ISRs: home + far + alarm_1 + alarm_2
+            assert mock_gpio.add_event_detect.call_count == 4
             assert trolley._motion_thread is not None
             assert trolley._motion_thread.is_alive()
 
@@ -544,6 +546,82 @@ class TestFarLimitSwitch:
         assert trolley.position_steps == 100
 
 
+class TestAlarmLock:
+    def setup_method(self):
+        _reset()
+
+    def teardown_method(self):
+        trolley.alarm_locked = False
+        trolley.alarm_active = 0
+
+    def _gpio_with_alarm(self, a1=False, a2=False):
+        gpio = _make_gpio()
+
+        def fake_input(pin):
+            if pin == trolley.PIN_ALARM_1:
+                return gpio.HIGH if a1 else gpio.LOW
+            if pin == trolley.PIN_ALARM_2:
+                return gpio.HIGH if a2 else gpio.LOW
+            return gpio.LOW
+
+        gpio.input.side_effect = fake_input
+        return gpio
+
+    def test_isr_latches_lock_and_disables_driver(self):
+        gpio = self._gpio_with_alarm(a1=True)
+        with patch.object(trolley, "GPIO", gpio):
+            trolley._alarm_isr(trolley.PIN_ALARM_1)
+        assert trolley.alarm_locked is True
+        # ENA pulled HIGH = driver disabled (active LOW).
+        assert any(
+            c.args == (trolley.PIN_STEP_ENA, 1)
+            for c in gpio.output.call_args_list
+        )
+
+    def test_isr_with_no_alarm_does_not_latch(self):
+        with patch.object(trolley, "GPIO", self._gpio_with_alarm(a1=False, a2=False)):
+            trolley._alarm_isr(trolley.PIN_ALARM_1)
+        assert trolley.alarm_locked is False
+
+    def test_motion_handlers_refused_when_locked(self):
+        trolley.alarm_locked = True
+        gpio = _make_gpio()
+        with patch.object(trolley, "GPIO", gpio):
+            # All motion handlers must short-circuit.
+            trolley.handle_enable("/trolley/enable", 1)
+            assert trolley._enabled is False
+            trolley.handle_step("/trolley/step", 100)
+            assert trolley._command_queue.empty()
+            trolley.handle_home("/trolley/home", "reverse")
+            assert trolley._command_queue.empty()
+            trolley.handle_position("/trolley/position", 0.5)
+            assert trolley._command_queue.empty()
+
+    def test_reset_succeeds_when_pins_low(self):
+        trolley.alarm_locked = True
+        with patch.object(trolley, "GPIO", self._gpio_with_alarm(a1=False, a2=False)):
+            trolley.handle_alarm_reset("/trolley/alarm/reset")
+        assert trolley.alarm_locked is False
+
+    def test_reset_refused_when_pin_still_high(self):
+        trolley.alarm_locked = True
+        with patch.object(trolley, "GPIO", self._gpio_with_alarm(a1=True)):
+            trolley.handle_alarm_reset("/trolley/alarm/reset")
+        assert trolley.alarm_locked is True
+
+    def test_status_includes_alarm_fields(self):
+        with patch.object(trolley, "GPIO", self._gpio_with_alarm(a1=True)):
+            s = trolley.get_status()
+        assert s["alarm"] == 1
+        # alarm_locked tracks the latched flag, not the pin.
+        assert s["alarm_locked"] == 0
+        trolley.alarm_locked = True
+        with patch.object(trolley, "GPIO", self._gpio_with_alarm(a1=False)):
+            s2 = trolley.get_status()
+        assert s2["alarm"] == 0
+        assert s2["alarm_locked"] == 1
+
+
 class TestLimitSwitchSwap:
     def setup_method(self):
         _reset()
@@ -751,13 +829,16 @@ class TestDescribeAndStatus:
         _reset()
         trolley.position_steps = CALIBRATED_RAIL // 4
         trolley.homed = True
-        args = trolley.get_status_osc_args()
-        # [position, limit, homed, state, calibrated]
-        assert len(args) == 5
+        with patch.object(trolley, "GPIO", _make_gpio()):
+            args = trolley.get_status_osc_args()
+        # [position, limit, homed, state, calibrated, alarm, alarm_locked]
+        assert len(args) == 7
         assert isinstance(args[0], float)
         assert isinstance(args[3], str)
         assert args[3] == trolley.STATE_IDLE
         assert args[4] == 1
+        assert args[5] == 0  # no alarm pin asserted
+        assert args[6] == 0  # not latched
 
     def test_status_unconfigured_falls_back_to_max_steps(self):
         _reset(calibrated=False)

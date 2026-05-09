@@ -10,7 +10,8 @@ export type TrolleyCommand =
   | "position"
   | "config_set"
   | "config_save"
-  | "config_get";
+  | "config_get"
+  | "alarm_reset";
 
 export type TrolleyState = "idle" | "homing" | "following";
 
@@ -77,6 +78,10 @@ export interface TrolleyStatus {
   /** 1 = rail length and wheel radius are set on the Pi; 0 = needs config. */
   calibrated: number;
   state: TrolleyState;
+  /** 1 = at least one driver alarm pin is currently asserted. */
+  alarm?: number;
+  /** 1 = the firmware has latched the alarm lock and is refusing motion. */
+  alarm_locked?: number;
   timestamp?: number;
   online: boolean;
 }

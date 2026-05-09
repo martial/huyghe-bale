@@ -45,6 +45,7 @@ _COMMAND_MAP = {
     "position":         ("/trolley/position",         "float"),
     "config_save":      ("/trolley/config/save",      "int_or_zero"),
     "config_get":       ("/trolley/config/get",       "int_or_zero"),
+    "alarm_reset":      ("/trolley/alarm/reset",      "int_or_zero"),
     # config_set is special-cased below (two args: key, value).
 }
 
@@ -182,6 +183,8 @@ def get_status(device_id):
         "homed": status.get("homed", 0),
         "calibrated": status.get("calibrated", 0),
         "state": status.get("state", "idle"),
+        "alarm": status.get("alarm", 0),
+        "alarm_locked": status.get("alarm_locked", 0),
         "timestamp": status.get("timestamp"),
         "online": online,
     })

@@ -175,8 +175,14 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
   const calibrated = status?.calibrated ?? 0;
   const state = status?.state ?? "idle";
   const livePosition = status?.position ?? 0;
+  const alarm = status?.alarm ?? 0;
+  const alarmLocked = (status?.alarm_locked ?? 0) === 1;
   const isHoming = state === "homing";
-  const positionAvailable = homed === 1 && calibrated === 1;
+  const positionAvailable = homed === 1 && calibrated === 1 && !alarmLocked;
+  // When the firmware has latched the alarm, every motion control is locked
+  // out. Operator must clear the underlying CL86Y fault first, then click
+  // Reset alarm. Reset itself only succeeds when alarm pin reads LOW.
+  const motionLocked = alarmLocked;
 
   const derivedSteps = useMemo(
     () =>
@@ -217,7 +223,36 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
         {limit === 1 && (
           <span className="px-2 py-0.5 rounded bg-yellow-900/40 text-yellow-300">⚠ limit</span>
         )}
+        {alarmLocked && (
+          <span className="px-2 py-0.5 rounded bg-red-950 text-red-200 font-semibold tracking-wide">
+            ALARM LOCKED
+          </span>
+        )}
+        {!alarmLocked && alarm === 1 && (
+          <span className="px-2 py-0.5 rounded bg-red-900/50 text-red-300">⚠ alarm pin</span>
+        )}
       </div>
+
+      {/* Alarm-locked banner — visible whenever the firmware refuses motion. */}
+      {alarmLocked && (
+        <div className="mb-3 p-3 rounded-xl bg-red-950/60 border border-red-700/50">
+          <p className="text-xs font-semibold text-red-200 mb-1">
+            Driver alarm latched — all motion is locked.
+          </p>
+          <p className="text-[11px] text-red-300/80 mb-2">
+            Clear the CL86Y fault (red LED on the driver), then press Reset alarm.
+            Reset only succeeds while the alarm GPIO is LOW.
+          </p>
+          <button
+            onClick={() => send("alarm_reset")}
+            disabled={busy || !online || alarm === 1}
+            className="w-full px-3 py-1.5 bg-red-700/70 hover:bg-red-600/80 disabled:opacity-30 rounded text-xs font-medium text-red-50 transition-all"
+            title={alarm === 1 ? "Alarm pin is still HIGH — clear the driver fault first" : undefined}
+          >
+            Reset alarm
+          </button>
+        </div>
+      )}
 
       {/* Live position bar */}
       <div className="mb-4">
@@ -278,16 +313,16 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
         <div className="flex gap-2">
           <button
             onClick={() => send("home", "reverse")}
-            disabled={busy || !online || isHoming}
-            title="Drive toward home limit switch"
+            disabled={busy || !online || isHoming || motionLocked}
+            title={motionLocked ? "Alarm latched — reset first" : "Drive toward home limit switch"}
             className="flex-1 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 rounded text-[11px] font-medium text-zinc-300 transition-all"
           >
             ◄ Home reverse
           </button>
           <button
             onClick={() => send("home", "forward")}
-            disabled={busy || !online || isHoming}
-            title="Drive toward far limit switch"
+            disabled={busy || !online || isHoming || motionLocked}
+            title={motionLocked ? "Alarm latched — reset first" : "Drive toward far limit switch"}
             className="flex-1 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 rounded text-[11px] font-medium text-zinc-300 transition-all"
           >
             Home forward ►
@@ -302,7 +337,7 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
             type="checkbox"
             checked={enabled}
             onChange={(e) => handleEnable(e.target.checked)}
-            disabled={busy || !online}
+            disabled={busy || !online || motionLocked}
             className="accent-sky-500"
           />
           Enable
@@ -332,7 +367,13 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
           onMouseUp={(e) => handlePosition(Number((e.target as HTMLInputElement).value))}
           onTouchEnd={(e) => handlePosition(Number((e.target as HTMLInputElement).value))}
           disabled={busy || !online || !positionAvailable}
-          title={!positionAvailable ? "Configure rail + home first" : undefined}
+          title={
+            motionLocked
+              ? "Alarm latched — reset first"
+              : !positionAvailable
+              ? "Configure rail + home first"
+              : undefined
+          }
           className="w-full accent-sky-500 disabled:opacity-30"
         />
       </div>
@@ -346,7 +387,7 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
             name={`dir-${device.id}`}
             checked={direction === 1}
             onChange={() => handleDir(1)}
-            disabled={busy || !online}
+            disabled={busy || !online || motionLocked}
             className="accent-sky-500"
           />
           Forward
@@ -357,7 +398,7 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
             name={`dir-${device.id}`}
             checked={direction === 0}
             onChange={() => handleDir(0)}
-            disabled={busy || !online}
+            disabled={busy || !online || motionLocked}
             className="accent-sky-500"
           />
           Reverse
@@ -376,7 +417,7 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
           step={0.01}
           value={speed}
           onChange={(e) => handleSpeed(Number(e.target.value))}
-          disabled={busy || !online}
+          disabled={busy || !online || motionLocked}
           className="flex-1 accent-sky-500"
         />
         <span className="text-xs text-zinc-400 font-mono w-12 text-right">
@@ -393,12 +434,12 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
           step={1}
           value={steps}
           onChange={(e) => setSteps(Math.max(1, Number(e.target.value)))}
-          disabled={busy || !online}
+          disabled={busy || !online || motionLocked}
           className="w-32 bg-zinc-800 border border-zinc-700/50 rounded-lg px-2 py-1 text-sm text-zinc-200 font-mono focus:outline-none focus:border-sky-500/50"
         />
         <button
           onClick={handleStep}
-          disabled={busy || !online}
+          disabled={busy || !online || motionLocked}
           className="ml-2 px-4 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-30 rounded-lg text-sm font-medium transition-all"
         >
           GO

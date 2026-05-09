@@ -37,6 +37,7 @@ import RPi.GPIO as GPIO
 from config import (
     PIN_STEP_DIR, PIN_STEP_PUL, PIN_STEP_ENA,
     PIN_LIM_SWITCH, PIN_LIM_SWITCH_FAR,
+    PIN_ALARM_1, PIN_ALARM_2,
     STEP_DEBOUNCE_MS,
     TROLLEY_MAX_STEPS, TROLLEY_MIN_PULSE_DELAY_S, TROLLEY_MAX_PULSE_DELAY_S,
     TROLLEY_DEFAULT_SPEED_HZ, TROLLEY_AUTO_HOME_ON_BOOT,
@@ -126,6 +127,12 @@ position_steps = 0
 homed = False
 limit_error = 0       # home-end switch
 far_limit_error = 0   # far-end switch
+# Driver alarm state. `alarm_locked` is sticky: once a driver fault fires, the
+# firmware refuses every motion command and disables the driver until the
+# operator explicitly clears it via /trolley/alarm/reset (and only if the
+# alarm GPIO has gone LOW again). `alarm_active` is the live OR of both pins.
+alarm_locked = False
+alarm_active = 0
 target_steps = None
 
 state = STATE_IDLE
@@ -261,6 +268,47 @@ def _far_limit_switch_isr(channel):
             far_limit_error = 0
     except Exception as e:
         logger.error("Trolley far ISR error: %s", e)
+
+
+def _read_alarm_pins() -> tuple[int, int]:
+    """Return current (ALARM_1, ALARM_2) GPIO states (1 = fault)."""
+    try:
+        a1 = 1 if GPIO.input(PIN_ALARM_1) == GPIO.HIGH else 0
+        a2 = 1 if GPIO.input(PIN_ALARM_2) == GPIO.HIGH else 0
+    except Exception:
+        a1 = a2 = 0
+    return a1, a2
+
+
+def _alarm_isr(channel):
+    """Driver alarm ISR — fires on either ALARM_1 or ALARM_2 edge.
+
+    Latches `alarm_locked` once any pin goes HIGH. Aborts current motion and
+    disables the driver immediately. The lock is sticky: even after the GPIO
+    goes LOW the firmware keeps refusing commands until /trolley/alarm/reset
+    is sent."""
+    global alarm_locked, alarm_active
+    try:
+        a1, a2 = _read_alarm_pins()
+        alarm_active = a1 | a2
+        if alarm_active and not alarm_locked:
+            alarm_locked = True
+            _abort_event.set()
+            try:
+                GPIO.output(PIN_STEP_ENA, GPIO.HIGH)  # active LOW → HIGH disables
+            except Exception as e:
+                logger.error("Trolley alarm ISR: failed to disable driver: %s", e)
+            logger.error(
+                "Trolley ALARM latched — driver fault (ALARM_1=%d ALARM_2=%d). "
+                "Send /trolley/alarm/reset after clearing the fault.",
+                a1, a2,
+            )
+            if _webhooks:
+                _webhooks.fire("alarm", {
+                    "source": "trolley", "alarm_1": a1, "alarm_2": a2,
+                })
+    except Exception as e:
+        logger.error("Trolley alarm ISR error: %s", e)
 
 
 # --- motion thread --------------------------------------------------------
@@ -411,6 +459,7 @@ def _enqueue(cmd):
 def setup(webhooks):
     """Configure pins, start the motion thread, leave driver disabled."""
     global _webhooks, _motion_thread, position_steps, homed, limit_error, far_limit_error, state
+    global alarm_locked, alarm_active
     _webhooks = webhooks
     _reload_settings()
 
@@ -418,6 +467,8 @@ def setup(webhooks):
     homed = False
     limit_error = 0
     far_limit_error = 0
+    alarm_locked = False
+    alarm_active = 0
     state = STATE_IDLE
     _shutdown_event.clear()
     _abort_event.clear()
@@ -432,6 +483,8 @@ def setup(webhooks):
     far_pin = _far_pin()
     GPIO.setup(home_pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
     GPIO.setup(far_pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    GPIO.setup(PIN_ALARM_1, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    GPIO.setup(PIN_ALARM_2, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
     try:
         GPIO.add_event_detect(
@@ -450,6 +503,24 @@ def setup(webhooks):
         )
     except Exception as e:
         logger.error("Trolley: failed to install far-switch ISR: %s", e)
+
+    for alarm_pin in (PIN_ALARM_1, PIN_ALARM_2):
+        try:
+            GPIO.add_event_detect(
+                alarm_pin, GPIO.BOTH,
+                callback=_alarm_isr,
+                bouncetime=STEP_DEBOUNCE_MS,
+            )
+        except Exception as e:
+            logger.error("Trolley: failed to install alarm ISR on %d: %s", alarm_pin, e)
+
+    # If the rig already has an alarm asserted at boot, latch the lock now so
+    # we don't enable the driver into a known-bad state.
+    a1, a2 = _read_alarm_pins()
+    alarm_active = a1 | a2
+    if alarm_active:
+        alarm_locked = True
+        logger.error("Trolley: alarm asserted at boot (ALARM_1=%d ALARM_2=%d) — locked", a1, a2)
 
     _motion_thread = threading.Thread(target=_motion_loop, name="trolley-motion", daemon=True)
     _motion_thread.start()
@@ -478,7 +549,7 @@ def cleanup():
         GPIO.output(PIN_STEP_ENA, GPIO.HIGH)
     except Exception as e:
         logger.error("Trolley cleanup GPIO.output error: %s", e)
-    for pin in (_home_pin(), _far_pin()):
+    for pin in (_home_pin(), _far_pin(), PIN_ALARM_1, PIN_ALARM_2):
         try:
             GPIO.remove_event_detect(pin)
         except Exception as e:
@@ -508,8 +579,22 @@ def _safe(handler_name):
     return deco
 
 
+def _alarm_blocks(address: str) -> bool:
+    """If the alarm lock is latched, refuse this command and log it.
+
+    Returns True when the caller should bail out. Stop, config_*, and
+    alarm_reset bypass this check (they're either safe or the way to recover)."""
+    if alarm_locked:
+        logger.warning("OSC %s: refused — alarm latched. Send /trolley/alarm/reset.",
+                       address)
+        return True
+    return False
+
+
 @_safe("enable")
 def handle_enable(address, *args):
+    if _alarm_blocks(address):
+        return
     if not args:
         return
     _set_enable(bool(int(args[0])))
@@ -518,6 +603,8 @@ def handle_enable(address, *args):
 
 @_safe("dir")
 def handle_dir(address, *args):
+    if _alarm_blocks(address):
+        return
     if not args:
         return
     _set_dir(int(args[0]))
@@ -527,6 +614,8 @@ def handle_dir(address, *args):
 @_safe("speed")
 def handle_speed(address, *args):
     global _current_speed_hz
+    if _alarm_blocks(address):
+        return
     if not args:
         return
     raw = float(args[0])
@@ -545,6 +634,8 @@ def handle_accel(address, *args):
     Also stages the value in _settings_pending so a subsequent
     /trolley/config/save will persist it across reboots."""
     global _accel_time_s
+    if _alarm_blocks(address):
+        return
     if not args:
         return
     _accel_time_s = _clamp(float(args[0]), 0.0, 10.0)
@@ -558,6 +649,8 @@ def handle_decel(address, *args):
     Also stages the value in _settings_pending so a subsequent
     /trolley/config/save will persist it across reboots."""
     global _decel_time_s
+    if _alarm_blocks(address):
+        return
     if not args:
         return
     _decel_time_s = _clamp(float(args[0]), 0.0, 10.0)
@@ -567,6 +660,8 @@ def handle_decel(address, *args):
 
 @_safe("step")
 def handle_step(address, *args):
+    if _alarm_blocks(address):
+        return
     if not args:
         return
     steps = int(args[0])
@@ -605,6 +700,8 @@ def _parse_direction(value, default=DIR_REVERSE):
 
 @_safe("home")
 def handle_home(address, *args):
+    if _alarm_blocks(address):
+        return
     direction = _parse_direction(args[0] if args else None, default=DIR_REVERSE)
     logger.info("OSC %s: home %s", address, "forward" if direction == DIR_FORWARD else "reverse")
     _set_enable(True)
@@ -613,6 +710,8 @@ def handle_home(address, *args):
 
 @_safe("position")
 def handle_position(address, *args):
+    if _alarm_blocks(address):
+        return
     if not args:
         return
     permissive = bool(_settings.get("permissive_mode", True))
@@ -675,6 +774,25 @@ def handle_config_save(address, *args):
     logger.info("OSC %s: settings saved", address)
 
 
+@_safe("alarm_reset")
+def handle_alarm_reset(address, *args):
+    """Clear the latched alarm lock — only succeeds if both ALARM pins are LOW.
+
+    Use after the operator has cleared the underlying driver fault (per the
+    CL86Y manual: power cycle for overcurrent / phase / encoder errors;
+    auto-recover for over/undervoltage; pulse ENA low for over-tolerance)."""
+    global alarm_locked, alarm_active
+    a1, a2 = _read_alarm_pins()
+    alarm_active = a1 | a2
+    if alarm_active:
+        logger.warning("OSC %s: cannot reset, alarm still active "
+                       "(ALARM_1=%d ALARM_2=%d)", address, a1, a2)
+        return
+    if alarm_locked:
+        alarm_locked = False
+        logger.info("OSC %s: alarm cleared, motion re-armed", address)
+
+
 @_safe("config_get")
 def handle_config_get(address, *args):
     """Broadcast the current settings as a single JSON-encoded /trolley/config message."""
@@ -708,6 +826,7 @@ def register_osc(dispatcher):
     dispatcher.map("/trolley/config/set", handle_config_set)
     dispatcher.map("/trolley/config/save", handle_config_save)
     dispatcher.map("/trolley/config/get", handle_config_get)
+    dispatcher.map("/trolley/alarm/reset", handle_alarm_reset)
 
 
 def handle_http_test(body):
@@ -738,6 +857,8 @@ def handle_http_test(body):
             handle_config_set("/http", key, val)
         elif command == "config_save":
             handle_config_save("/http")
+        elif command == "alarm_reset":
+            handle_alarm_reset("/http")
         elif command == "config_get":
             # Return the full settings dict in the HTTP response so the admin
             # frontend can read back the persisted config without OSC plumbing.
@@ -768,6 +889,8 @@ def handle_http_test(body):
         "far_limit": far_limit_error,
         "enabled": _enabled,
         "state": state,
+        "alarm": int(_read_alarm_pins()[0] | _read_alarm_pins()[1]),
+        "alarm_locked": bool(alarm_locked),
     }
 
 
@@ -800,6 +923,7 @@ def describe():
 def get_status():
     rail = _rail_length_steps()
     pos_01 = (position_steps / rail) if rail else 0.0
+    a1, a2 = _read_alarm_pins()
     return {
         "position": _clamp(pos_01, 0.0, 1.0),
         "position_steps": position_steps,
@@ -812,11 +936,17 @@ def get_status():
         "state": state,
         "accel_time_s": _accel_time_s,
         "decel_time_s": _decel_time_s,
+        "alarm": int(a1 | a2),
+        "alarm_locked": int(alarm_locked),
     }
 
 
 def get_status_osc_args():
-    """OSC argument list for /trolley/status: [position, limit, homed, state, calibrated]."""
+    """OSC argument list for /trolley/status:
+    [position, limit, homed, state, calibrated, alarm, alarm_locked].
+
+    Older admin receivers ignore the trailing alarm fields; new ones decode
+    them."""
     s = get_status()
     return [
         float(s["position"]),
@@ -824,4 +954,6 @@ def get_status_osc_args():
         int(s["homed"]),
         str(s["state"]),
         int(s["calibrated"]),
+        int(s["alarm"]),
+        int(s["alarm_locked"]),
     ]

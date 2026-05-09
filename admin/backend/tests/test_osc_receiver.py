@@ -117,6 +117,26 @@ class TestHandleTrolleyStatus:
         )
         assert r.get_trolley_status("10.0.0.10")["calibrated"] == 1
 
+    def test_seven_arg_payload_with_alarm_fields(self):
+        r = _fresh_receiver()
+        r._handle_trolley_status(
+            ("10.0.0.11", 5000), "/trolley/status",
+            0.0, 0, 1, "idle", 1, 1, 1,
+        )
+        s = r.get_trolley_status("10.0.0.11")
+        assert s["alarm"] == 1
+        assert s["alarm_locked"] == 1
+
+    def test_legacy_payload_defaults_alarm_to_zero(self):
+        r = _fresh_receiver()
+        r._handle_trolley_status(
+            ("10.0.0.12", 5000), "/trolley/status",
+            0.5, 0, 1, "idle", 1,
+        )
+        s = r.get_trolley_status("10.0.0.12")
+        assert s["alarm"] == 0
+        assert s["alarm_locked"] == 0
+
 
 class TestHandleVentsStatus:
     def test_parses_full_payload(self):

@@ -217,3 +217,16 @@ def test_speed_command_passes_below_cap(ctx):
         )
         args = mock_osc.send.call_args[0]
         assert args[3] == pytest.approx(0.2)
+
+
+def test_alarm_reset_sends_osc(ctx):
+    client, dev = ctx
+    with patch("api.trolley_control._osc") as mock_osc:
+        resp = client.post(
+            f"/api/v1/trolley-control/{dev['id']}/command",
+            data=json.dumps({"command": "alarm_reset"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        args = mock_osc.send.call_args[0]
+        assert args[2] == "/trolley/alarm/reset"
