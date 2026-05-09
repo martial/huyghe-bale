@@ -248,8 +248,9 @@ const TROLLEY: Section = {
         {
           address: "/trolley/home",
           direction: "admin-to-pi",
+          args: 'optional "forward"|"reverse" (or 1|0); default = "reverse"',
           description:
-            "Auto-enables, then drives reverse until the limit switch trips. Position is forced to 0 by the ISR; homed = true.",
+            'Drives in the requested direction until that end\'s limit switch trips. Reverse → position_steps=0; forward → position_steps=rail. Driver must be enabled first (/trolley/enable 1) — home does NOT auto-enable.',
         },
       ],
     },
