@@ -44,6 +44,23 @@ def test_type_match_forwards_vents_address_to_vents_only():
     assert {ip for (ip, _, _, _) in sent} == {"10.0.0.1", "10.0.0.2"}
 
 
+@pytest.mark.parametrize("address,value", [
+    ("/vents/target", 18.0),       # legacy single-setpoint alias
+    ("/vents/target/hot", 22.5),
+    ("/vents/target/cold", 12.0),
+])
+def test_type_match_forwards_vents_target_subaddresses(address, value):
+    """Regression: dual-setpoint addresses must route through type-match
+    unchanged. Subpaths under /vents/target/ are still covered by the
+    `/vents/` prefix rule."""
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), address, value)
+    sent = [c.args for c in sender.send.call_args_list]
+    assert len(sent) == 2  # both vents devices
+    assert all(addr == address for (_, _, addr, _) in sent)
+    assert all(arg == value for (_, _, _, arg) in sent)
+
+
 def test_type_match_forwards_trolley_address_to_trolley_only():
     bridge, sender = _make("type-match")
     bridge._handle(("10.0.0.99", 50000), "/trolley/position", 0.5)
@@ -296,6 +313,178 @@ def test_rename_takes_effect_on_next_message():
     bridge._handle(("1.1.1.1", 1000), "/to/new-name/vents/fan/1", 0.5)
     sender.send.assert_called_once()
     assert sender.send.call_args.args[0] == "10.0.0.9"
+
+
+# ── /bridge/* macros: vents/off, trolley/off, position ────────────────────
+
+
+def test_bridge_vents_off_fans_out_to_vents_only():
+    """Disable auto + peltiers off + fans to 0 on every vents device. Trolleys
+    receive nothing. The 4-message sequence is sent in order, mode=raw FIRST
+    so the auto loop can't fight the subsequent peltier-off."""
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/vents/off")
+
+    sent = [c.args for c in sender.send.call_args_list]
+    # 2 vents (no-ip dropped) × 4 messages each = 8 sends. Trolley untouched.
+    assert len(sent) == 8
+    vents_ips = {ip for (ip, _, _, _) in sent}
+    assert vents_ips == {"10.0.0.1", "10.0.0.2"}
+
+    # Each device receives the same ordered sequence.
+    for ip in ("10.0.0.1", "10.0.0.2"):
+        per_device = [(addr, val) for (i, _, addr, val) in sent if i == ip]
+        assert per_device == [
+            ("/vents/mode", "raw"),
+            ("/vents/peltier", 0),
+            ("/vents/fan/1", 0.0),
+            ("/vents/fan/2", 0.0),
+        ]
+
+    evt = bridge.get_events()[-1]
+    assert evt["address"] == "/bridge/vents/off"
+    assert set(evt["targets"]) == {"vents-1", "vents-2"}
+    assert "dropped" not in evt
+    assert len(evt["expanded"]) == 8
+
+
+def test_bridge_vents_off_with_no_vents_devices_drops():
+    sender = MagicMock()
+    bridge = OscBridge(
+        port=0, routing="type-match", osc_sender=sender,
+        device_provider=lambda: [
+            {"id": "trolley-only", "ip_address": "10.0.0.3",
+             "osc_port": 9000, "type": "trolley"},
+        ],
+    )
+    bridge._handle(("1.1.1.1", 1000), "/bridge/vents/off")
+    sender.send.assert_not_called()
+    assert bridge.get_events()[-1]["dropped"] == "no vents devices"
+
+
+def test_bridge_trolley_off_stops_trolleys_only():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/trolley/off")
+
+    sent = [c.args for c in sender.send.call_args_list]
+    assert len(sent) == 1  # only one trolley in fixture
+    ip, _, addr, val = sent[0]
+    assert ip == "10.0.0.3"
+    assert addr == "/trolley/stop"
+    # Bang-with-no-args is sent as the 0 sentinel (python-osc refuses empty).
+    assert val == 0
+
+    evt = bridge.get_events()[-1]
+    assert evt["targets"] == ["trolley-1"]
+    assert "dropped" not in evt
+
+
+def test_bridge_trolley_off_with_no_trolleys_drops():
+    sender = MagicMock()
+    bridge = OscBridge(
+        port=0, routing="type-match", osc_sender=sender,
+        device_provider=lambda: [
+            {"id": "vents-only", "ip_address": "10.0.0.1",
+             "osc_port": 9000, "type": "vents"},
+        ],
+    )
+    bridge._handle(("1.1.1.1", 1000), "/bridge/trolley/off")
+    sender.send.assert_not_called()
+    assert bridge.get_events()[-1]["dropped"] == "no trolley devices"
+
+
+@pytest.mark.parametrize("incoming,expected", [
+    (0.0, 0.1),
+    (1.0, 0.9),
+    (0.5, 0.5),
+    (0.25, 0.3),
+    # clamping
+    (1.5, 0.9),
+    (-0.2, 0.1),
+])
+def test_bridge_position_maps_value(incoming, expected):
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/position", incoming)
+
+    sent = [c.args for c in sender.send.call_args_list]
+    assert len(sent) == 1
+    ip, _, addr, val = sent[0]
+    assert ip == "10.0.0.3"
+    assert addr == "/trolley/position"
+    assert val == pytest.approx(expected)
+
+
+def test_bridge_position_no_args_drops():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/position")
+    sender.send.assert_not_called()
+    assert bridge.get_events()[-1]["dropped"] == "missing or invalid position"
+
+
+def test_bridge_position_non_numeric_drops():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/position", "banana")
+    sender.send.assert_not_called()
+    assert bridge.get_events()[-1]["dropped"] == "missing or invalid position"
+
+
+def test_bridge_position_targeted_to_trolley_by_id():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/position/trolley-1", 0.5)
+    sent = [c.args for c in sender.send.call_args_list]
+    assert len(sent) == 1
+    assert sent[0] == ("10.0.0.3", 9000, "/trolley/position", pytest.approx(0.5))
+
+
+def test_bridge_position_targeted_by_name_or_hardware_id():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/position/screenclub.home", 1.0)
+    assert sender.send.call_args.args[3] == pytest.approx(0.9)
+
+    sender.reset_mock()
+    bridge._handle(("10.0.0.99", 50000), "/bridge/position/trolley_cccc", 0.0)
+    assert sender.send.call_args.args[3] == pytest.approx(0.1)
+
+
+def test_bridge_position_targeted_at_vents_drops():
+    """`/bridge/position/<vents-device>` must reject — type mismatch."""
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/position/vents-1", 0.5)
+    sender.send.assert_not_called()
+    assert bridge.get_events()[-1]["dropped"] == "target is not a trolley"
+
+
+def test_bridge_position_unknown_identifier_drops():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/position/nope", 0.5)
+    sender.send.assert_not_called()
+    assert bridge.get_events()[-1]["dropped"] == "no device matching 'nope'"
+
+
+def test_bridge_unknown_command_drops():
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/whatever", 1)
+    sender.send.assert_not_called()
+    assert bridge.get_events()[-1]["dropped"] == "unknown bridge command"
+
+
+def test_bridge_macros_run_under_routing_none():
+    """Bridge macros bypass routing mode entirely — same as /to/ targeting."""
+    bridge, sender = _make("none")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/trolley/off")
+    sender.send.assert_called_once()
+    evt = bridge.get_events()[-1]
+    assert evt["targets"] == ["trolley-1"]
+    assert "dropped" not in evt
+
+
+def test_normal_routing_unaffected_by_bridge_macros():
+    """Regression: non-/bridge/ messages still route through type-match."""
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/vents/fan/1", 0.5)
+    sent = [c.args for c in sender.send.call_args_list]
+    assert len(sent) == 2
+    assert all(addr == "/vents/fan/1" for (_, _, addr, _) in sent)
 
 
 def test_trailing_whitespace_defeats_exact_match():

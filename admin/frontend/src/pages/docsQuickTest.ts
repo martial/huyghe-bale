@@ -97,6 +97,15 @@ export function resolveQuickTest(
         values: [0.5],
       };
     }
+    if (address === "/bridge/vents/off" || address === "/bridge/trolley/off") {
+      return { kind: "bridge", variant: "direct", address, values: [] };
+    }
+    if (address === "/bridge/position") {
+      return { kind: "bridge", variant: "direct", address, values: [0.5] };
+    }
+    // /bridge/position/<identifier> has no quick-test: it's a literal address
+    // (not a /to/<id>/... wrapper), so the existing "to" variant would route
+    // the wrong way. Operators can fire it from any external OSC client.
     return null;
   }
 

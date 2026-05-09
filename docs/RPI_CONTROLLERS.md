@@ -257,7 +257,7 @@ files:
 | `admin/backend/api/vents_control.py` | `POST /api/v1/vents-control/<id>/command` → `/vents/<addr>` send |
 | `admin/backend/api/trolley_control.py` | same shape for trolley, plus `_COMMAND_MAP` for accel/decel etc. |
 | `admin/backend/engine/playback.py` | timeline playback engine — fans-out OSC to all matching devices at ~30 Hz |
-| `admin/backend/engine/osc_bridge.py` | optional UDP bridge for arbitrary external OSC sources |
+| `admin/backend/engine/osc_bridge.py` | optional UDP bridge for arbitrary external OSC sources — see [BRIDGE.md](BRIDGE.md) for routing, `/to/<id>/…` targeting, and the `/bridge/*` macros |
 
 `admin/backend/tests/test_osc_surfaces.py` is the wire-format matrix —
 every admin trigger, asserted against the exact `(ip, port, address, value)`

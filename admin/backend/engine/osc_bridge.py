@@ -32,6 +32,16 @@ logger = logging.getLogger(__name__)
 RING_BUFFER_SIZE = 500
 VALID_ROUTING = ("passthrough", "type-match", "none")
 
+# Bridge-side macro addresses. The bridge interprets these and fans out
+# device-native messages; they are NEVER forwarded as-is to a Pi.
+_BRIDGE_VENTS_OFF = "/bridge/vents/off"
+_BRIDGE_TROLLEY_OFF = "/bridge/trolley/off"
+_BRIDGE_POSITION_PREFIX = "/bridge/position"  # exact or "/bridge/position/<id>"
+
+# Position-mapping window: external 0..1 → trolley 0.1..0.9.
+_POSITION_MIN = 0.1
+_POSITION_SPAN = 0.8
+
 
 def _address_matches_type(address: str, device_type: str) -> bool:
     """Address-prefix → device-type routing under 'type-match' mode."""
@@ -68,6 +78,19 @@ def _match_device(devices: list, identifier: str) -> "dict | None":
             if d.get(key) == identifier:
                 return d
     return None
+
+
+def _parse_bridge_position(address: str) -> "tuple[bool, str | None]":
+    """Recognize `/bridge/position` (broadcast) or `/bridge/position/<id>`
+    (single device). Returns (matched, identifier_or_None)."""
+    if address == _BRIDGE_POSITION_PREFIX:
+        return True, None
+    prefix = _BRIDGE_POSITION_PREFIX + "/"
+    if address.startswith(prefix):
+        identifier = address[len(prefix):]
+        if identifier:
+            return True, identifier
+    return False, None
 
 
 class OscBridge:
@@ -205,20 +228,37 @@ class OscBridge:
     def _handle(self, client_address, address, *args) -> None:
         """Catch-all dispatcher handler: route + log + publish.
 
-        Three dispatch paths, in order:
-          1. Targeted: address starts with /to/<identifier>/<rest>. Look up
+        Four dispatch paths, in order:
+          1. Bridge macro: `/bridge/<command>` is intercepted and expanded
+             into per-device sends; never forwarded as `/bridge/...`.
+          2. Targeted: address starts with /to/<identifier>/<rest>. Look up
              a single device by id/name/ip/hardware_id and forward <rest>
-             only to that device. Always wins, regardless of routing mode.
-          2. routing == "none": log but don't forward.
-          3. Normal routing: type-match or passthrough over all devices.
+             only to that device. Always wins over the routing mode.
+          3. routing == "none": log but don't forward.
+          4. Normal routing: type-match or passthrough over all devices.
         """
         src_ip = client_address[0] if client_address else ""
         targets: list[str] = []
         dropped: Optional[str] = None
         forwarded_address = address  # what we actually send to the Pi (stripped /to/<id>/ if present)
+        expanded: Optional[list] = None  # only set for bridge macros
+
+        devices = list(self._device_provider())
+
+        if address.startswith("/bridge/"):
+            macro = self._dispatch_bridge_macro(address, args, devices)
+            targets = macro["targets"]
+            dropped = macro.get("dropped")
+            expanded = macro.get("expanded")
+            self._record_event(
+                src_ip, address, args, targets,
+                forwarded_address=address,
+                dropped=dropped,
+                expanded=expanded,
+            )
+            return
 
         targeted = _parse_targeted(address)
-        devices = list(self._device_provider())
 
         if targeted is not None:
             identifier, rest = targeted
@@ -261,6 +301,23 @@ class OscBridge:
             if not targets and dropped is None and self._routing == "type-match":
                 dropped = "no type-matching device"
 
+        self._record_event(
+            src_ip, address, args, targets,
+            forwarded_address=forwarded_address,
+            dropped=dropped,
+        )
+
+    def _record_event(
+        self,
+        src_ip: str,
+        address: str,
+        args: tuple,
+        targets: list,
+        *,
+        forwarded_address: Optional[str] = None,
+        dropped: Optional[str] = None,
+        expanded: Optional[list] = None,
+    ) -> None:
         event = {
             "t": time.time(),
             "src": src_ip,
@@ -270,10 +327,12 @@ class OscBridge:
         }
         # Surface the resolved address when a /to/ prefix was stripped, so the
         # UI can show "/to/X/vents/fan/1 → /vents/fan/1".
-        if forwarded_address != address:
+        if forwarded_address is not None and forwarded_address != address:
             event["forwarded_as"] = forwarded_address
         if dropped:
             event["dropped"] = dropped
+        if expanded:
+            event["expanded"] = expanded
 
         with self._lock:
             self._events.append(event)
@@ -285,6 +344,121 @@ class OscBridge:
                 # Slow consumer — drop this one event rather than stall the
                 # dispatcher. SSE frontend will just miss it.
                 pass
+
+    def _dispatch_bridge_macro(self, address: str, args: tuple, devices: list) -> dict:
+        """Expand a `/bridge/...` macro into per-device sends.
+
+        Returns a dict {targets, expanded?, dropped?}. Always returns a dict
+        (caller already gated on the `/bridge/` prefix); unrecognized
+        sub-addresses produce dropped="unknown bridge command".
+        """
+        if address == _BRIDGE_VENTS_OFF:
+            return self._bridge_vents_off(devices)
+        if address == _BRIDGE_TROLLEY_OFF:
+            return self._bridge_trolley_off(devices)
+        is_position, identifier = _parse_bridge_position(address)
+        if is_position:
+            return self._bridge_position(args, devices, identifier)
+        return {"targets": [], "dropped": "unknown bridge command"}
+
+    def _send_to(self, device: dict, address: str, value: Any) -> bool:
+        """Send one OSC message to one device. Returns True on success."""
+        try:
+            self._osc.send(
+                device["ip_address"],
+                device.get("osc_port", 9000),
+                address,
+                value,
+            )
+            return True
+        except Exception as e:
+            logger.warning("Bridge macro send to %s failed: %s",
+                           device.get("ip_address"), e)
+            return False
+
+    def _bridge_vents_off(self, devices: list) -> dict:
+        """Disable auto, peltiers off, both fans to 0.0 — every vents device.
+
+        Auto-mode is disabled FIRST so the controller's auto loop can't race
+        the peltier-off command and re-enable peltiers between messages.
+        """
+        sequence = [
+            ("/vents/mode", "raw"),
+            ("/vents/peltier", 0),
+            ("/vents/fan/1", 0.0),
+            ("/vents/fan/2", 0.0),
+        ]
+        return self._fanout_to_type(devices, "vents", sequence,
+                                    empty_msg="no vents devices")
+
+    def _bridge_trolley_off(self, devices: list) -> dict:
+        """`/trolley/stop` to every trolley device. python-osc rejects empty
+        payloads, so we send the same `0` sentinel as the existing bang path."""
+        sequence = [("/trolley/stop", _to_osc_value(()))]
+        return self._fanout_to_type(devices, "trolley", sequence,
+                                    empty_msg="no trolley devices")
+
+    def _fanout_to_type(
+        self,
+        devices: list,
+        device_type: str,
+        sequence: list,
+        *,
+        empty_msg: str,
+    ) -> dict:
+        eligible = [d for d in devices
+                    if d.get("type") == device_type and d.get("ip_address")]
+        if not eligible:
+            return {"targets": [], "dropped": empty_msg}
+        targets: list[str] = []
+        expanded: list[dict] = []
+        for d in eligible:
+            target_id = d.get("id") or d.get("ip_address")
+            sent_any = False
+            for addr, value in sequence:
+                if self._send_to(d, addr, value):
+                    expanded.append({"address": addr, "value": value, "target": target_id})
+                    sent_any = True
+            if sent_any:
+                targets.append(target_id)
+        return {"targets": targets, "expanded": expanded}
+
+    def _bridge_position(self, args: tuple, devices: list,
+                         identifier: Optional[str]) -> dict:
+        """Map external 0..1 → trolley 0.1..0.9, then send /trolley/position."""
+        if not args:
+            return {"targets": [], "dropped": "missing or invalid position"}
+        try:
+            raw = float(args[0])
+        except (TypeError, ValueError):
+            return {"targets": [], "dropped": "missing or invalid position"}
+        clamped = max(0.0, min(1.0, raw))
+        mapped = _POSITION_MIN + clamped * _POSITION_SPAN
+
+        if identifier is None:
+            eligible = [d for d in devices
+                        if d.get("type") == "trolley" and d.get("ip_address")]
+            if not eligible:
+                return {"targets": [], "dropped": "no trolley devices"}
+        else:
+            device = _match_device(devices, identifier)
+            if device is None:
+                return {"targets": [], "dropped": f"no device matching {identifier!r}"}
+            if device.get("type") != "trolley":
+                return {"targets": [], "dropped": "target is not a trolley"}
+            if not device.get("ip_address"):
+                return {"targets": [], "dropped": f"device {identifier!r} has no IP address"}
+            eligible = [device]
+
+        targets: list[str] = []
+        expanded: list[dict] = []
+        for d in eligible:
+            target_id = d.get("id") or d.get("ip_address")
+            if self._send_to(d, "/trolley/position", mapped):
+                targets.append(target_id)
+                expanded.append({"address": "/trolley/position",
+                                 "value": mapped, "target": target_id})
+        return {"targets": targets, "expanded": expanded}
 
 
 def _to_osc_value(args: tuple) -> Any:

@@ -391,6 +391,42 @@ const BRIDGE: Section = {
       ],
     },
     {
+      label: "Bridge macros (admin expands into multi-device sends — bypasses routing mode)",
+      direction: "admin-to-pi",
+      items: [
+        {
+          address: "/bridge/vents/off",
+          direction: "admin-to-pi",
+          description:
+            "Safe-shutdown bang for every vents device. Per device, in order: /vents/mode \"raw\" (disable auto), /vents/peltier 0 (all three cells off), /vents/fan/1 0.0, /vents/fan/2 0.0. Mode is set first so the auto loop can't re-enable peltiers between messages. Drops with \"no vents devices\" if there are no vents in the store.",
+          example: "oscsend <admin-ip> 9002 /bridge/vents/off",
+        },
+        {
+          address: "/bridge/trolley/off",
+          direction: "admin-to-pi",
+          description:
+            "Sends /trolley/stop to every trolley device. Aborts any motion in progress; holding torque stays on if /trolley/enable was set. Drops with \"no trolley devices\" when the store has none.",
+          example: "oscsend <admin-ip> 9002 /bridge/trolley/off",
+        },
+        {
+          address: "/bridge/position",
+          direction: "admin-to-pi",
+          args: "float 0..1",
+          description:
+            "Maps an external 0..1 position into the soft window 0.1..0.9 (formula: 0.1 + clamp(v,0,1) * 0.8) and sends /trolley/position <mapped> to every trolley device. Out-of-range values are clamped silently. Drops with \"missing or invalid position\" on no/non-numeric arg.",
+          example: "oscsend <admin-ip> 9002 /bridge/position f 0.5   # → /trolley/position 0.5\noscsend <admin-ip> 9002 /bridge/position f 0.0   # → /trolley/position 0.1\noscsend <admin-ip> 9002 /bridge/position f 1.0   # → /trolley/position 0.9",
+        },
+        {
+          address: "/bridge/position/<identifier>",
+          direction: "admin-to-pi",
+          args: "float 0..1",
+          description:
+            "Same mapping as /bridge/position but only sends to the one device whose id / name / IP / hardware_id matches <identifier>. The matched device must have type=\"trolley\" — targeting a vents device drops with \"target is not a trolley\".",
+          example: "oscsend <admin-ip> 9002 /bridge/position/trolley-1 f 0.5",
+        },
+      ],
+    },
+    {
       label: "Targeting a single device (overrides routing mode)",
       direction: "admin-to-pi",
       items: [
