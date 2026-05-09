@@ -270,24 +270,47 @@ def _far_limit_switch_isr(channel):
         logger.error("Trolley far ISR error: %s", e)
 
 
-def _read_alarm_pins() -> tuple[int, int]:
-    """Return current (ALARM_1, ALARM_2) GPIO states (1 = fault)."""
+def _alarm_polarity() -> str:
+    """One of 'active_high', 'active_low', 'disabled'."""
+    return _settings.get("alarm_polarity", "active_high")
+
+
+def _alarm_pin_raw(pin: int) -> int:
+    """Raw GPIO level on `pin` (1 = HIGH, 0 = LOW)."""
     try:
-        a1 = 1 if GPIO.input(PIN_ALARM_1) == GPIO.HIGH else 0
-        a2 = 1 if GPIO.input(PIN_ALARM_2) == GPIO.HIGH else 0
+        return 1 if GPIO.input(pin) == GPIO.HIGH else 0
     except Exception:
-        a1 = a2 = 0
-    return a1, a2
+        return 0
+
+
+def _read_alarm_pins() -> tuple[int, int]:
+    """Return interpreted (ALARM_1, ALARM_2) fault flags (1 = fault).
+
+    Interpretation depends on `alarm_polarity`:
+      active_high  → fault when GPIO reads HIGH
+      active_low   → fault when GPIO reads LOW
+      disabled     → always (0, 0)
+    """
+    pol = _alarm_polarity()
+    if pol == "disabled":
+        return 0, 0
+    raw1 = _alarm_pin_raw(PIN_ALARM_1)
+    raw2 = _alarm_pin_raw(PIN_ALARM_2)
+    if pol == "active_low":
+        return (1 - raw1, 1 - raw2)
+    return raw1, raw2
 
 
 def _alarm_isr(channel):
     """Driver alarm ISR — fires on either ALARM_1 or ALARM_2 edge.
 
-    Latches `alarm_locked` once any pin goes HIGH. Aborts current motion and
-    disables the driver immediately. The lock is sticky: even after the GPIO
-    goes LOW the firmware keeps refusing commands until /trolley/alarm/reset
-    is sent."""
+    Latches `alarm_locked` when either pin reports a fault (per
+    `alarm_polarity`). Aborts current motion and disables the driver
+    immediately. The lock is sticky: even after the pin de-asserts the
+    firmware keeps refusing commands until /trolley/alarm/reset is sent."""
     global alarm_locked, alarm_active
+    if _alarm_polarity() == "disabled":
+        return
     try:
         a1, a2 = _read_alarm_pins()
         alarm_active = a1 | a2
@@ -879,6 +902,7 @@ def handle_http_test(body):
             return {"ok": False, "error": f"unknown command: {command!r}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+    a1, a2 = _read_alarm_pins()
     return {
         "ok": True,
         "position_steps": position_steps,
@@ -889,7 +913,12 @@ def handle_http_test(body):
         "far_limit": far_limit_error,
         "enabled": _enabled,
         "state": state,
-        "alarm": int(_read_alarm_pins()[0] | _read_alarm_pins()[1]),
+        "alarm": int(a1 | a2),
+        "alarm_1": int(a1),
+        "alarm_2": int(a2),
+        "alarm_1_raw": _alarm_pin_raw(PIN_ALARM_1),
+        "alarm_2_raw": _alarm_pin_raw(PIN_ALARM_2),
+        "alarm_polarity": _alarm_polarity(),
         "alarm_locked": bool(alarm_locked),
     }
 
@@ -937,6 +966,11 @@ def get_status():
         "accel_time_s": _accel_time_s,
         "decel_time_s": _decel_time_s,
         "alarm": int(a1 | a2),
+        "alarm_1": int(a1),
+        "alarm_2": int(a2),
+        "alarm_1_raw": _alarm_pin_raw(PIN_ALARM_1),
+        "alarm_2_raw": _alarm_pin_raw(PIN_ALARM_2),
+        "alarm_polarity": _alarm_polarity(),
         "alarm_locked": int(alarm_locked),
     }
 

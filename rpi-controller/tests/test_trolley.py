@@ -621,6 +621,24 @@ class TestAlarmLock:
         assert s2["alarm"] == 0
         assert s2["alarm_locked"] == 1
 
+    def test_active_low_polarity_inverts_pin_reading(self):
+        trolley._settings["alarm_polarity"] = "active_low"
+        # Pin HIGH = OK in active_low wiring.
+        with patch.object(trolley, "GPIO", self._gpio_with_alarm(a1=True, a2=True)):
+            a1, a2 = trolley._read_alarm_pins()
+        assert (a1, a2) == (0, 0)
+        # Pin LOW = fault in active_low wiring.
+        with patch.object(trolley, "GPIO", self._gpio_with_alarm(a1=False, a2=False)):
+            a1, a2 = trolley._read_alarm_pins()
+        assert (a1, a2) == (1, 1)
+
+    def test_disabled_polarity_never_latches(self):
+        trolley._settings["alarm_polarity"] = "disabled"
+        gpio = self._gpio_with_alarm(a1=True, a2=True)
+        with patch.object(trolley, "GPIO", gpio):
+            trolley._alarm_isr(trolley.PIN_ALARM_1)
+        assert trolley.alarm_locked is False
+
 
 class TestLimitSwitchSwap:
     def setup_method(self):

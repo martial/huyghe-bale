@@ -59,6 +59,11 @@ DEFAULTS = {
     # wire the home switch to PIN_LIM_SWITCH directly.
     # Takes effect on service restart (ISR registration is at setup time).
     "limit_switches_swapped": True,
+    # CL86Y ALARM optocoupler polarity:
+    #   "active_high" — pin reads HIGH on fault (firmware default)
+    #   "active_low"  — pin reads LOW on fault (HIGH = OK)
+    #   "disabled"    — ignore alarm pins entirely (no auto-lock)
+    "alarm_polarity": "active_high",
     "soft_limit_pct": 0.98,
     # When True, /trolley/position runs even on an unconfigured rig
     # (uses TROLLEY_MAX_STEPS as the rail length). For bench testing.
@@ -70,6 +75,7 @@ DEFAULTS = {
 }
 
 VALID_DIRECTIONS = ("forward", "reverse")
+VALID_ALARM_POLARITIES = ("active_high", "active_low", "disabled")
 ALLOWED_KEYS = tuple(DEFAULTS.keys())
 
 
@@ -106,6 +112,13 @@ def _coerce(key, value):
         s = str(value).strip().lower()
         if s not in VALID_DIRECTIONS:
             raise ValueError("calibration_direction must be 'forward' or 'reverse'")
+        return s
+    if key == "alarm_polarity":
+        s = str(value).strip().lower()
+        if s not in VALID_ALARM_POLARITIES:
+            raise ValueError(
+                "alarm_polarity must be one of: " + ", ".join(VALID_ALARM_POLARITIES)
+            )
         return s
     if key == "soft_limit_pct":
         v = float(value)
