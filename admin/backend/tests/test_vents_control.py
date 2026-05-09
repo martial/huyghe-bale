@@ -153,12 +153,39 @@ def test_target_cold_dispatches_to_cold_address(ctx):
     with patch("api.vents_control._osc") as mock_osc:
         client.post(
             f"/api/v1/vents-control/{dev['id']}/command",
-            data=json.dumps({"command": "target_cold", "value": 12.0}),
+            data=json.dumps({"command": "target_cold", "value": 18.0}),
             content_type="application/json",
         )
         args = mock_osc.send.call_args[0]
         assert args[2] == "/vents/target/cold"
-        assert args[3] == pytest.approx(12.0)
+        assert args[3] == pytest.approx(18.0)
+
+
+def test_target_active_dispatches_to_active_address(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc") as mock_osc:
+        for v in ("hot", "cold"):
+            client.post(
+                f"/api/v1/vents-control/{dev['id']}/command",
+                data=json.dumps({"command": "target_active", "value": v}),
+                content_type="application/json",
+            )
+        assert mock_osc.send.call_count == 2
+        for call_args, expected in zip(mock_osc.send.call_args_list, ("hot", "cold")):
+            args = call_args[0]
+            assert args[2] == "/vents/target/active"
+            assert args[3] == expected
+
+
+def test_target_active_rejects_garbage(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc"):
+        resp = client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "target_active", "value": "lukewarm"}),
+            content_type="application/json",
+        )
+    assert resp.status_code == 400
 
 
 _VALID_ID = "28-aaaaaaaaaaaa"
@@ -294,6 +321,7 @@ def test_status_merges_snapshot_probe_fields(ctx):
         "temp_cold_c": None,
         "hot_target_c": 22.0,
         "cold_target_c": 18.0,
+        "active_target": "cold",
     }
     with patch("api.vents_control._osc"), \
          patch("api.vents_control._fetch_snapshot", return_value=snapshot):
@@ -302,6 +330,7 @@ def test_status_merges_snapshot_probe_fields(ctx):
     assert body["state"] == "probe_unassigned"
     assert body["hot_target_c"] == 22.0
     assert body["cold_target_c"] == 18.0
+    assert body["active_target"] == "cold"
     assert body["probe_hot_id"] is None
     assert len(body["probes"]) == 2
     assert body["probes"][0]["id"] == "28-aaaaaaaaaaaa"

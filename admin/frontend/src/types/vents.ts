@@ -16,10 +16,16 @@ export type VentsCommand =
   | "target"
   | "target_hot"
   | "target_cold"
+  | "target_active"
   | "max_temp"
   | "probe_assign_hot"
   | "probe_assign_cold"
   | "probe_clear";
+
+/** Which side currently regulates in auto mode. The other setpoint is stored
+ *  but inactive (greyed out in the UI). Set by the most recent setpoint write
+ *  or explicitly via `setVentsActiveTarget`. Default on a fresh install is "hot". */
+export type VentsActiveTarget = "hot" | "cold";
 
 /** A DS18B20 probe discovered on the 1-Wire bus. `id` is the 64-bit ROM
  *  serial (`28-xxxxxxxxxxxx`) — stable across boots, used to pin the probe
@@ -58,6 +64,9 @@ export interface VentsStatus {
   /** Cold-side regulation setpoint (°C). Regulates the probe assigned to the
    *  cold face. */
   cold_target_c?: number;
+  /** Which side currently regulates. Absent on pre-active-target firmware —
+   *  the UI falls back to "hot" so existing devices keep showing hot as live. */
+  active_target?: VentsActiveTarget;
   /** Live reading from the probe assigned to hot face. Null when the probe is
    *  unassigned or its assigned ROM id isn't currently on the bus. */
   temp_hot_c?: number | null;

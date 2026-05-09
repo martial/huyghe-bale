@@ -1,4 +1,4 @@
-import type { VentsStatus, VentsState } from "../../types/vents";
+import type { VentsActiveTarget, VentsStatus, VentsState } from "../../types/vents";
 
 const STATE_COLOR: Record<VentsState, { text: string; bg: string; label: string }> = {
   idle:             { text: "text-zinc-300",   bg: "from-zinc-800/40 to-zinc-900/60",     label: "idle" },
@@ -29,6 +29,10 @@ export default function VentsHero({ status, stale, lastPushAgeS }: Props) {
   const hasDual = tHot !== undefined || tCold !== undefined;
   const hotTarget = status?.hot_target_c ?? status?.target_c;
   const coldTarget = status?.cold_target_c;
+  // Pre-active-target firmware doesn't carry this field — fall back to "hot"
+  // so old devices keep showing hot as the regulator (matches the back-compat
+  // target_c alias).
+  const activeTarget: VentsActiveTarget = status?.active_target ?? "hot";
   const avg = [t1, t2].filter((v): v is number => typeof v === "number");
   const avgTemp = avg.length ? avg.reduce((a, b) => a + b, 0) / avg.length : null;
   const maxCeiling = status?.max_temp_c;
@@ -59,18 +63,22 @@ export default function VentsHero({ status, stale, lastPushAgeS }: Props) {
 
       {hasDual ? (
         // Dual-setpoint hero: hot + cold side-by-side, each with its setpoint.
+        // The active side is rendered at full opacity; the inactive side is
+        // dimmed to make the regulation choice glanceable.
         <div className="flex items-stretch gap-4">
           <SidePanel
             label="hot"
             accent="text-orange-300"
             temp={tHot ?? null}
             target={hotTarget ?? null}
+            active={activeTarget === "hot"}
           />
           <SidePanel
             label="cold"
             accent="text-sky-300"
             temp={tCold ?? null}
             target={coldTarget ?? null}
+            active={activeTarget === "cold"}
           />
           {maxCeiling != null && (
             <div className="ml-auto self-end text-[11px] font-mono text-zinc-400 text-right leading-tight">
@@ -133,16 +141,19 @@ export default function VentsHero({ status, stale, lastPushAgeS }: Props) {
 }
 
 function SidePanel({
-  label, accent, temp, target,
+  label, accent, temp, target, active,
 }: {
   label: string;
   accent: string;
   temp: number | null;
   target: number | null;
+  active: boolean;
 }) {
   return (
-    <div className="flex-1 min-w-0">
-      <div className={`text-[9px] uppercase tracking-[0.2em] ${accent} font-semibold`}>{label}</div>
+    <div className={`flex-1 min-w-0 transition-opacity ${active ? "opacity-100" : "opacity-50"}`}>
+      <div className={`text-[9px] uppercase tracking-[0.2em] ${accent} font-semibold`}>
+        {label}{active ? " ●" : ""}
+      </div>
       <div className="flex items-baseline gap-1.5">
         <span className={`text-3xl font-light tabular-nums tracking-tight ${temp != null ? "text-white" : "text-zinc-600"}`}>
           {temp != null ? temp.toFixed(1) : "—"}

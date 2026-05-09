@@ -20,11 +20,12 @@ _RECENT_ALARMS_CAP = 50
 # /vents/status optional trailing args. Firmware iterations have appended
 # fields over time without renumbering; each entry here is read out of
 # `args[idx]` only when present, so old firmware (12 args, no max_temp_c)
-# through new firmware (20 args, dual setpoints) both decode.
+# through new firmware (21 args, dual setpoints + active_target) all decode.
 #
 # Positions 16-19 are the dual-setpoint tail. temp_hot_c / temp_cold_c
 # nullable (encoded -1.0 → None). target_c at position 9 is the back-compat
-# alias and equals hot_target_c.
+# alias and equals hot_target_c. Position 20 (active_target) is a string,
+# unlike all earlier numeric tail fields.
 _VENTS_OPTIONAL_STATUS_FIELDS = (
     (12, "max_temp_c"),
     (13, "min_fan_pct"),
@@ -37,6 +38,11 @@ _VENTS_OPTIONAL_STATUS_FIELDS = (
 )
 # Subset of the above that are nullable (-1.0 sentinel → None).
 _VENTS_NULLABLE_STATUS_FIELDS = frozenset({"temp_hot_c", "temp_cold_c"})
+# String-typed optional tail fields, parsed separately from the numeric ones.
+# Each entry is (idx, key, allowed_values). Unrecognized values are dropped.
+_VENTS_OPTIONAL_STRING_FIELDS = (
+    (20, "active_target", frozenset({"hot", "cold"})),
+)
 
 
 class OscReceiver:
@@ -203,7 +209,7 @@ class OscReceiver:
         # Optional tail appended by newer firmware. Old admins reading new
         # firmware ignore positions past their understanding; this loop only
         # populates fields present in the actual arg list, so old firmware
-        # (12 args) through current (20 args) both decode.
+        # (12 args) through current (21 args) all decode.
         for idx, key in _VENTS_OPTIONAL_STATUS_FIELDS:
             if len(args) > idx:
                 try:
@@ -213,6 +219,11 @@ class OscReceiver:
                 if key in _VENTS_NULLABLE_STATUS_FIELDS and val < 0:
                     row[key] = None
                 else:
+                    row[key] = val
+        for idx, key, allowed in _VENTS_OPTIONAL_STRING_FIELDS:
+            if len(args) > idx:
+                val = args[idx]
+                if isinstance(val, str) and val in allowed:
                     row[key] = val
         self.vents_status[ip] = row
 

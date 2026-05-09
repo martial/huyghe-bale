@@ -28,12 +28,13 @@ def _vents_args(*, fan1=0.5, fan2=0.5, rpms=(800, 800, 800, 800),
                 max_temp=80.0, min_fan_pct=20.0, over_temp_fan_pct=100.0,
                 max_fan_pct=100.0,
                 temp_hot=None, temp_cold=None,
-                hot_target=None, cold_target=None):
+                hot_target=None, cold_target=None, active_target=None):
     """Helper: assemble a /vents/status arg tuple matching the Pi's contract.
 
     The dual-setpoint tail (temp_hot, temp_cold, hot_target, cold_target) is
-    appended only when at least one of the four is provided — keeps the
-    short-form variant available for legacy-firmware tests."""
+    appended only when at least one of the four is provided. `active_target`
+    (string at position 20) appends only when explicitly provided — keeps
+    the short- and middle-form variants available for legacy-firmware tests."""
     head = (
         float(temp1), float(temp2), float(fan1), float(fan2), 0,
         int(rpms[0]), int(rpms[1]), int(rpms[2]), int(rpms[3]),
@@ -41,14 +42,19 @@ def _vents_args(*, fan1=0.5, fan2=0.5, rpms=(800, 800, 800, 800),
         float(max_temp), float(min_fan_pct), float(over_temp_fan_pct),
         float(max_fan_pct),
     )
-    if any(v is not None for v in (temp_hot, temp_cold, hot_target, cold_target)):
-        return head + (
-            float(temp_hot if temp_hot is not None else -1.0),
-            float(temp_cold if temp_cold is not None else -1.0),
-            float(hot_target if hot_target is not None else target),
-            float(cold_target if cold_target is not None else (target - 5.0)),
-        )
-    return head
+    needs_dual = any(v is not None for v in
+                     (temp_hot, temp_cold, hot_target, cold_target, active_target))
+    if not needs_dual:
+        return head
+    body = head + (
+        float(temp_hot if temp_hot is not None else -1.0),
+        float(temp_cold if temp_cold is not None else -1.0),
+        float(hot_target if hot_target is not None else target),
+        float(cold_target if cold_target is not None else (target - 5.0)),
+    )
+    if active_target is not None:
+        body = body + (str(active_target),)
+    return body
 
 
 class TestHandlePong:
@@ -234,6 +240,38 @@ class TestHandleVentsStatus:
         assert s["cold_target_c"] == 18.0
         # Legacy `target_c` slot still mirrors hot for back-compat.
         assert s["target_c"] == 25.0
+
+    def test_active_target_decodes_when_present(self):
+        r = _fresh_receiver()
+        r._handle_vents_status(
+            ("10.1.0.7", 5000), "/vents/status",
+            *_vents_args(
+                hot_target=22.0, cold_target=18.0, active_target="cold",
+            ),
+        )
+        s = r.vents_status["10.1.0.7"]
+        assert s["active_target"] == "cold"
+
+    def test_active_target_absent_on_old_firmware(self):
+        # 20-arg payload (no active_target) decodes cleanly without the field.
+        r = _fresh_receiver()
+        r._handle_vents_status(
+            ("10.1.0.8", 5000), "/vents/status",
+            *_vents_args(hot_target=22.0, cold_target=18.0),
+        )
+        s = r.vents_status["10.1.0.8"]
+        assert "active_target" not in s
+
+    def test_active_target_garbage_value_dropped(self):
+        r = _fresh_receiver()
+        r._handle_vents_status(
+            ("10.1.0.9", 5000), "/vents/status",
+            *_vents_args(
+                hot_target=22.0, cold_target=18.0, active_target="lukewarm",
+            ),
+        )
+        s = r.vents_status["10.1.0.9"]
+        assert "active_target" not in s
 
     def test_dual_setpoint_temp_neg1_decoded_as_none(self):
         # Probe missing/unassigned: Pi encodes temp_hot/cold as -1.0.

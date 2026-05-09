@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import type { Device } from "../../types/device";
-import type { VentsStatus } from "../../types/vents";
+import type { VentsActiveTarget, VentsStatus } from "../../types/vents";
 import {
   setVentsPeltier,
   setVentsFan,
   setVentsMode,
   setVentsHotTarget,
   setVentsColdTarget,
+  setVentsActiveTarget,
   sendVentsCommand,
 } from "../../api/vents";
 
@@ -64,6 +65,17 @@ export default function VentsTestPanel({ device, status }: Props) {
   const online = status?.online ?? false;
   const mode = status?.mode ?? "raw";
   const peltierOn = status?.peltier ?? [false, false, false];
+  // Active side gates which slider is the live regulator. Pre-active-target
+  // firmware omits this field — fall back to "hot" so old devices keep
+  // showing hot as the regulator (matches the back-compat target_c alias).
+  const activeTarget: VentsActiveTarget = status?.active_target ?? "hot";
+
+  // Click on a greyed-out slider activates that side without changing its
+  // stored value. Subsequent drags then write the value as usual.
+  function activateSide(side: VentsActiveTarget) {
+    if (activeTarget === side) return;
+    wrap(() => setVentsActiveTarget(device.id, side));
+  }
 
   return (
     <div className="space-y-3">
@@ -90,12 +102,20 @@ export default function VentsTestPanel({ device, status }: Props) {
         </button>
       </div>
 
-      {/* Hot target slider — orange accent (matches Peltier "ON" colour). */}
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] text-orange-300 uppercase tracking-wider w-14 font-semibold">Hot</span>
+      {/* Hot target slider — orange accent. Greyed when not the active side.
+          15 °C floor mirrors the Pi-side clamp (which is authoritative). */}
+      <div
+        className={`flex items-center gap-2 transition-opacity ${
+          activeTarget === "hot" ? "opacity-100" : "opacity-40"
+        }`}
+        onClick={() => activateSide("hot")}
+      >
+        <span className="text-[10px] text-orange-300 uppercase tracking-wider w-14 font-semibold">
+          Hot{activeTarget === "hot" ? " ●" : ""}
+        </span>
         <input
           type="range"
-          min={5}
+          min={15}
           max={35}
           step={0.5}
           value={hotTarget}
@@ -110,13 +130,19 @@ export default function VentsTestPanel({ device, status }: Props) {
         </span>
       </div>
 
-      {/* Cold target slider — sky accent. Pi-side clamp (cold ≤ hot − H − margin)
-          is authoritative; we don't gate the slider client-side. */}
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] text-sky-300 uppercase tracking-wider w-14 font-semibold">Cold</span>
+      {/* Cold target slider — sky accent. Greyed when not the active side. */}
+      <div
+        className={`flex items-center gap-2 transition-opacity ${
+          activeTarget === "cold" ? "opacity-100" : "opacity-40"
+        }`}
+        onClick={() => activateSide("cold")}
+      >
+        <span className="text-[10px] text-sky-300 uppercase tracking-wider w-14 font-semibold">
+          Cold{activeTarget === "cold" ? " ●" : ""}
+        </span>
         <input
           type="range"
-          min={5}
+          min={15}
           max={35}
           step={0.5}
           value={coldTarget}

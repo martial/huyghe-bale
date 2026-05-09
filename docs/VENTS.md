@@ -65,28 +65,29 @@ listener is on **port 9001**.
 | `/vents/peltier` | `int mask` | bitmask: bit 0 = P1, bit 1 = P2, bit 2 = P3. Bits beyond `0b111` are masked off |
 | `/vents/fan/1` | `float 0..1` | fan 1 PWM duty (cold-side). Goes through the [fan pipeline](#5-fan-control-pipeline) |
 | `/vents/fan/2` | `float 0..1` | fan 2 PWM duty (hot-side). Same pipeline |
-| `/vents/mode` | `string "raw"\|"auto"` | switch regulation mode. Switching to `auto` forces both fans to 0% |
+| `/vents/mode` | `string "raw"\|"auto"` | switch regulation mode. Does not reset fans |
 | `/vents/target` | `float °C` | **back-compat alias** — routes to `/vents/target/hot`. Existing scripts and timelines keep working |
-| `/vents/target/hot` | `float °C` | hot-side regulation setpoint. Auto mode regulates the probe assigned to the hot face against this. **Persisted** |
-| `/vents/target/cold` | `float °C` | cold-side regulation setpoint. Auto mode regulates the probe assigned to the cold face against this. **Persisted**. Cross-clamped: `cold ≤ hot − hysteresis − margin` |
+| `/vents/target/hot` | `float °C` | hot setpoint. Also flips `active_target → "hot"`. **Persisted**. Floored at 15 °C; ceiling = `max_temp − H − margin` |
+| `/vents/target/cold` | `float °C` | cold setpoint. Also flips `active_target → "cold"`. **Persisted**. Floored at 15 °C |
+| `/vents/target/active` | `string "hot"\|"cold"` | flip the active regulation side without changing either stored setpoint. Used by the admin UI to re-activate a greyed-out side. **Persisted** |
 | `/vents/max_temp` | `float °C` | safety ceiling (per-sensor over-temp threshold). **Persisted** to `vents_prefs.json` |
 | `/vents/probe/assign_hot` | `string rom_id` | pin the probe with the given DS18B20 ROM serial (`28-xxxxxxxxxxxx`) to the hot role. **Persisted**. Rejected if the same id is already assigned as cold |
 | `/vents/probe/assign_cold` | `string rom_id` | pin a probe to the cold role. Symmetrical |
 | `/vents/probe/clear` | `string "hot"\|"cold"\|"both"` | clear one or both role assignments. **Persisted** |
 | `/vents/config/min_fan_pct` | `float 0..100` | PWM floor enforced by `_set_fan`. **Persisted** |
 | `/vents/config/max_fan_pct` | `float 0..100` | PWM ceiling (multiplier on every fan command). **Persisted** |
-| `/vents/config/over_temp_fan_pct` | `float 0..100` | fan PWM forced on both fans during over-temp. **Persisted** |
+| `/vents/config/over_temp_fan_pct` | `float 0..100` | fan PWM forced on both fans while the safety lock is active (`over_temp` or probe `sensor_error`). **Persisted** |
 
-Any peltier or fan command issued in `auto` mode auto-switches the mode back
-to `raw` (with a log line). This lets a manual override take effect immediately
-without the auto loop fighting it on the next tick.
+Peltier commands issued in `auto` mode auto-switch the mode back to `raw`
+(manual peltier override). Fan commands do **not** change mode anymore; they can
+be adjusted while staying in `auto` unless safety lock is active.
 
 ### 2.2 Pi → backend (broadcasts)
 
 | Address | Args | Cadence |
 |---|---|---|
 | `/sys/pong` | `[ip, type, hardware_id]` | reply to `/sys/ping` |
-| `/vents/status` | 20 args (see §6) | unsolicited at 5 Hz once a `/sys/ping` has been received |
+| `/vents/status` | 21 args (see §6) | unsolicited at 5 Hz once a `/sys/ping` has been received |
 
 The Pi only starts broadcasting `/vents/status` *after* it has received at
 least one `/sys/ping` from the admin (so it knows where to send replies).
@@ -102,9 +103,10 @@ Stored in `~/.config/gpio-osc/vents_prefs.json`. Source of truth:
 
 | Key | Type | Range | Default | Meaning |
 |---|---|---|---|---|
-| `hot_target_c` | float | −55 .. 125 | `25.0` (`VENTS_DEFAULT_TARGET_C`) | hot-side regulation setpoint. Auto mode regulates the probe pinned to the hot role against this |
-| `cold_target_c` | float | −55 .. 125 | `25.0` (initial; clamped down on first save) | cold-side regulation setpoint. Cross-clamped: `cold ≤ hot − hysteresis − margin` |
-| `probe_hot_id` | string \| null | DS18B20 ROM (`28-xxxxxxxxxxxx`) | `null` | ROM id of the probe pinned to the hot face. Auto refuses to run while null |
+| `hot_target_c` | float | 15 .. 125 | `25.0` (`VENTS_DEFAULT_TARGET_C`) | hot setpoint. Auto regulates the probe pinned to the hot role against this *only when `active_target == "hot"`* |
+| `cold_target_c` | float | 15 .. 125 | `25.0` | cold setpoint. Auto regulates the probe pinned to the cold role against this *only when `active_target == "cold"`* |
+| `active_target` | string | `"hot"` \| `"cold"` | `"hot"` | which side currently regulates. Flipped by the most recent `/vents/target/{hot,cold}` write or explicitly via `/vents/target/active`. The other setpoint is kept on disk for one-click re-activation |
+| `probe_hot_id` | string \| null | DS18B20 ROM (`28-xxxxxxxxxxxx`) | `null` | ROM id of the probe pinned to the hot face. Auto refuses to run while null (both probes always required, even though only one regulates) |
 | `probe_cold_id` | string \| null | DS18B20 ROM | `null` | ROM id of the probe pinned to the cold face |
 | `max_temp_c` | float | −55 .. 125 | `80.0` (`VENTS_DEFAULT_MAX_TEMP_C`) | per-sensor over-temp threshold. Trips `state=over_temp` if **any** probe exceeds this |
 | `min_fan_pct` | float | 0 .. 100 | `20.0` (`VENTS_FAN_PWM_MIN_PCT`) | PWM floor for fan commands (unconditional — stops stall) |
@@ -123,17 +125,19 @@ to `hot_target_c = cold_target_c = legacy_value`. The cross-clamp then
 pulls cold below hot by `H + margin`. Operator splits the setpoints
 deliberately later. The old key is dropped on the next save.
 
-**Cross-clamp invariants** (`_clamp_setpoints`):
+**Setpoint clamps** (`_clamp_setpoints`):
 
 1. `hot_target_c + H + _BAND_MARGIN_C < max_temp_c` — regulation band stays
    strictly below the safety ceiling.
-2. `cold_target_c + H + _BAND_MARGIN_C ≤ hot_target_c` — cold setpoint stays
-   below hot by at least the hysteresis + margin, so the OR rule (§4) has
-   a meaningful deadband.
+2. `hot_target_c  >= _TARGET_MIN_C` (15 °C) — operator-facing floor.
+3. `cold_target_c >= _TARGET_MIN_C` (15 °C) — same floor.
 
-Both invariants are enforced after every save. They only ever pull values
-**down** — `max_temp_c` is never raised by a target write, and `hot_target_c`
-is never raised by a cold-target write. `_BAND_MARGIN_C = 0.05`.
+The hot-vs-cold cross-clamp from the previous "OR-rule" model is **gone**
+— with single-active-side regulation (§4) the two setpoints never interact,
+so they may take any values ≥ 15 °C. Clamps only ever pull values toward the
+valid range; `max_temp_c` is never raised by a target write. `_BAND_MARGIN_C
+= 0.05`. The 15 °C floor is also enforced on prefs load (`_PREFS_RANGES`),
+so stale below-floor values from older firmware or hand-edits are lifted up.
 
 ---
 
@@ -150,52 +154,63 @@ Two orthogonal concepts:
 │  raw    │ ───────────────────────►   │  auto loop (4 Hz tick)        │
 │  state= │                            │  state ∈ heating | cooling |  │
 │  idle   │ ◄─────────────────────     │           holding | over_temp │
-└─────────┘  /vents/peltier|fan ...    │                  | sensor_err │
-                  (override)            └───────────────────────────────┘
+└─────────┘  /vents/peltier ...        │                  | sensor_err │
+                 (override)             └───────────────────────────────┘
 ```
 
-Auto-loop decision tree (every 250 ms, `_auto_loop`):
+Auto-loop decision tree (every 250 ms, `_auto_loop`). Only the **active
+side's** probe drives the regulation decision; the other side's probe is
+observed for safety only.
 
 ```
+probe safety fault (no probes / None / non-finite / out-of-range) → state = sensor_error (peltiers = 0; both fans = over_temp_fan_pct)
+ANY discovered probe > max_temp_c              → state = over_temp        (peltiers = 0; both fans = over_temp_fan_pct)
 mode != "auto"                                 → state = idle
 hot/cold probe id null OR not on bus           → state = probe_unassigned (peltiers = 0; fans = 0)
-ANY discovered probe > max_temp_c              → state = over_temp        (peltiers = 0; both fans = over_temp_fan_pct)
-assigned probe (hot or cold) reads None        → state = sensor_error     (peltiers = 0; fans = 0)
-t_hot < hot_target − H OR t_cold > cold_target + H → state = heating      (peltier mask = 0b111)
-t_hot ≥ hot_target + H AND t_cold ≤ cold_target − H → state = cooling     (peltier mask = 0b000)
-otherwise (deadband)                           → state = holding          (peltier mask unchanged)
+assigned probe (hot or cold) reads None        → state = sensor_error     (peltiers = 0; both fans = over_temp_fan_pct)
+
+active_target == "hot":
+  t_hot < hot_target_c − H                     → state = heating           (peltier mask = 0b111)
+  t_hot ≥ hot_target_c + H                     → state = cooling           (peltier mask = 0)
+active_target == "cold":
+  t_cold > cold_target_c + H                   → state = heating           (peltier mask = 0b111)
+  t_cold ≤ cold_target_c − H                   → state = cooling           (peltier mask = 0)
+
+otherwise (deadband on the active side)        → state = holding           (peltier mask unchanged)
 ```
 
-`hysteresis = VENTS_HYSTERESIS_C = 0.5 °C`. **OR composition rule**: drive
-the gradient if either probe is unhappy with its setpoint; turn off only
-when both probes are inside their bands. Hot probe pushes the gradient
-when too cool; cold probe pushes the gradient when too warm. They both
-imply Peltiers ON (single-direction hardware), so the rule converges.
-`holding` deliberately leaves Peltier outputs alone to avoid chatter at
-the band edges.
+`hysteresis = VENTS_HYSTERESIS_C = 0.5 °C`. **Single-active-side rule**:
+the Peltier stack is one binary actuator (3 cells driven together, no PWM),
+so the controller can only honor one regulation target at a time. The
+operator picks which side matters by writing that side's setpoint (or by
+sending `/vents/target/active`). Writing `/vents/target/hot 25` while
+active was "cold" both updates the value AND flips active to "hot" on the
+same OSC packet — the model is "last target wins". `holding` deliberately
+leaves Peltier outputs alone to avoid chatter at the band edges.
 
 `temp_hot` / `temp_cold` resolve via the role-pinned ROM ids — there is no
-average. The `over_temp` check walks the **whole probe set** (assigned or
-not), so an unassigned probe in runaway still trips safety
-(`controllers/vents.py:_auto_loop`).
+average. **Both probes are still required** for auto to run (uniform
+safety), even though only one regulates. The `over_temp` check walks the
+**whole probe set** (assigned or not), so an unassigned probe in runaway
+still trips safety (`controllers/vents.py:_auto_loop`).
+
+State names `heating` / `cooling` describe whether the cells are *driven*,
+not which Peltier face is physically getting hot or cold.
 
 Fans are not driven by the regulation branches (`heating`/`cooling`/
-`holding`) — only `over_temp`, `sensor_error`, `probe_unassigned`, and the
-mode-flip into `auto` touch them. To run fans manually, send
-`/vents/fan/*` (any time) — that auto-flips mode back to `raw`.
+`holding`). They are forced only by safety branches (`over_temp` and safety
+`sensor_error`) and by `probe_unassigned` in auto. To run fans manually, send
+`/vents/fan/*` (any time) — this no longer flips mode.
 
 ---
 
 ## 5. Fan control pipeline
 
-`_set_fan(index, duty_0_1)` (lines 260–277):
+`_set_fan(index, duty_0_1)`:
 
 ```
 raw_pct  = clamp(duty_0_1 × 100, 0, VENTS_FAN_PWM_MAX_PCT)
-if duty_0_1 > 0:
-    final_pct = max(raw_pct × max_fan_pct / 100, min_fan_pct)
-else:
-    final_pct = 0.0      ← explicit 0 always passes through (lets you fully stop a fan)
+final_pct = max(raw_pct × max_fan_pct / 100, min_fan_pct)
 ```
 
 Three layers:
@@ -206,8 +221,8 @@ Three layers:
 2. **`min_fan_pct`** — device-side floor. Stops a fan from being commanded to
    a non-zero duty too low to actually spin (typical brushless DC fans
    stall below ~15–20%).
-3. **Explicit zero bypass** — `duty_0_1 == 0.0` always emits 0%, even when
-   the floor would otherwise raise it. Lets the operator fully stop a fan.
+3. **No explicit zero bypass** — floor is unconditional; a `0.0` command still
+   resolves to at least `min_fan_pct`.
 
 This pipeline is also what the over-temp branch uses when it pins fans to
 `over_temp_fan_pct / 100`.
@@ -216,7 +231,7 @@ This pipeline is also what the over-temp branch uses when it pins fans to
 
 ## 6. Status broadcast — wire format
 
-`/vents/status` carries **20 args** in this order
+`/vents/status` carries **21 args** in this order
 (`get_status_osc_args`):
 
 | Position | Field | Type | Notes |
@@ -241,9 +256,12 @@ This pipeline is also what the over-temp branch uses when it pins fans to
 | 17 | `temp_cold_c` | float | live reading from the probe pinned to cold, or **`-1.0`** if unassigned/missing |
 | 18 | `hot_target_c` | float | hot setpoint (persisted) |
 | 19 | `cold_target_c` | float | cold setpoint (persisted) |
+| 20 | `active_target` | string | `"hot"` \| `"cold"` — which side currently regulates |
 
-Backend parses positions 12–19 as **optional** so old firmware (12 args)
-through current (20 args) all decode (`osc_receiver.py`).
+Backend parses positions 12–20 as **optional** so old firmware (12 args)
+through current (21 args) all decode (`osc_receiver.py`). Position 20 is
+the only string-typed optional field; older admins stop reading at 19 and
+default `active_target = "hot"` server-side for the rendered status.
 
 `probes[]` (the discovered ROM ids + per-probe live temps that drive the
 admin's touch-test panel) does **not** travel on this broadcast — variable
@@ -292,7 +310,11 @@ The panel lets operators:
 - Toggle each Peltier independently (or via mask).
 - Drive each fan PWM 0..1 with a slider.
 - Switch between `raw` and `auto` modes.
-- Set the regulation `target_c`.
+- Set the **hot** and **cold** regulation setpoints. Whichever side was
+  written most recently is the active regulator; the other slider is dimmed
+  with a `●` next to the active label. Clicking a dimmed slider sends
+  `target_active` to flip without touching either stored value. Both
+  sliders are floored at 15 °C in the UI to mirror the Pi-side clamp.
 - Set `max_temp_c`, `min_fan_pct`, `max_fan_pct`, `over_temp_fan_pct` (each
   persists immediately on the Pi via the matching `/vents/config/*` address).
 
@@ -308,8 +330,10 @@ poll *also* sends `/sys/ping` to keep the Pi's status broadcasts flowing.
 - `POST /api/v1/vents-control/<device_id>/command`
   Body: `{command, value, index?}`. Translates to one OSC send.
   Valid commands: `peltier`, `peltier_mask`, `fan`, `mode`, `target`,
-  `max_temp`. (The three `/vents/config/*` addresses are sent separately
-  through admin Settings — there's no single dispatch table for them.)
+  `target_hot`, `target_cold`, `target_active`, `max_temp`,
+  `probe_assign_hot`, `probe_assign_cold`, `probe_clear`. (The three
+  `/vents/config/*` addresses are sent separately through admin Settings
+  — there's no single dispatch table for them.)
 - `GET /api/v1/vents-control/<device_id>/status`
   Returns the last `/vents/status` snapshot + an `online` bool driven by
   `/sys/ping` round-trip (6 s timeout).
@@ -323,17 +347,23 @@ and is decremented in `_route` before being sent on the wire.
 
 `rpi-controller/tests/test_vents.py` — coverage:
 - Setup/cleanup hygiene: PWM init, tacho ISR registration, GPIO cleanup.
-- Each raw OSC handler (peltier 1/2/3 + mask, fan 1/2, mode, target,
-  max_temp).
-- Mode interactions: raw command in auto mode flips mode to raw; `auto`
-  forces both fans to 0.
+- Each raw OSC handler (peltier 1/2/3 + mask, fan 1/2, mode, target_*,
+  target_active, max_temp).
+- Mode interactions: peltier override in auto flips mode to raw; fan override
+  keeps current mode.
 - Over-temp interlock: per-sensor trip; peltier "on" requests ignored;
   fans pinned to `over_temp_fan_pct`.
-- Sensor-error branch: both probes missing → peltiers off, fans off.
-- Fan pipeline: `min_fan_pct` floor, `max_fan_pct` scaling, explicit-0 bypass.
-- Prefs persistence: load/save round-trip, atomic write, missing-key
-  forward-compat.
-- Status payload: 16-arg shape, `-1.0` for missing temps.
+- Probe safety lock: missing probes, `None` reads, and abnormal values lock
+  the system (`sensor_error`) with peltiers off and safety fan fallback.
+- Fan pipeline: `min_fan_pct` floor and `max_fan_pct` scaling.
+- Prefs persistence: load/save round-trip including `active_target`, atomic
+  write, missing-key forward-compat, garbage `active_target` rejection.
+- Setpoint clamps: 15 °C floor, hot-vs-max ceiling, cold independence from hot.
+- `TestActiveTargetAuto`: single-active-side bang-bang; hot probe drives mask
+  when `active_target=="hot"` (cold value irrelevant), and vice versa; safety
+  branches still scan both probes.
+- Status payload: 21-arg shape including `active_target` at position 20,
+  `-1.0` for missing temps.
 - DS18B20 parser: CRC validation, unit conversion, error handling.
 - HTTP test surface mirrors the OSC surface end-to-end.
 

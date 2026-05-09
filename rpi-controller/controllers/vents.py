@@ -14,24 +14,30 @@ Hardware:
     persisted by the probe's 64-bit ROM id (`28-xxxxxxxxxxxx`), so it survives
     reboots and 1-Wire enumeration order changes.
 
-Temperature control — dual setpoints:
+Temperature control — last-target-wins regulation:
 
   - **hot_target_c** + hysteresis: setpoint for the probe assigned to the hot
     face. **cold_target_c** + hysteresis: setpoint for the probe assigned to
-    the cold face. Both regulate independently. OR composition rule:
-    Peltiers ON whenever `t_hot < hot_target − H` OR `t_cold > cold_target + H`
-    (drive gradient if either side is unhappy). OFF only when both probes are
-    inside their bands. State names heating/cooling describe whether cells are
-    driven, not which Peltier face is physically hot or cold. Fans are not used
-    for this loop (use raw or /vents/fan/*).
+    the cold face. **active_target** ∈ {"hot","cold"} selects which side
+    currently regulates; the other value is preserved on disk but inactive.
+    Writing /vents/target/{hot,cold} flips active to that side; the dedicated
+    /vents/target/active flips without changing values. Default is "hot".
+  - The active side runs simple bang-bang on its own probe:
+      active=hot:  ON if t_hot < hot_target − H,  OFF if t_hot ≥ hot_target + H
+      active=cold: ON if t_cold > cold_target + H, OFF if t_cold ≤ cold_target − H
+    State names heating/cooling describe whether cells are driven, not which
+    Peltier face is physically hot or cold. Fans are not used for this loop
+    (use raw or /vents/fan/*).
   - **max_temp_c**: **safety** ceiling (persisted on the Pi). If **any
     discovered probe** (assigned or not) reads above max, state is "over_temp":
     all Peltiers off and both fans pinned to `over_temp_fan_pct` in any mode.
     Peltier "on" commands are ignored while above max (interlock).
   - **probe_unassigned**: auto refuses to run unless both `probe_hot_id` and
-    `probe_cold_id` are set AND currently in the discovered probes set.
-  - Cross-clamps: hot_target + H + margin < max_temp_c, and
-    cold_target + H + margin ≤ hot_target. Enforced on every save.
+    `probe_cold_id` are set AND currently in the discovered probes set
+    (uniform safety — even though only one side regulates).
+  - Clamps: hot_target + H + margin < max_temp_c (kept), and both setpoints
+    are floored at _TARGET_MIN_C (15 °C, operator-facing). Enforced on every
+    save and at load time. The cold-vs-hot invariant is no longer needed.
   - **min_fan_pct**, **max_fan_pct**, **over_temp_fan_pct**: per-Pi safety
     settings, persisted on the Pi.
 
@@ -46,8 +52,9 @@ OSC protocol:
     /vents/fan/2      float 0..1
     /vents/mode       string "raw" | "auto"
     /vents/target     float °C — back-compat alias for /vents/target/hot
-    /vents/target/hot   float °C — hot setpoint (regulates the hot-assigned probe)
-    /vents/target/cold  float °C — cold setpoint (regulates the cold-assigned probe)
+    /vents/target/hot   float °C — hot setpoint (also flips active=hot)
+    /vents/target/cold  float °C — cold setpoint (also flips active=cold)
+    /vents/target/active string "hot"|"cold" — flip active side, no value change
     /vents/max_temp   float safety max °C (stored in ~/.config/gpio-osc/vents_prefs.json)
     /vents/probe/assign_hot   string rom_id (28-xxxxxxxxxxxx) — pin probe to hot role
     /vents/probe/assign_cold  string rom_id — pin probe to cold role
@@ -67,18 +74,22 @@ OSC protocol:
     /vents/status temp1, temp2, fan1_0_1, fan2_0_1, peltier_mask,
                   rpm1A, rpm1B, rpm2A, rpm2B, target_c, mode, state,
                   max_temp_c, min_fan_pct, over_temp_fan_pct, max_fan_pct,
-                  temp_hot_c, temp_cold_c, hot_target_c, cold_target_c
-    target_c at position 9 mirrors hot_target_c (back-compat). The dual-
-    setpoint tail (positions 16-19) is forward-compat — older admins ignore.
+                  temp_hot_c, temp_cold_c, hot_target_c, cold_target_c,
+                  active_target
+    target_c at position 9 mirrors hot_target_c (back-compat). Position 20
+    (active_target) is forward-compat — older admins stop reading at 19 and
+    fall back to displaying both setpoints as if both were active.
     Missing temps (incl. temp_hot_c / temp_cold_c) are encoded as -1.0.
 
 Auto loop branches (first match wins):
   ANY discovered probe > max_temp_c → over_temp (Peltiers off, fans → over_temp_fan_pct).
   mode != "auto"        → idle.
-  either probe id null/missing → probe_unassigned (Peltiers off, fans unchanged).
-  assigned probe reads None         → sensor_error (Peltiers off, fans off).
-  t_hot < hot_target − H OR t_cold > cold_target + H → heating (mask 0b111).
-  t_hot ≥ hot_target + H AND t_cold ≤ cold_target − H → cooling (mask 0).
+  either probe id null/missing → probe_unassigned (Peltiers off, fans off).
+  assigned probe reads None         → sensor_error (Peltiers off, fans pinned).
+  active=hot:  t_hot < hot_target − H   → heating (mask 0b111).
+               t_hot ≥ hot_target + H   → cooling (mask 0).
+  active=cold: t_cold > cold_target + H → heating (mask 0b111).
+               t_cold ≤ cold_target − H → cooling (mask 0).
   else → holding (deadband; mask unchanged).
 """
 
@@ -118,8 +129,12 @@ PELTIER_PINS = (PIN_PELTIER_1, PIN_PELTIER_2, PIN_PELTIER_3)
 _PREFS_PATH = Path(os.path.expanduser("~/.config/gpio-osc/vents_prefs.json"))
 # Keep max_temp_c strictly above the upper regulation edge (target + H).
 _BAND_MARGIN_C = 0.05
+# Operator-facing floor for both setpoints. Pi-side clamp is authoritative;
+# the admin slider mirrors this minimum but cannot lower it.
+_TARGET_MIN_C = 15.0
 _PROBE_MIN_C = -55.0
 _PROBE_MAX_C = 125.0
+_VALID_ACTIVE_TARGETS = ("hot", "cold")
 
 # ── state (module-level, read by OSC/HTTP handlers + status broadcaster) ──
 
@@ -147,9 +162,13 @@ temp_c = [None, None]
 probe_hot_id = None        # rom_id of probe physically attached to the hot face
 probe_cold_id = None       # rom_id of probe physically attached to the cold face
 
-# Dual setpoints. Both regulated independently; OR composition (see _auto_loop).
+# Dual setpoints, but only the *active* one regulates at any time. The other
+# value is preserved on disk so the operator can flip back without re-typing.
+# `active_target` is set by the most recent /vents/target/{hot,cold} write, or
+# explicitly via /vents/target/active.
 hot_target_c = float(VENTS_DEFAULT_TARGET_C)
 cold_target_c = float(VENTS_DEFAULT_TARGET_C)
+active_target = "hot"  # "hot" | "cold". Persisted. Last setpoint write wins.
 max_temp_c = float(VENTS_DEFAULT_MAX_TEMP_C)  # over-temp threshold; persisted in _PREFS_PATH
 
 _ROM_ID_RE = re.compile(r"^28-[0-9a-fA-F]{12}$")
@@ -181,13 +200,16 @@ def _clamp(value, lo, hi):
 
 
 def _clamp_setpoints():
-    """Enforce the cross-clamp invariants between cold_target_c, hot_target_c,
-    and max_temp_c. Always pulls values DOWN, never raises max_temp_c.
+    """Enforce setpoint bounds. Always pulls values toward valid range; never
+    raises max_temp_c.
 
     Invariants after this returns:
       - hot_target_c  + H + margin <  max_temp_c   (hot band stays below safety)
-      - cold_target_c + H + margin <= hot_target_c (cold setpoint below hot
-        setpoint — otherwise the OR rule in _auto_loop is permanently triggered).
+      - hot_target_c  >= _TARGET_MIN_C             (operator floor; default 15 °C)
+      - cold_target_c >= _TARGET_MIN_C
+
+    There is no longer a hot-vs-cold invariant: with "last target wins"
+    regulation only one side is active at a time, so independent values are fine.
     """
     global hot_target_c, cold_target_c
     hot_ceiling = max_temp_c - VENTS_HYSTERESIS_C - _BAND_MARGIN_C
@@ -197,13 +219,18 @@ def _clamp_setpoints():
             hot_target_c, hot_ceiling, max_temp_c, VENTS_HYSTERESIS_C,
         )
         hot_target_c = hot_ceiling
-    cold_ceiling = hot_target_c - VENTS_HYSTERESIS_C - _BAND_MARGIN_C
-    if cold_target_c > cold_ceiling:
+    if hot_target_c < _TARGET_MIN_C:
         logger.warning(
-            "cold_target_c clamped %.2f → %.2f (hot_target_c=%.2f, H=%.2f)",
-            cold_target_c, cold_ceiling, hot_target_c, VENTS_HYSTERESIS_C,
+            "hot_target_c clamped %.2f → %.2f (operator floor)",
+            hot_target_c, _TARGET_MIN_C,
         )
-        cold_target_c = cold_ceiling
+        hot_target_c = _TARGET_MIN_C
+    if cold_target_c < _TARGET_MIN_C:
+        logger.warning(
+            "cold_target_c clamped %.2f → %.2f (operator floor)",
+            cold_target_c, _TARGET_MIN_C,
+        )
+        cold_target_c = _TARGET_MIN_C
 
 
 _PREFS_RANGES = {
@@ -211,14 +238,14 @@ _PREFS_RANGES = {
     "min_fan_pct": (0.0, 100.0),
     "max_fan_pct": (0.0, 100.0),
     "over_temp_fan_pct": (0.0, 100.0),
-    "hot_target_c": (-55.0, 125.0),
-    "cold_target_c": (-55.0, 125.0),
+    "hot_target_c": (_TARGET_MIN_C, 125.0),
+    "cold_target_c": (_TARGET_MIN_C, 125.0),
 }
 
 
 def _load_prefs():
     """Load persisted vents preferences from disk (called from setup)."""
-    global probe_hot_id, probe_cold_id
+    global probe_hot_id, probe_cold_id, active_target
     try:
         data = json.loads(_PREFS_PATH.read_text())
     except FileNotFoundError:
@@ -260,6 +287,12 @@ def _load_prefs():
         else:
             logger.warning("Bad %s in prefs, ignoring: %r", id_key, val)
 
+    saved_active = data.get("active_target")
+    if isinstance(saved_active, str) and saved_active in _VALID_ACTIVE_TARGETS:
+        active_target = saved_active
+    elif saved_active is not None:
+        logger.warning("Bad active_target in prefs, defaulting to 'hot': %r", saved_active)
+
     _clamp_setpoints()
 
 
@@ -275,6 +308,7 @@ def _save_prefs():
             "over_temp_fan_pct": over_temp_fan_pct,
             "hot_target_c": hot_target_c,
             "cold_target_c": cold_target_c,
+            "active_target": active_target,
             "probe_hot_id": probe_hot_id,
             "probe_cold_id": probe_cold_id,
         }, indent=2) + "\n"
@@ -475,7 +509,12 @@ def _safety_lock_state():
 
 
 def _auto_loop():
-    """Dual-setpoint bang-bang regulator with role-pinned probes (OR rule).
+    """Single-active-side bang-bang regulator with role-pinned probes.
+
+    With one binary actuator (Peltier on/off) the controller can only honor
+    one regulation target at a time. `active_target` (set by the most recent
+    setpoint write) selects which side currently regulates; the other is
+    persisted but inactive.
 
     Per-tick branches, first match wins:
 
@@ -484,14 +523,15 @@ def _auto_loop():
                                      over_temp_fan_pct. Enforced in raw and auto.
       2. mode != "auto"            → state=idle, return.
       3. probe_unassigned          → either role's id is null OR not currently
-                                     in _probes. Peltiers off, fans off.
+                                     in _probes. Peltiers off, fans off. Both
+                                     probes still required for uniform safety.
       4. sensor_error              → an assigned probe currently reads None.
-                                     Peltiers off, fans off.
-      5. heating (need_on, OR)     → t_hot < hot_target_c − H
-                                     OR t_cold > cold_target_c + H.
+                                     Peltiers off, fans pinned to safety fallback.
+      5. heating  (need_on)        → active=hot:  t_hot < hot_target_c − H
+                                     active=cold: t_cold > cold_target_c + H
                                      Peltiers all on (mask 0b111).
-      6. cooling (need_off, AND)   → t_hot ≥ hot_target_c + H
-                                     AND t_cold ≤ cold_target_c − H.
+      6. cooling  (need_off)       → active=hot:  t_hot ≥ hot_target_c + H
+                                     active=cold: t_cold ≤ cold_target_c − H
                                      Peltiers all off.
       7. holding                   → deadband — leave Peltier mask unchanged.
                                      Fans not touched in any heating/cooling/
@@ -552,9 +592,15 @@ def _auto_loop():
             _shutdown_event.wait(period)
             continue
 
-        # OR composition — ON if either side wants more gradient.
-        need_on = (t_hot < hot_target_c - H) or (t_cold > cold_target_c + H)
-        need_off = (t_hot >= hot_target_c + H) and (t_cold <= cold_target_c - H)
+        # Single-active-side bang-bang. Only the active probe drives the mask;
+        # the other side's reading is observed for safety only (over_temp /
+        # sensor_error branches above already covered it).
+        if active_target == "cold":
+            need_on = t_cold > cold_target_c + H   # too warm → pump heat away
+            need_off = t_cold <= cold_target_c - H
+        else:  # "hot"
+            need_on = t_hot < hot_target_c - H     # too cool → pump heat in
+            need_off = t_hot >= hot_target_c + H
         if need_on:
             state = "heating"        # name preserved for admin enum compat
             _apply_peltier_mask(0b111)
@@ -759,37 +805,51 @@ def handle_mode(address, *args):
 
 @_safe("target_hot")
 def handle_target_hot(address, *args):
-    """Set the hot setpoint (regulates the probe assigned to the hot face).
-    Persisted. Cross-clamped against max_temp_c, then forces cold_target_c
-    down if it would otherwise breach the cold ≤ hot − H − margin invariant."""
-    global hot_target_c
+    """Set the hot setpoint and make hot the active regulation target.
+    Persisted. Clamped against max_temp_c (upper) and the 15 °C operator floor."""
+    global hot_target_c, active_target
     if not args:
         return
     hot_target_c = float(args[0])
+    active_target = "hot"
     _clamp_setpoints()
     _save_prefs()
-    logger.info("Vents hot target → %.2f °C (cold=%.2f, saved)",
-                hot_target_c, cold_target_c)
+    logger.info("Vents hot target → %.2f °C (active=hot, saved)", hot_target_c)
 
 
 @_safe("target_cold")
 def handle_target_cold(address, *args):
-    """Set the cold setpoint (regulates the probe assigned to the cold face).
-    Persisted. Clamped to ≤ hot_target_c − H − margin so the OR rule isn't
-    permanently triggered."""
-    global cold_target_c
+    """Set the cold setpoint and make cold the active regulation target.
+    Persisted. Clamped against the 15 °C operator floor."""
+    global cold_target_c, active_target
     if not args:
         return
     cold_target_c = float(args[0])
+    active_target = "cold"
     _clamp_setpoints()
     _save_prefs()
-    logger.info("Vents cold target → %.2f °C (hot=%.2f, saved)",
-                cold_target_c, hot_target_c)
+    logger.info("Vents cold target → %.2f °C (active=cold, saved)", cold_target_c)
+
+
+@_safe("target_active")
+def handle_target_active(address, *args):
+    """Flip the active regulation side without changing either stored value.
+    Used by the admin to re-activate a greyed-out setpoint with one click."""
+    global active_target
+    if not args:
+        return
+    requested = str(args[0]).strip().lower()
+    if requested not in _VALID_ACTIVE_TARGETS:
+        raise ValueError(f"active_target must be 'hot' or 'cold', got {requested!r}")
+    active_target = requested
+    _save_prefs()
+    logger.info("Vents active target → %s (saved)", active_target)
 
 
 @_safe("target")
 def handle_target(address, *args):
-    """Back-compat alias — legacy /vents/target routes to the hot setpoint."""
+    """Back-compat alias — legacy /vents/target routes to the hot setpoint
+    and (as a side effect) makes hot the active target."""
     handle_target_hot(address, *args)
 
 
@@ -893,6 +953,7 @@ def register_osc(dispatcher):
     dispatcher.map("/vents/target", handle_target)              # alias → hot
     dispatcher.map("/vents/target/hot", handle_target_hot)
     dispatcher.map("/vents/target/cold", handle_target_cold)
+    dispatcher.map("/vents/target/active", handle_target_active)
     dispatcher.map("/vents/max_temp", handle_max_temp)
     dispatcher.map("/vents/probe/assign_hot", handle_probe_assign_hot)
     dispatcher.map("/vents/probe/assign_cold", handle_probe_assign_cold)
@@ -940,6 +1001,8 @@ def handle_http_test(body):
             handle_target_hot("/http", float(value))
         elif cmd == "target_cold":
             handle_target_cold("/http", float(value))
+        elif cmd == "target_active":
+            handle_target_active("/http", str(value))
         elif cmd == "max_temp":
             handle_max_temp("/http", float(value))
         elif cmd == "probe_assign_hot":
@@ -991,6 +1054,7 @@ def get_status():
         "target_c": hot_target_c,                # back-compat alias for hot
         "hot_target_c": hot_target_c,
         "cold_target_c": cold_target_c,
+        "active_target": active_target,
         "temp_hot_c": _probe_temps.get(probe_hot_id) if probe_hot_id else None,
         "temp_cold_c": _probe_temps.get(probe_cold_id) if probe_cold_id else None,
         "probe_hot_id": probe_hot_id,
@@ -1013,11 +1077,11 @@ def get_status_osc_args():
     """OSC argument list matching the documented /vents/status contract.
     Missing temperatures are encoded as -1.0 (python-osc rejects None).
     Backend `_handle_vents_status` parses arg 13 onward optionally so older
-    firmware (12 args, no max_temp_c) and pre-min-fan (13 args) both decode.
+    firmware (12 args, no max_temp_c) through current (21 args) all decode.
 
     Positions 16-19 are the dual-setpoint tail (temp_hot_c, temp_cold_c,
-    hot_target_c, cold_target_c) — admin builds older than this firmware
-    simply stop reading at position 15."""
+    hot_target_c, cold_target_c). Position 20 is `active_target` — admin
+    builds older than this firmware simply stop reading earlier."""
     s = get_status()
     return [
         float(s["temp1_c"]) if s["temp1_c"] is not None else -1.0,
@@ -1040,6 +1104,7 @@ def get_status_osc_args():
         float(s["temp_cold_c"]) if s["temp_cold_c"] is not None else -1.0,
         float(s["hot_target_c"]),
         float(s["cold_target_c"]),
+        str(s["active_target"]),
     ]
 
 
@@ -1060,6 +1125,7 @@ def describe():
         "target_c": hot_target_c,
         "hot_target_c": hot_target_c,
         "cold_target_c": cold_target_c,
+        "active_target": active_target,
         "max_temp_c": max_temp_c,
         "probe_hot_id": probe_hot_id,
         "probe_cold_id": probe_cold_id,

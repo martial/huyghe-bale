@@ -1,5 +1,10 @@
 import { get, post } from "./client";
-import type { VentsCommand, VentsStatus, VentsMode } from "../types/vents";
+import type {
+  VentsActiveTarget,
+  VentsCommand,
+  VentsMode,
+  VentsStatus,
+} from "../types/vents";
 
 export interface VentsCommandBody {
   command: VentsCommand;
@@ -41,6 +46,15 @@ export function setVentsHotTarget(deviceId: string, celsius: number) {
 
 export function setVentsColdTarget(deviceId: string, celsius: number) {
   return sendVentsCommand(deviceId, { command: "target_cold", value: celsius });
+}
+
+/** Flip which side currently regulates without writing a new value to either
+ *  setpoint. Used to re-activate a greyed-out slider with one click. */
+export function setVentsActiveTarget(
+  deviceId: string,
+  side: VentsActiveTarget,
+) {
+  return sendVentsCommand(deviceId, { command: "target_active", value: side });
 }
 
 export function assignVentsProbe(

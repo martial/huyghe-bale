@@ -30,6 +30,7 @@ def _reset():
     vents.probe_cold_id = None
     vents.hot_target_c = 25.0
     vents.cold_target_c = 25.0
+    vents.active_target = "hot"
     vents.max_temp_c = 80.0
     vents.min_fan_pct = 20.0
     vents.max_fan_pct = 100.0
@@ -334,11 +335,16 @@ def _tick_auto():
         if t_hot is None or t_cold is None:
             vents.state = "sensor_error"
             vents._apply_peltier_mask(0)
-            vents._set_fan(0, 0.0); vents._set_fan(1, 0.0)
+            fb = vents.over_temp_fan_pct / 100.0
+            vents._set_fan(0, fb); vents._set_fan(1, fb)
             return
         H = vents.VENTS_HYSTERESIS_C
-        need_on = (t_hot < vents.hot_target_c - H) or (t_cold > vents.cold_target_c + H)
-        need_off = (t_hot >= vents.hot_target_c + H) and (t_cold <= vents.cold_target_c - H)
+        if vents.active_target == "cold":
+            need_on = t_cold > vents.cold_target_c + H
+            need_off = t_cold <= vents.cold_target_c - H
+        else:
+            need_on = t_hot < vents.hot_target_c - H
+            need_off = t_hot >= vents.hot_target_c + H
         if need_on:
             vents.state = "heating"
             vents._apply_peltier_mask(0b111)
@@ -471,6 +477,50 @@ class TestPrefsPersistence:
         assert vents.over_temp_fan_pct == 99.0
         assert vents.max_fan_pct == 99.0
 
+    def test_save_includes_active_target(self, tmp_path):
+        vents.active_target = "cold"
+        path = tmp_path / "prefs.json"
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._save_prefs()
+        import json as _json
+        data = _json.loads(path.read_text())
+        assert data["active_target"] == "cold"
+
+    def test_load_restores_active_target(self, tmp_path):
+        path = tmp_path / "prefs.json"
+        path.write_text('{"max_temp_c": 80, "active_target": "cold"}')
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._load_prefs()
+        assert vents.active_target == "cold"
+
+    def test_load_defaults_active_target_when_missing(self, tmp_path):
+        path = tmp_path / "prefs.json"
+        path.write_text('{"max_temp_c": 80}')
+        vents.active_target = "cold"  # pretend in-memory was something else
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._load_prefs()
+        # Missing key keeps in-memory value (forward-compat). Default at fresh
+        # install is "hot" (set in module globals).
+        assert vents.active_target == "cold"
+
+    def test_load_rejects_garbage_active_target(self, tmp_path):
+        path = tmp_path / "prefs.json"
+        path.write_text('{"max_temp_c": 80, "active_target": "lukewarm"}')
+        vents.active_target = "hot"
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._load_prefs()
+        assert vents.active_target == "hot"
+
+    def test_load_clamps_below_floor_setpoint_to_15(self, tmp_path):
+        # Stale prefs from older firmware (or operator hand-edit) below the
+        # 15 °C floor must be pulled up on load.
+        path = tmp_path / "prefs.json"
+        path.write_text('{"max_temp_c": 80, "hot_target_c": 10, "cold_target_c": 5}')
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._load_prefs()
+        assert vents.hot_target_c == pytest.approx(15.0)
+        assert vents.cold_target_c == pytest.approx(15.0)
+
 
 class TestModeTarget:
     def setup_method(self):
@@ -498,32 +548,73 @@ class TestModeTarget:
         vents._webhooks.fire.assert_called_once()
 
     def test_target_alias_routes_to_hot(self):
-        # Legacy /vents/target keeps working — sets the hot setpoint.
-        vents.cold_target_c = 5.0  # keep low so cross-clamp doesn't fire
+        # Legacy /vents/target keeps working — sets the hot setpoint and
+        # also flips active_target to hot.
+        vents.active_target = "cold"
         vents.handle_target("/vents/target", 18.5)
         assert vents.hot_target_c == 18.5
+        assert vents.active_target == "hot"
+
+    def test_register_osc_maps_all_target_subaddresses(self):
+        """Regression: /vents/target, /vents/target/hot, /vents/target/cold,
+        and /vents/target/active must each be wired into the OSC dispatcher
+        when register_osc runs."""
+        d = MagicMock()
+        vents.register_osc(d)
+        mapped = {c.args[0] for c in d.map.call_args_list}
+        assert "/vents/target" in mapped
+        assert "/vents/target/hot" in mapped
+        assert "/vents/target/cold" in mapped
+        assert "/vents/target/active" in mapped
 
     def test_target_hot_sets_celsius(self):
-        vents.cold_target_c = 5.0
         vents.handle_target_hot("/vents/target/hot", 22.0)
         assert vents.hot_target_c == 22.0
 
     def test_target_cold_sets_celsius(self):
-        vents.hot_target_c = 30.0
-        vents.handle_target_cold("/vents/target/cold", 12.0)
-        assert vents.cold_target_c == 12.0
+        vents.handle_target_cold("/vents/target/cold", 18.0)
+        assert vents.cold_target_c == 18.0
 
     def test_target_hot_persists(self):
-        vents.cold_target_c = 5.0
         with patch.object(vents, "_save_prefs") as save:
             vents.handle_target_hot("/vents/target/hot", 24.0)
         save.assert_called_once()
 
     def test_target_cold_persists(self):
-        vents.hot_target_c = 30.0
         with patch.object(vents, "_save_prefs") as save:
-            vents.handle_target_cold("/vents/target/cold", 12.0)
+            vents.handle_target_cold("/vents/target/cold", 18.0)
         save.assert_called_once()
+
+    def test_target_hot_flips_active_to_hot(self):
+        vents.active_target = "cold"
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_target_hot("/vents/target/hot", 24.0)
+        assert vents.active_target == "hot"
+
+    def test_target_cold_flips_active_to_cold(self):
+        vents.active_target = "hot"
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_target_cold("/vents/target/cold", 18.0)
+        assert vents.active_target == "cold"
+
+    def test_target_active_flips_without_value_change(self):
+        vents.hot_target_c = 22.0
+        vents.cold_target_c = 19.0
+        vents.active_target = "hot"
+        with patch.object(vents, "_save_prefs") as save:
+            vents.handle_target_active("/vents/target/active", "cold")
+        assert vents.active_target == "cold"
+        assert vents.hot_target_c == 22.0
+        assert vents.cold_target_c == 19.0
+        save.assert_called_once()
+
+    def test_target_active_rejects_garbage(self):
+        vents.active_target = "hot"
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_target_active("/vents/target/active", "lukewarm")
+        # @_safe captures; active stays put.
+        assert vents.active_target == "hot"
+        vents._webhooks.fire.assert_called_once()
 
 
 # ── status + describe ────────────────────────────────────────────────────
@@ -538,7 +629,7 @@ class TestStatus:
         for k in (
             "temp1_c", "temp2_c", "fan1", "fan2", "peltier_mask", "peltier",
             "rpm1A", "rpm1B", "rpm2A", "rpm2B",
-            "target_c", "hot_target_c", "cold_target_c",
+            "target_c", "hot_target_c", "cold_target_c", "active_target",
             "temp_hot_c", "temp_cold_c", "probe_hot_id", "probe_cold_id",
             "probes",
             "max_temp_c", "min_fan_pct", "max_fan_pct", "over_temp_fan_pct",
@@ -565,7 +656,6 @@ class TestStatus:
         assert temps[THIRD_ID] == 26.5
 
     def test_status_temp_hot_cold_resolve_via_probe_ids(self):
-        vents.cold_target_c = 5.0
         _assign_both()
         _populate_probes({HOT_ID: 28.0, COLD_ID: 18.0})
         s = vents.get_status()
@@ -591,14 +681,15 @@ class TestStatus:
 
     def test_osc_args_layout_positions(self):
         # Spot-check critical positions used by admin's _VENTS_OPTIONAL_STATUS_FIELDS.
-        vents.cold_target_c = 5.0
+        vents.cold_target_c = 18.0
         vents.hot_target_c = 25.0
+        vents.active_target = "cold"
         vents.max_temp_c = 80.0
         vents.min_fan_pct = 35.0
         vents.over_temp_fan_pct = 75.0
         vents.max_fan_pct = 60.0
         args = vents.get_status_osc_args()
-        assert len(args) == 20
+        assert len(args) == 21
         assert args[10] == "raw"             # mode
         assert args[11] == "idle"            # state
         assert args[12] == 80.0              # max_temp_c
@@ -606,7 +697,8 @@ class TestStatus:
         assert args[14] == 75.0              # over_temp_fan_pct
         assert args[15] == 60.0              # max_fan_pct
         assert args[18] == 25.0              # hot_target_c
-        assert args[19] == 5.0               # cold_target_c
+        assert args[19] == 18.0              # cold_target_c
+        assert args[20] == "cold"            # active_target
 
     def test_osc_args_encode_present_temp(self):
         # Populate via the canonical path: _probes + _probe_temps. The
@@ -619,12 +711,11 @@ class TestStatus:
         assert args[1] == 18.0
 
     def test_osc_args_include_temp_hot_cold_when_assigned(self):
-        vents.cold_target_c = 5.0
         _assign_both()
-        _populate_probes({HOT_ID: 30.0, COLD_ID: 15.0})
+        _populate_probes({HOT_ID: 30.0, COLD_ID: 16.0})
         args = vents.get_status_osc_args()
         assert args[16] == 30.0
-        assert args[17] == 15.0
+        assert args[17] == 16.0
 
     def test_peltier_mask_reflects_state(self):
         vents.peltier_state[:] = [1, 0, 1]
@@ -681,16 +772,26 @@ class TestHttpTest:
         assert r["ok"] is False
 
     def test_target_hot_via_http(self):
-        vents.cold_target_c = 5.0
         r = vents.handle_http_test({"command": "target_hot", "value": 22.0})
         assert r["ok"] is True
         assert r["hot_target_c"] == 22.0
+        assert r["active_target"] == "hot"
 
     def test_target_cold_via_http(self):
-        vents.hot_target_c = 30.0
-        r = vents.handle_http_test({"command": "target_cold", "value": 12.0})
+        r = vents.handle_http_test({"command": "target_cold", "value": 18.0})
         assert r["ok"] is True
-        assert r["cold_target_c"] == 12.0
+        assert r["cold_target_c"] == 18.0
+        assert r["active_target"] == "cold"
+
+    def test_target_active_via_http(self):
+        vents.hot_target_c = 22.0
+        vents.cold_target_c = 19.0
+        vents.active_target = "hot"
+        r = vents.handle_http_test({"command": "target_active", "value": "cold"})
+        assert r["ok"] is True
+        assert r["active_target"] == "cold"
+        assert r["hot_target_c"] == 22.0
+        assert r["cold_target_c"] == 19.0
 
     def test_probe_assign_hot_via_http(self):
         with patch.object(vents, "_save_prefs"):
@@ -758,10 +859,12 @@ class TestDS18B20Parser:
 # ── dual-setpoint auto loop ──────────────────────────────────────────────
 
 
-class TestDualSetpointAuto:
-    """The dual-setpoint OR rule. _tick_auto inlines the loop body so we
-    don't have to spin a thread; the production loop's branch ordering is
-    mirrored exactly."""
+class TestActiveTargetAuto:
+    """Single-active-side bang-bang. The active side's probe is the only
+    driver of the Peltier mask; the inactive side's value is irrelevant to
+    regulation (but its probe still trips safety branches). _tick_auto
+    inlines the loop body so we don't spin a thread; the production loop's
+    branch ordering is mirrored exactly."""
 
     def setup_method(self):
         _reset()
@@ -773,6 +876,8 @@ class TestDualSetpointAuto:
         vents.cold_target_c = 18.0
         vents.over_temp_fan_pct = 100.0
 
+    # ── safety / precondition branches (same regardless of active side) ──
+
     def test_probe_unassigned_when_ids_null(self):
         # No assignment + probes discovered → still unassigned.
         _populate_probes({HOT_ID: 22.0, COLD_ID: 19.0})
@@ -781,62 +886,20 @@ class TestDualSetpointAuto:
         assert vents.peltier_state == [0, 0, 0]
 
     def test_assigned_id_missing_with_no_discovered_probe_is_sensor_error(self):
-        # With strict probe safety enabled, an empty discovery set is a lock.
         _assign_both()
         _populate_probes({})
         _tick_auto()
         assert vents.state == "sensor_error"
 
     def test_probe_unassigned_when_only_one_role_assigned(self):
+        # Both probes still required for auto, even though only one regulates.
         vents.probe_hot_id = HOT_ID
         vents.probe_cold_id = None
         _populate_probes({HOT_ID: 22.0})
         _tick_auto()
         assert vents.state == "probe_unassigned"
 
-    def test_or_rule_both_unhappy_drives_on(self):
-        _assign_both()
-        _populate_probes({HOT_ID: 22.0, COLD_ID: 22.0})  # hot too cool, cold too warm
-        _tick_auto()
-        assert vents.state == "heating"
-        assert vents.peltier_state == [1, 1, 1]
-
-    def test_or_rule_only_hot_drives_on(self):
-        _assign_both()
-        _populate_probes({HOT_ID: 22.0, COLD_ID: 17.5})  # hot too cool, cold inside band
-        _tick_auto()
-        assert vents.state == "heating"
-        assert vents.peltier_state == [1, 1, 1]
-
-    def test_or_rule_only_cold_drives_on(self):
-        _assign_both()
-        _populate_probes({HOT_ID: 26.0, COLD_ID: 22.0})  # hot inside, cold too warm
-        _tick_auto()
-        assert vents.state == "heating"
-        assert vents.peltier_state == [1, 1, 1]
-
-    def test_off_when_both_in_upper_band(self):
-        # hot >= hot_target+H, cold <= cold_target-H → cooling (mask 0).
-        _assign_both()
-        _populate_probes({HOT_ID: 26.0, COLD_ID: 17.0})
-        vents.peltier_state[:] = [1, 1, 1]  # presumed previous state
-        _tick_auto()
-        assert vents.state == "cooling"
-        assert vents.peltier_state == [0, 0, 0]
-
-    def test_holding_keeps_previous_mask(self):
-        # Both probes inside their deadbands, neither fully on the "off" side.
-        # Previous mask must be preserved.
-        _assign_both()
-        _populate_probes({HOT_ID: 24.8, COLD_ID: 18.2})
-        vents.peltier_state[:] = [1, 1, 1]
-        _tick_auto()
-        assert vents.state == "holding"
-        assert vents.peltier_state == [1, 1, 1]
-
-    def test_over_temp_supersedes_or_rule(self):
-        # An unassigned third probe over max trips safety even when both
-        # assigned probes are happy.
+    def test_over_temp_supersedes_active_target_rule(self):
         _assign_both()
         _populate_probes({HOT_ID: 25.0, COLD_ID: 18.0, THIRD_ID: 95.0})
         _tick_auto()
@@ -844,7 +907,6 @@ class TestDualSetpointAuto:
         assert vents.peltier_state == [0, 0, 0]
 
     def test_sensor_error_when_assigned_probe_reads_none(self):
-        # Both assigned, both discovered, but one read failed (None reading).
         _assign_both()
         _populate_probes({HOT_ID: 25.0, COLD_ID: None})
         _tick_auto()
@@ -858,15 +920,100 @@ class TestDualSetpointAuto:
         _tick_auto()
         assert vents.state == "idle"
 
+    # ── active = hot ─────────────────────────────────────────────────────
+
+    def test_active_hot_below_band_drives_on(self):
+        _assign_both()
+        vents.active_target = "hot"
+        # hot too cool by >H; cold value is intentionally also out-of-band but
+        # MUST be ignored — only hot drives the mask now.
+        _populate_probes({HOT_ID: 22.0, COLD_ID: 30.0})
+        _tick_auto()
+        assert vents.state == "heating"
+        assert vents.peltier_state == [1, 1, 1]
+
+    def test_active_hot_above_band_drives_off(self):
+        _assign_both()
+        vents.active_target = "hot"
+        # hot above hot_target+H; cold deliberately too warm — but ignored.
+        _populate_probes({HOT_ID: 26.0, COLD_ID: 22.0})
+        vents.peltier_state[:] = [1, 1, 1]
+        _tick_auto()
+        assert vents.state == "cooling"
+        assert vents.peltier_state == [0, 0, 0]
+
+    def test_active_hot_in_deadband_holds_previous_mask(self):
+        _assign_both()
+        vents.active_target = "hot"
+        _populate_probes({HOT_ID: 24.8, COLD_ID: 30.0})  # hot in deadband; cold ignored
+        vents.peltier_state[:] = [1, 1, 1]
+        _tick_auto()
+        assert vents.state == "holding"
+        assert vents.peltier_state == [1, 1, 1]
+
+    def test_active_hot_ignores_cold_probe_value(self):
+        # Cold probe at any value cannot affect the regulation decision when
+        # active=hot. Both ON-side and OFF-side checks pin to the hot probe.
+        _assign_both()
+        vents.active_target = "hot"
+        _populate_probes({HOT_ID: 26.0, COLD_ID: 50.0})
+        vents.peltier_state[:] = [1, 1, 1]
+        _tick_auto()
+        # Old OR rule would have stayed in heating (cold too warm). New rule:
+        # hot above setpoint+H ⇒ cooling.
+        assert vents.state == "cooling"
+        assert vents.peltier_state == [0, 0, 0]
+
+    # ── active = cold ────────────────────────────────────────────────────
+
+    def test_active_cold_above_band_drives_on(self):
+        _assign_both()
+        vents.active_target = "cold"
+        # cold too warm by >H; hot value irrelevant.
+        _populate_probes({HOT_ID: 22.0, COLD_ID: 22.0})
+        _tick_auto()
+        assert vents.state == "heating"
+        assert vents.peltier_state == [1, 1, 1]
+
+    def test_active_cold_below_band_drives_off(self):
+        _assign_both()
+        vents.active_target = "cold"
+        _populate_probes({HOT_ID: 22.0, COLD_ID: 17.0})  # hot ignored
+        vents.peltier_state[:] = [1, 1, 1]
+        _tick_auto()
+        assert vents.state == "cooling"
+        assert vents.peltier_state == [0, 0, 0]
+
+    def test_active_cold_in_deadband_holds_previous_mask(self):
+        _assign_both()
+        vents.active_target = "cold"
+        _populate_probes({HOT_ID: 22.0, COLD_ID: 18.2})  # cold in deadband
+        vents.peltier_state[:] = [1, 1, 1]
+        _tick_auto()
+        assert vents.state == "holding"
+        assert vents.peltier_state == [1, 1, 1]
+
+    def test_active_cold_ignores_hot_probe_value(self):
+        _assign_both()
+        vents.active_target = "cold"
+        _populate_probes({HOT_ID: 22.0, COLD_ID: 17.0})
+        vents.peltier_state[:] = [1, 1, 1]
+        _tick_auto()
+        # Old OR rule: hot below setpoint−H ⇒ would stay heating. New rule:
+        # cold below setpoint−H ⇒ cooling.
+        assert vents.state == "cooling"
+        assert vents.peltier_state == [0, 0, 0]
+
 
 # ── cross-clamp invariants ───────────────────────────────────────────────
 
 
-class TestCrossClampInvariants:
-    """The two cross-clamp invariants enforced on every save:
-      (1) hot_target + H + margin < max_temp_c
-      (2) cold_target + H + margin <= hot_target
-    Always pulls values down, never raises max_temp_c.
+class TestSetpointClamps:
+    """Remaining clamp invariants after the cold-vs-hot rule was dropped:
+      (1) hot_target + H + margin < max_temp_c   (safety ceiling)
+      (2) hot_target  >= _TARGET_MIN_C            (operator floor, default 15°C)
+      (3) cold_target >= _TARGET_MIN_C            (operator floor)
+    Always pulls values toward valid range; never raises max_temp_c.
     """
 
     def setup_method(self):
@@ -874,34 +1021,37 @@ class TestCrossClampInvariants:
 
     def test_hot_target_clamps_below_max_minus_H_minus_margin(self):
         vents.max_temp_c = 30.0
-        vents.cold_target_c = 5.0
         with patch.object(vents, "_save_prefs"):
             vents.handle_target_hot("/vents/target/hot", 35.0)  # > max
         # ceiling = 30 - 0.5 - 0.05 = 29.45
         assert vents.hot_target_c == pytest.approx(29.45)
 
-    def test_cold_target_clamps_below_hot_minus_H_minus_margin(self):
-        vents.hot_target_c = 25.0
-        with patch.object(vents, "_save_prefs"):
-            vents.handle_target_cold("/vents/target/cold", 30.0)  # > hot
-        # ceiling = 25 - 0.5 - 0.05 = 24.45
-        assert vents.cold_target_c == pytest.approx(24.45)
-
-    def test_lowering_max_temp_cascades_to_hot_then_cold(self):
+    def test_lowering_max_temp_pulls_hot_down(self):
         vents.hot_target_c = 60.0
         vents.cold_target_c = 50.0
         vents._set_max_temp_c(40.0)
-        # hot must drop to 40 - 0.55 = 39.45; cold must drop to 39.45 - 0.55 = 38.9.
+        # hot drops to 40 - 0.55 = 39.45; cold is independent and untouched.
         assert vents.hot_target_c == pytest.approx(39.45)
-        assert vents.cold_target_c == pytest.approx(38.9)
+        assert vents.cold_target_c == 50.0
 
-    def test_setting_hot_below_cold_pulls_cold_down(self):
-        vents.cold_target_c = 20.0
+    def test_hot_target_clamped_up_to_15_floor(self):
         with patch.object(vents, "_save_prefs"):
-            vents.handle_target_hot("/vents/target/hot", 18.0)
-        # cold_ceiling = 18 - 0.55 = 17.45 → cold falls there
-        assert vents.hot_target_c == 18.0
-        assert vents.cold_target_c == pytest.approx(17.45)
+            vents.handle_target_hot("/vents/target/hot", 10.0)
+        assert vents.hot_target_c == pytest.approx(15.0)
+
+    def test_cold_target_clamped_up_to_15_floor(self):
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_target_cold("/vents/target/cold", 5.0)
+        assert vents.cold_target_c == pytest.approx(15.0)
+
+    def test_cold_target_independent_of_hot(self):
+        # New behavior: cold can be anywhere ≥ 15, regardless of where hot is.
+        # The OR-rule deadband requirement is gone.
+        vents.hot_target_c = 20.0
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_target_cold("/vents/target/cold", 30.0)
+        assert vents.cold_target_c == 30.0
+        assert vents.hot_target_c == 20.0  # untouched
 
 
 # ── probe assignment ─────────────────────────────────────────────────────
@@ -1023,10 +1173,9 @@ class TestPrefsMigrationAndRoundTrip:
         _reset()
 
     def test_legacy_target_temp_c_migrates_to_both(self, tmp_path):
-        # Legacy single setpoint seeds both targets identically; the
-        # post-load _clamp_setpoints then pulls cold down to hot - H - margin
-        # so the OR rule has a deadband to work with. Operator can split
-        # them deliberately later.
+        # Legacy single setpoint seeds both targets identically. The cold-vs-hot
+        # cross-clamp is gone, so the values stay equal — operator splits them
+        # deliberately later via /vents/target/{hot,cold}.
         path = tmp_path / "prefs.json"
         path.write_text(
             '{"target_temp_c": 22.5, "max_temp_c": 80.0}'
@@ -1036,12 +1185,22 @@ class TestPrefsMigrationAndRoundTrip:
         with patch.object(vents, "_PREFS_PATH", path):
             vents._load_prefs()
         assert vents.hot_target_c == 22.5
-        # 22.5 - 0.5 - 0.05 = 21.95 (cold pulled below hot by H + margin).
-        assert vents.cold_target_c == pytest.approx(21.95)
+        assert vents.cold_target_c == 22.5
+
+    def test_legacy_target_below_floor_lifts_both_to_15(self, tmp_path):
+        # Legacy below-floor value is clamped up to 15 by _PREFS_RANGES.
+        path = tmp_path / "prefs.json"
+        path.write_text(
+            '{"target_temp_c": 8.0, "max_temp_c": 80.0}'
+        )
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._load_prefs()
+        assert vents.hot_target_c == pytest.approx(15.0)
+        assert vents.cold_target_c == pytest.approx(15.0)
 
     def test_save_includes_dual_setpoints_and_probe_ids(self, tmp_path):
         vents.hot_target_c = 28.0
-        vents.cold_target_c = 12.0
+        vents.cold_target_c = 18.0
         vents.probe_hot_id = HOT_ID
         vents.probe_cold_id = COLD_ID
         path = tmp_path / "prefs.json"
@@ -1050,7 +1209,7 @@ class TestPrefsMigrationAndRoundTrip:
         import json as _json
         data = _json.loads(path.read_text())
         assert data["hot_target_c"] == 28.0
-        assert data["cold_target_c"] == 12.0
+        assert data["cold_target_c"] == 18.0
         assert data["probe_hot_id"] == HOT_ID
         assert data["probe_cold_id"] == COLD_ID
 

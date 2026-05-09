@@ -94,6 +94,26 @@ describe("vents api helpers", () => {
     expect(calls[0].body).toEqual({ command: "target", value: 22.5 });
   });
 
+  it("setVentsHotTarget(22) → command target_hot", async () => {
+    await ventsApi.setVentsHotTarget(DEV_VENTS, 22);
+    expect(calls[0].body).toEqual({ command: "target_hot", value: 22 });
+  });
+
+  it("setVentsColdTarget(18) → command target_cold", async () => {
+    await ventsApi.setVentsColdTarget(DEV_VENTS, 18);
+    expect(calls[0].body).toEqual({ command: "target_cold", value: 18 });
+  });
+
+  it("setVentsActiveTarget('cold') → command target_active", async () => {
+    await ventsApi.setVentsActiveTarget(DEV_VENTS, "cold");
+    expect(calls[0].body).toEqual({ command: "target_active", value: "cold" });
+  });
+
+  it("setVentsActiveTarget('hot') → command target_active", async () => {
+    await ventsApi.setVentsActiveTarget(DEV_VENTS, "hot");
+    expect(calls[0].body).toEqual({ command: "target_active", value: "hot" });
+  });
+
   it("sendVentsCommand peltier_mask 7", async () => {
     await ventsApi.sendVentsCommand(DEV_VENTS, { command: "peltier_mask", value: 7 });
     expect(calls[0].body).toEqual({ command: "peltier_mask", value: 7 });

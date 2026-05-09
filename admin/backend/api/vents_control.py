@@ -4,7 +4,8 @@ Mirrors api/trolley_control.py. Commands map directly to /vents/<address>:
 
   POST /api/v1/vents-control/<device_id>/command
        {command: "peltier" | "peltier_mask" | "fan" | "mode"
-                | "target" | "target_hot" | "target_cold" | "max_temp"
+                | "target" | "target_hot" | "target_cold" | "target_active"
+                | "max_temp"
                 | "probe_assign_hot" | "probe_assign_cold" | "probe_clear",
         index?: 1|2|3 (peltier) or 1|2 (fan),
         value: ...}
@@ -12,7 +13,7 @@ Mirrors api/trolley_control.py. Commands map directly to /vents/<address>:
   GET  /api/v1/vents-control/<device_id>/status
        → {temp1_c, temp2_c, fan1, fan2, peltier_mask, peltier,
           rpm1A..rpm2B, target_c, hot_target_c, cold_target_c,
-          temp_hot_c, temp_cold_c, probe_hot_id, probe_cold_id,
+          active_target, temp_hot_c, temp_cold_c, probe_hot_id, probe_cold_id,
           probes, max_temp_c?, mode, state, online, timestamp}
 
   The probes[] list is fetched fresh from the Pi over HTTP each call (1 s
@@ -42,13 +43,14 @@ _receiver = OscReceiver(port=9001)
 
 _VALID_COMMANDS = (
     "peltier", "peltier_mask", "fan", "mode",
-    "target", "target_hot", "target_cold", "max_temp",
+    "target", "target_hot", "target_cold", "target_active", "max_temp",
     "probe_assign_hot", "probe_assign_cold", "probe_clear",
 )
 
 import re as _re
 _ROM_ID_RE = _re.compile(r"^28-[0-9a-fA-F]{12}$")
 _PROBE_CLEAR_VALUES = ("hot", "cold", "both")
+_VALID_ACTIVE_TARGETS = ("hot", "cold")
 
 
 def _route(command, body):
@@ -77,6 +79,11 @@ def _route(command, body):
         return "/vents/target/hot", float(value)
     if command == "target_cold":
         return "/vents/target/cold", float(value)
+    if command == "target_active":
+        v = str(value).strip().lower()
+        if v not in _VALID_ACTIVE_TARGETS:
+            raise ValueError("target_active must be 'hot' or 'cold'")
+        return "/vents/target/active", v
     if command == "max_temp":
         return "/vents/max_temp", float(value)
     if command in ("probe_assign_hot", "probe_assign_cold"):
@@ -96,6 +103,12 @@ def _route(command, body):
 # the Pi's HTTP endpoint when the admin polls /status faster than probe
 # data actually changes.
 _SNAPSHOT_TTL_S = 2.0
+# Stop the request from blocking the Flask thread for longer than the
+# admin's poll interval (~700 ms) when a Pi is unreachable.
+_SNAPSHOT_TIMEOUT_S = 0.6
+# Drop entries this much past their TTL on each cache miss. Keeps the
+# dict bounded when devices are added/removed or IPs are recycled.
+_SNAPSHOT_STALE_S = _SNAPSHOT_TTL_S * 30  # 60 s
 _snapshot_cache: dict = {}
 _snapshot_lock = threading.Lock()
 
@@ -110,6 +123,11 @@ def _fetch_snapshot(ip):
         cached = _snapshot_cache.get(ip)
         if cached and now - cached[0] < _SNAPSHOT_TTL_S:
             return cached[1]
+        # Opportunistic eviction on miss — cheap (small dict) and only
+        # touches entries already past TTL.
+        for stale_ip in [k for k, (ts, _) in _snapshot_cache.items()
+                         if now - ts > _SNAPSHOT_STALE_S]:
+            _snapshot_cache.pop(stale_ip, None)
     try:
         body = json.dumps({"command": "snapshot"}).encode("utf-8")
         req = urllib.request.Request(
@@ -117,7 +135,7 @@ def _fetch_snapshot(ip):
             data=body, method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=1.0) as resp:
+        with urllib.request.urlopen(req, timeout=_SNAPSHOT_TIMEOUT_S) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
             json.JSONDecodeError, ValueError) as e:
@@ -162,7 +180,7 @@ def send_command(device_id):
 _PROBE_FIELDS = (
     "probes", "probe_hot_id", "probe_cold_id",
     "temp_hot_c", "temp_cold_c",
-    "hot_target_c", "cold_target_c",
+    "hot_target_c", "cold_target_c", "active_target",
 )
 
 
