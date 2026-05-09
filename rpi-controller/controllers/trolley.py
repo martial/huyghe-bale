@@ -34,6 +34,7 @@ OSC protocol:
 
 import json
 import logging
+import math
 import queue
 import threading
 import time
@@ -386,9 +387,10 @@ def _run_pulse_train(total_steps, target_hz, accel_s, decel_s):
 
     Direction must be set by the caller. With accel_s == decel_s == 0 this
     falls back to the legacy constant-rate loop (identical wire timing).
-    Otherwise: linearly ramp from ~0 → target_hz over accel_s seconds, cruise,
-    ramp down to 0 over decel_s seconds. If the move is too short to fit both
-    ramps, the profile becomes triangular and never reaches target_hz."""
+    Otherwise: ramp velocity linearly in TIME from 0 → target_hz over
+    accel_s seconds (frequency follows √(k/N) over N = target_hz × accel_s / 2
+    steps), cruise, then ramp down to 0 over decel_s seconds. If the move is
+    too short to fit both ramps, the profile becomes triangular."""
     if total_steps <= 0:
         return
 
@@ -412,7 +414,7 @@ def _run_pulse_train(total_steps, target_hz, accel_s, decel_s):
     steps_c = total_steps - steps_a - steps_d
 
     for i in range(steps_a):
-        f = target_hz * (i + 1) / steps_a
+        f = target_hz * math.sqrt((i + 1) / steps_a)
         if not _pulse_once(_speed_to_delay(f)):
             return
         _apply_step_delta()
@@ -424,7 +426,7 @@ def _run_pulse_train(total_steps, target_hz, accel_s, decel_s):
         _apply_step_delta()
 
     for i in range(steps_d):
-        f = target_hz * (1.0 - (i + 1) / steps_d)
+        f = target_hz * math.sqrt(max(0.0, 1.0 - (i + 1) / steps_d))
         if not _pulse_once(_speed_to_delay(f)):
             return
         _apply_step_delta()

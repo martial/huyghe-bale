@@ -358,6 +358,23 @@ class TestPulseTrainRamp:
         expected = trolley._speed_to_delay(target)
         assert all(d == expected for d in delays)
 
+    def test_accel_time_matches_seconds_argument(self):
+        # Sum of pulse periods during accel ≈ accel_s (sqrt ramp = linear in time).
+        target_hz = 500.0
+        accel_s = 1.0
+        delays = self._capture_delays(2000, target_hz, accel_s, 0.0)
+        steps_a = int(target_hz * accel_s / 2)
+        accel_period_total = sum(2 * d for d in delays[:steps_a])
+        assert accel_period_total == pytest.approx(accel_s, rel=0.05)
+
+    def test_decel_time_matches_seconds_argument(self):
+        target_hz = 500.0
+        decel_s = 1.0
+        delays = self._capture_delays(2000, target_hz, 0.0, decel_s)
+        steps_d = int(target_hz * decel_s / 2)
+        decel_period_total = sum(2 * d for d in delays[-steps_d:])
+        assert decel_period_total == pytest.approx(decel_s, rel=0.05)
+
 
 class TestRampedStepBurst:
     """Integration: /trolley/step honours _accel_time_s / _decel_time_s
