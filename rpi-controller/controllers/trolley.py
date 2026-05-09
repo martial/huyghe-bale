@@ -134,12 +134,10 @@ position_steps = 0
 homed = False
 limit_error = 0       # home-end switch
 far_limit_error = 0   # far-end switch
-# Driver alarm state. `alarm_locked` is sticky: once a driver fault fires, the
-# firmware refuses every motion command and disables the driver until the
-# operator explicitly clears it via /trolley/alarm/reset (and only if the
-# alarm GPIO has gone LOW again). `alarm_active` is the live OR of both pins.
+# Sticky alarm latch: once a driver fault fires, the firmware refuses every
+# motion command and disables the driver until the operator explicitly clears
+# it via /trolley/alarm/reset (and only if the alarm GPIO has gone LOW again).
 alarm_locked = False
-alarm_active = 0
 target_steps = None
 
 state = STATE_IDLE
@@ -318,13 +316,12 @@ def _alarm_isr(channel):
     `alarm_polarity`). Aborts current motion and disables the driver
     immediately. The lock is sticky: even after the pin de-asserts the
     firmware keeps refusing commands until /trolley/alarm/reset is sent."""
-    global alarm_locked, alarm_active
+    global alarm_locked
     if _alarm_polarity() == "disabled":
         return
     try:
         a1, a2 = _read_alarm_pins()
-        alarm_active = a1 | a2
-        if alarm_active and not alarm_locked:
+        if (a1 | a2) and not alarm_locked:
             alarm_locked = True
             _abort_event.set()
             try:
@@ -493,7 +490,7 @@ def _enqueue(cmd):
 def setup(webhooks):
     """Configure pins, start the motion thread, leave driver disabled."""
     global _webhooks, _motion_thread, position_steps, homed, limit_error, far_limit_error, state
-    global alarm_locked, alarm_active
+    global alarm_locked
     _webhooks = webhooks
     _reload_settings()
 
@@ -502,7 +499,6 @@ def setup(webhooks):
     limit_error = 0
     far_limit_error = 0
     alarm_locked = False
-    alarm_active = 0
     state = STATE_IDLE
     _shutdown_event.clear()
     _abort_event.clear()
@@ -551,8 +547,7 @@ def setup(webhooks):
     # If the rig already has an alarm asserted at boot, latch the lock now so
     # we don't enable the driver into a known-bad state.
     a1, a2 = _read_alarm_pins()
-    alarm_active = a1 | a2
-    if alarm_active:
+    if a1 | a2:
         alarm_locked = True
         logger.error("Trolley: alarm asserted at boot (ALARM_1=%d ALARM_2=%d) — locked", a1, a2)
 
@@ -813,10 +808,9 @@ def handle_alarm_reset(address, *args):
     Use after the operator has cleared the underlying driver fault (per the
     CL86Y manual: power cycle for overcurrent / phase / encoder errors;
     auto-recover for over/undervoltage; pulse ENA low for over-tolerance)."""
-    global alarm_locked, alarm_active
+    global alarm_locked
     a1, a2 = _read_alarm_pins()
-    alarm_active = a1 | a2
-    if alarm_active:
+    if a1 | a2:
         logger.warning("OSC %s: cannot reset, alarm still active "
                        "(ALARM_1=%d ALARM_2=%d)", address, a1, a2)
         return

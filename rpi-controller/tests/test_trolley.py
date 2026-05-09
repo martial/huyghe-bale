@@ -45,7 +45,6 @@ def _reset(*, calibrated=True, calibration_direction="forward"):
     trolley.limit_error = 0
     trolley.far_limit_error = 0
     trolley.alarm_locked = False
-    trolley.alarm_active = 0
     trolley.target_steps = None
     trolley.state = trolley.STATE_IDLE
     trolley._current_dir = trolley.DIR_FORWARD
@@ -572,7 +571,6 @@ class TestAlarmLock:
 
     def teardown_method(self):
         trolley.alarm_locked = False
-        trolley.alarm_active = 0
         trolley._settings["alarm_polarity"] = trolley_settings.DEFAULTS["alarm_polarity"]
 
     def _gpio_with_alarm(self, a1=False, a2=False):
