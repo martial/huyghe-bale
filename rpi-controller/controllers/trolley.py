@@ -960,6 +960,8 @@ def get_status():
     rail = _rail_length_steps()
     pos_01 = (position_steps / rail) if rail else 0.0
     a1, a2 = _read_alarm_pins()
+    max_hz = 1.0 / (2.0 * TROLLEY_MIN_PULSE_DELAY_S)
+    speed_pct = (_current_speed_hz / max_hz) if max_hz else 0.0
     return {
         "position": _clamp(pos_01, 0.0, 1.0),
         "position_steps": position_steps,
@@ -972,6 +974,9 @@ def get_status():
         "state": state,
         "accel_time_s": _accel_time_s,
         "decel_time_s": _decel_time_s,
+        "speed_pct": _clamp(speed_pct, 0.0, 1.0),
+        "speed_hz": _current_speed_hz,
+        "dir": int(_current_dir),
         "alarm": int(a1 | a2),
         "alarm_1": int(a1),
         "alarm_2": int(a2),
@@ -984,11 +989,13 @@ def get_status():
 
 def get_status_osc_args():
     """OSC argument list for /trolley/status:
-    [position, limit, homed, state, calibrated, alarm, alarm_locked, enabled].
+    [position, limit, homed, state, calibrated, alarm, alarm_locked, enabled,
+     speed_pct, dir, accel_time_s, decel_time_s].
 
     Older admin receivers ignore trailing fields; new ones decode them. The
     `enabled` flag reflects the live ENA state so the admin checkbox can sync
-    after a page reload."""
+    after a page reload. `speed_pct`, `dir`, `accel_time_s`, `decel_time_s`
+    let the admin echo live driver state next to its editable controls."""
     s = get_status()
     return [
         float(s["position"]),
@@ -999,4 +1006,8 @@ def get_status_osc_args():
         int(s["alarm"]),
         int(s["alarm_locked"]),
         int(s["enabled"]),
+        float(s["speed_pct"]),
+        int(s["dir"]),
+        float(s["accel_time_s"]),
+        float(s["decel_time_s"]),
     ]

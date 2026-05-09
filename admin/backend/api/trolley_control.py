@@ -186,6 +186,10 @@ def get_status(device_id):
         "alarm": status.get("alarm", 0),
         "alarm_locked": status.get("alarm_locked", 0),
         "enabled": status.get("enabled", 0),
+        "speed_pct": status.get("speed_pct"),
+        "dir": status.get("dir"),
+        "accel_time_s": status.get("accel_time_s"),
+        "decel_time_s": status.get("decel_time_s"),
         "timestamp": status.get("timestamp"),
         "online": online,
     })

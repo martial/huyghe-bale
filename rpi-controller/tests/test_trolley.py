@@ -852,10 +852,16 @@ class TestDescribeAndStatus:
         trolley.position_steps = CALIBRATED_RAIL // 4
         trolley.homed = True
         trolley._enabled = True
+        trolley._current_dir = trolley.DIR_FORWARD
+        trolley._accel_time_s = 0.5
+        trolley._decel_time_s = 0.25
+        max_hz = 1.0 / (2.0 * trolley.TROLLEY_MIN_PULSE_DELAY_S)
+        trolley._current_speed_hz = 0.3 * max_hz
         with patch.object(trolley, "GPIO", _make_gpio()):
             args = trolley.get_status_osc_args()
-        # [position, limit, homed, state, calibrated, alarm, alarm_locked, enabled]
-        assert len(args) == 8
+        # [position, limit, homed, state, calibrated, alarm, alarm_locked,
+        #  enabled, speed_pct, dir, accel_time_s, decel_time_s]
+        assert len(args) == 12
         assert isinstance(args[0], float)
         assert isinstance(args[3], str)
         assert args[3] == trolley.STATE_IDLE
@@ -863,6 +869,25 @@ class TestDescribeAndStatus:
         assert args[5] == 0  # no alarm pin asserted
         assert args[6] == 0  # not latched
         assert args[7] == 1  # enabled
+        assert args[8] == pytest.approx(0.3, abs=1e-3)
+        assert args[9] == int(trolley.DIR_FORWARD)
+        assert args[10] == pytest.approx(0.5)
+        assert args[11] == pytest.approx(0.25)
+
+    def test_status_includes_speed_pct_dir_accel_decel(self):
+        _reset()
+        trolley._current_dir = trolley.DIR_REVERSE
+        trolley._accel_time_s = 1.0
+        trolley._decel_time_s = 2.0
+        max_hz = 1.0 / (2.0 * trolley.TROLLEY_MIN_PULSE_DELAY_S)
+        trolley._current_speed_hz = 0.4 * max_hz
+        with patch.object(trolley, "GPIO", _make_gpio()):
+            s = trolley.get_status()
+        assert s["dir"] == int(trolley.DIR_REVERSE)
+        assert s["accel_time_s"] == pytest.approx(1.0)
+        assert s["decel_time_s"] == pytest.approx(2.0)
+        assert s["speed_pct"] == pytest.approx(0.4, abs=1e-3)
+        assert s["speed_hz"] == pytest.approx(0.4 * max_hz)
 
     def test_status_unconfigured_falls_back_to_max_steps(self):
         _reset(calibrated=False)

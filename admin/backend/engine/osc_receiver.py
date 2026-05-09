@@ -105,9 +105,13 @@ class OscReceiver:
 
     def _handle_trolley_status(self, client_address, addr, *args):
         """Pi-pushed status for trolley controllers.
-        Args: (position_0_1, limit_int, homed_int [, state_str, calibrated_int
-              [, alarm_int, alarm_locked_int [, enabled_int]]]).
-        Old firmware sends only the first three / five / seven; treat the rest as optional.
+        Args: (position_0_1, limit_int, homed_int
+              [, state_str, calibrated_int
+              [, alarm_int, alarm_locked_int
+              [, enabled_int
+              [, speed_pct_float
+              [, dir_int, accel_s_float, decel_s_float]]]]]).
+        Older firmware sends shorter prefixes; treat trailing fields as optional.
         """
         ip = client_address[0]
         self.last_seen[ip] = time.time()
@@ -120,6 +124,10 @@ class OscReceiver:
             alarm = int(args[5]) if len(args) > 5 else 0
             alarm_locked = int(args[6]) if len(args) > 6 else 0
             enabled = int(args[7]) if len(args) > 7 else 0
+            speed_pct = float(args[8]) if len(args) > 8 else None
+            direction = int(args[9]) if len(args) > 9 else None
+            accel_time_s = float(args[10]) if len(args) > 10 else None
+            decel_time_s = float(args[11]) if len(args) > 11 else None
         except (TypeError, ValueError):
             return
         self.trolley_status[ip] = {
@@ -131,6 +139,10 @@ class OscReceiver:
             "alarm": alarm,
             "alarm_locked": alarm_locked,
             "enabled": enabled,
+            "speed_pct": speed_pct,
+            "dir": direction,
+            "accel_time_s": accel_time_s,
+            "decel_time_s": decel_time_s,
             "timestamp": time.time(),
         }
 

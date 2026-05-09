@@ -1,5 +1,7 @@
 """Tests for the OSC receiver /sys/pong parsing and /vents/status alarms."""
 
+import pytest
+
 from engine.osc_receiver import OscReceiver
 
 
@@ -146,6 +148,24 @@ class TestHandleTrolleyStatus:
         )
         s = r.get_trolley_status("10.0.0.13")
         assert s["enabled"] == 1
+        # Old firmware doesn't broadcast positions 8+; decoder leaves them None.
+        assert s["speed_pct"] is None
+        assert s["dir"] is None
+        assert s["accel_time_s"] is None
+        assert s["decel_time_s"] is None
+
+    def test_full_payload_with_speed_dir_accel_decel(self):
+        r = _fresh_receiver()
+        r._handle_trolley_status(
+            ("10.0.0.14", 5000), "/trolley/status",
+            0.0, 0, 1, "idle", 1, 0, 0, 1,
+            0.3, 1, 0.5, 0.25,
+        )
+        s = r.get_trolley_status("10.0.0.14")
+        assert s["speed_pct"] == pytest.approx(0.3)
+        assert s["dir"] == 1
+        assert s["accel_time_s"] == pytest.approx(0.5)
+        assert s["decel_time_s"] == pytest.approx(0.25)
 
 
 class TestHandleVentsStatus:

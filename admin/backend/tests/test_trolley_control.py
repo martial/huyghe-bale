@@ -125,7 +125,9 @@ def test_status_reads_receiver(ctx):
     r = OscReceiver(port=9001)
     r.trolley_status["192.168.1.77"] = {
         "position": 0.42, "limit": 0, "homed": 1,
-        "state": "idle", "calibrated": 1, "enabled": 1, "timestamp": 123.0,
+        "state": "idle", "calibrated": 1, "enabled": 1,
+        "speed_pct": 0.3, "dir": 1, "accel_time_s": 0.5, "decel_time_s": 0.25,
+        "timestamp": 123.0,
     }
     r.last_seen["192.168.1.77"] = 1e12  # pretend "just now"
 
@@ -137,7 +139,32 @@ def test_status_reads_receiver(ctx):
     assert body["calibrated"] == 1
     assert body["state"] == "idle"
     assert body["enabled"] == 1
+    assert body["speed_pct"] == pytest.approx(0.3)
+    assert body["dir"] == 1
+    assert body["accel_time_s"] == pytest.approx(0.5)
+    assert body["decel_time_s"] == pytest.approx(0.25)
     assert body["online"] is True
+
+
+def test_status_endpoint_passes_through_none_for_legacy_firmware(ctx):
+    """Old firmware doesn't broadcast positions 8-11. Endpoint must not 500."""
+    client, dev = ctx
+    from engine.osc_receiver import OscReceiver
+    r = OscReceiver(port=9001)
+    r.trolley_status["192.168.1.77"] = {
+        "position": 0.0, "limit": 0, "homed": 0,
+        "state": "idle", "calibrated": 0, "enabled": 0,
+        # Legacy firmware: speed_pct/dir/accel/decel absent or None.
+        "timestamp": 123.0,
+    }
+    r.last_seen["192.168.1.77"] = 1e12
+    resp = client.get(f"/api/v1/trolley-control/{dev['id']}/status")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["speed_pct"] is None
+    assert body["dir"] is None
+    assert body["accel_time_s"] is None
+    assert body["decel_time_s"] is None
 
 
 def test_home_with_direction_sends_string(ctx):

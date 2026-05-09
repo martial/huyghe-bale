@@ -85,6 +85,14 @@ export interface TrolleyStatus {
   /** 1 = ENA is asserted (driver energized). Sourced from the Pi's status
    *  broadcast so the admin reflects the live driver state, not a local cache. */
   enabled?: number;
+  /** Last-applied speed scaled 0..1 of MAX_HZ. Echo of `/trolley/speed`. */
+  speed_pct?: number | null;
+  /** Last-applied direction (0=reverse, 1=forward). Echo of `/trolley/dir`. */
+  dir?: number | null;
+  /** Live accel ramp time on the Pi, seconds. Echo of `/trolley/accel`. */
+  accel_time_s?: number | null;
+  /** Live decel ramp time on the Pi, seconds. Echo of `/trolley/decel`. */
+  decel_time_s?: number | null;
   timestamp?: number;
   online: boolean;
 }

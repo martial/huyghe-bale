@@ -50,6 +50,14 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
   const [motor, setMotor] = useState(DEFAULT_MOTOR);
   const [status, setStatus] = useState<TrolleyStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  // Pi-truth config snapshot, refreshed on a slower poll than `status`.
+  // Kept separate from `rail`/`motor` (which are user-edited form state) so a
+  // remote save shows up as a "live: …" hint without yanking the form out
+  // from under whoever is editing it.
+  const [liveRail, setLiveRail] = useState<typeof DEFAULT_RAIL | null>(null);
+  const [liveMotor, setLiveMotor] = useState<typeof DEFAULT_MOTOR | null>(null);
+  const [liveCalibrationDirection, setLiveCalibrationDirection] = useState<string | null>(null);
+  const [liveLimitSwitchesSwapped, setLiveLimitSwitchesSwapped] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,20 +77,22 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
     };
   }, [device.id]);
 
-  // Prefill rail/motor form from the Pi's persisted settings on mount, so a
-  // page reload shows what's actually saved instead of the hardcoded defaults.
+  // Prefill the form from the Pi's persisted settings on mount, then keep
+  // refreshing a separate `liveRail`/`liveMotor` snapshot every 5 s so the
+  // panel can show drift between the editor and the actual saved config.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    let prefilled = false;
+    async function refresh() {
       try {
         const r = await fetchTrolleyConfig(device.id);
         if (cancelled || !r.ok || !r.config) return;
         const c = r.config;
-        setRail({
+        const railSnap = {
           rail_length_mm: c.rail_length_mm ?? 0,
           wheel_radius_mm: c.wheel_radius_mm ?? 0,
-        });
-        setMotor({
+        };
+        const motorSnap = {
           steps_per_rev: c.steps_per_rev,
           microsteps: c.microsteps,
           max_speed_hz: c.max_speed_hz,
@@ -90,13 +100,27 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
           soft_limit_pct: c.soft_limit_pct,
           accel_time_s: c.accel_time_s,
           decel_time_s: c.decel_time_s,
-        });
+        };
+        setLiveRail(railSnap);
+        setLiveMotor(motorSnap);
+        setLiveCalibrationDirection(c.calibration_direction ?? null);
+        setLiveLimitSwitchesSwapped(
+          typeof c.limit_switches_swapped === "boolean" ? c.limit_switches_swapped : null,
+        );
+        if (!prefilled) {
+          setRail(railSnap);
+          setMotor(motorSnap);
+          prefilled = true;
+        }
       } catch {
         /* unreachable Pi → keep defaults; status badge will show offline */
       }
-    })();
+    }
+    refresh();
+    const t = setInterval(refresh, 5000);
     return () => {
       cancelled = true;
+      clearInterval(t);
     };
   }, [device.id]);
 
@@ -179,6 +203,10 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
   const alarm = status?.alarm ?? 0;
   const alarmLocked = (status?.alarm_locked ?? 0) === 1;
   const enabled = (status?.enabled ?? 0) === 1;
+  const liveSpeedPct = status?.speed_pct ?? null;
+  const liveDir = status?.dir ?? null;
+  const liveAccel = status?.accel_time_s ?? null;
+  const liveDecel = status?.decel_time_s ?? null;
   const isHoming = state === "homing";
   const positionAvailable = homed === 1 && calibrated === 1 && !alarmLocked && enabled;
   // When the firmware has latched the alarm, every motion control is locked
@@ -217,6 +245,7 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
 
       {/* Status badges */}
       <div className="flex flex-wrap gap-1.5 mb-3 text-[10px] font-mono">
+        <Badge ok={enabled} label={enabled ? "Enabled" : "Disabled"} />
         <Badge ok={homed === 1} label={homed ? "Homed" : "Not homed"} />
         <Badge ok={calibrated === 1} label={calibrated ? "Configured" : "Not configured"} />
         <span className="px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 uppercase tracking-wide">
@@ -284,12 +313,16 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
             value={rail.rail_length_mm}
             onChange={(v) => setRail({ ...rail, rail_length_mm: v })}
             step={1}
+            live={liveRail?.rail_length_mm ?? null}
+            liveFmt={(v) => `${v.toFixed(0)}`}
           />
           <NumField
             label="Wheel radius (mm)"
             value={rail.wheel_radius_mm}
             onChange={(v) => setRail({ ...rail, wheel_radius_mm: v })}
             step={0.01}
+            live={liveRail?.wheel_radius_mm ?? null}
+            liveFmt={(v) => v.toFixed(2)}
           />
         </div>
         <p className="text-[10px] text-zinc-500 font-mono mb-2">
@@ -419,10 +452,22 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
           />
           Reverse
         </label>
+        <span
+          className={`ml-auto font-mono text-[10px] ${
+            liveDir == null
+              ? "text-zinc-600"
+              : liveDir !== direction
+              ? "text-amber-400"
+              : "text-zinc-500"
+          }`}
+          title={liveDir == null ? "no live value yet" : "live direction on the Pi"}
+        >
+          {liveDir == null ? "—" : liveDir === 1 ? "live: forward" : "live: reverse"}
+        </span>
       </div>
 
       {/* Speed — capped at MAX_SPEED_PCT for safety. */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-3 mb-1">
         <span className="text-xs text-zinc-500 w-20">
           Speed <span className="text-zinc-600">(max {MAX_SPEED_PCT.toFixed(2)})</span>
         </span>
@@ -438,6 +483,20 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
         />
         <span className="text-xs text-zinc-400 font-mono w-12 text-right">
           {speed.toFixed(2)}
+        </span>
+      </div>
+      <div className="flex justify-end mb-4">
+        <span
+          className={`font-mono text-[10px] ${
+            liveSpeedPct == null
+              ? "text-zinc-600"
+              : Math.abs(liveSpeedPct - speed) > 0.005
+              ? "text-amber-400"
+              : "text-zinc-500"
+          }`}
+          title={liveSpeedPct == null ? "no live value yet" : "live speed on the Pi"}
+        >
+          {liveSpeedPct == null ? "live: —" : `live: ${liveSpeedPct.toFixed(3)}`}
         </span>
       </div>
 
@@ -477,24 +536,30 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
               value={motor.steps_per_rev}
               onChange={(v) => setMotor({ ...motor, steps_per_rev: v })}
               step={1}
+              live={liveMotor?.steps_per_rev ?? null}
             />
             <NumField
               label="Microsteps"
               value={motor.microsteps}
               onChange={(v) => setMotor({ ...motor, microsteps: v })}
               step={1}
+              live={liveMotor?.microsteps ?? null}
             />
             <NumField
               label="Max speed (Hz)"
               value={motor.max_speed_hz}
               onChange={(v) => setMotor({ ...motor, max_speed_hz: v })}
               step={50}
+              live={liveMotor?.max_speed_hz ?? null}
+              liveFmt={(v) => `${v.toFixed(0)}`}
             />
             <NumField
               label="Home speed (Hz)"
               value={motor.home_speed_hz}
               onChange={(v) => setMotor({ ...motor, home_speed_hz: v })}
               step={50}
+              live={liveMotor?.home_speed_hz ?? null}
+              liveFmt={(v) => `${v.toFixed(0)}`}
             />
             <NumField
               label="Accel (s)"
@@ -502,6 +567,8 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
               onChange={(v) => setMotor({ ...motor, accel_time_s: v })}
               onCommit={(v) => send("accel", v)}
               step={0.1}
+              live={liveAccel}
+              liveFmt={(v) => v.toFixed(2)}
             />
             <NumField
               label="Decel (s)"
@@ -509,13 +576,33 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
               onChange={(v) => setMotor({ ...motor, decel_time_s: v })}
               onCommit={(v) => send("decel", v)}
               step={0.1}
+              live={liveDecel}
+              liveFmt={(v) => v.toFixed(2)}
             />
             <NumField
               label="Soft limit (0–1)"
               value={motor.soft_limit_pct}
               onChange={(v) => setMotor({ ...motor, soft_limit_pct: v })}
               step={0.01}
+              live={liveMotor?.soft_limit_pct ?? null}
+              liveFmt={(v) => v.toFixed(2)}
             />
+            <div className="flex items-center gap-2 text-[11px] text-zinc-400">
+              <span className="flex-1">Calibration direction</span>
+              <span className="font-mono text-[10px] text-zinc-500">
+                {liveCalibrationDirection ?? "—"}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-[11px] text-zinc-400">
+              <span className="flex-1">Limit switches swapped</span>
+              <span className="font-mono text-[10px] text-zinc-500">
+                {liveLimitSwitchesSwapped == null
+                  ? "—"
+                  : liveLimitSwitchesSwapped
+                  ? "true"
+                  : "false"}
+              </span>
+            </div>
             <button
               onClick={handleSaveSettings}
               disabled={busy || !online}
@@ -560,6 +647,8 @@ function NumField({
   onChange,
   onCommit,
   step,
+  live,
+  liveFmt,
 }: {
   label: string;
   value: number;
@@ -567,7 +656,12 @@ function NumField({
   /** Fires on blur — for fields that have a live OSC effect (e.g. accel/decel). */
   onCommit?: (v: number) => void;
   step: number;
+  /** Last value the Pi reports as actually in effect. null/undefined = unknown. */
+  live?: number | null;
+  /** Formatter for the live readout. Defaults to the field value verbatim. */
+  liveFmt?: (v: number) => string;
 }) {
+  const drift = live != null && Math.abs(live - value) > 1e-6;
   return (
     <label className="flex items-center gap-2 text-[11px] text-zinc-400">
       <span className="flex-1">{label}</span>
@@ -579,6 +673,14 @@ function NumField({
         onBlur={onCommit ? (e) => onCommit(Number(e.target.value)) : undefined}
         className="w-24 bg-zinc-800 border border-zinc-700/50 rounded px-2 py-0.5 text-xs text-zinc-200 font-mono focus:outline-none focus:border-sky-500/50"
       />
+      <span
+        className={`w-20 text-right font-mono text-[10px] ${
+          live == null ? "text-zinc-600" : drift ? "text-amber-400" : "text-zinc-500"
+        }`}
+        title={live == null ? "no live value yet" : drift ? "drift vs. live" : "matches live"}
+      >
+        {live == null ? "—" : (liveFmt ?? ((v: number) => v.toString()))(live)}
+      </span>
     </label>
   );
 }
