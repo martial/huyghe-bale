@@ -35,6 +35,7 @@ VALID_ROUTING = ("passthrough", "type-match", "none")
 # Bridge-side macro addresses. The bridge interprets these and fans out
 # device-native messages; they are NEVER forwarded as-is to a Pi.
 _BRIDGE_VENTS_OFF = "/bridge/vents/off"
+_BRIDGE_VENTS_AUTO = "/bridge/vents/auto"
 _BRIDGE_TROLLEY_OFF = "/bridge/trolley/off"
 _BRIDGE_POSITION_PREFIX = "/bridge/position"  # exact or "/bridge/position/<id>"
 
@@ -354,6 +355,8 @@ class OscBridge:
         """
         if address == _BRIDGE_VENTS_OFF:
             return self._bridge_vents_off(devices)
+        if address == _BRIDGE_VENTS_AUTO:
+            return self._bridge_vents_auto(devices)
         if address == _BRIDGE_TROLLEY_OFF:
             return self._bridge_trolley_off(devices)
         is_position, identifier = _parse_bridge_position(address)
@@ -390,6 +393,16 @@ class OscBridge:
         ]
         return self._fanout_to_type(devices, "vents", sequence,
                                     empty_msg="no vents devices")
+
+    def _bridge_vents_auto(self, devices: list) -> dict:
+        """`/vents/mode auto` on every vents device. Pure mode flip — manual
+        fan/peltier overrides persist; the auto loop takes over peltier control
+        on its next tick."""
+        return self._fanout_to_type(
+            devices, "vents",
+            [("/vents/mode", "auto")],
+            empty_msg="no vents devices",
+        )
 
     def _bridge_trolley_off(self, devices: list) -> dict:
         """`/trolley/stop` to every trolley device. python-osc rejects empty

@@ -97,7 +97,11 @@ export function resolveQuickTest(
         values: [0.5],
       };
     }
-    if (address === "/bridge/vents/off" || address === "/bridge/trolley/off") {
+    if (
+      address === "/bridge/vents/off" ||
+      address === "/bridge/vents/auto" ||
+      address === "/bridge/trolley/off"
+    ) {
       return { kind: "bridge", variant: "direct", address, values: [] };
     }
     if (address === "/bridge/position") {

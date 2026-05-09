@@ -402,6 +402,13 @@ const BRIDGE: Section = {
           example: "oscsend <admin-ip> 9002 /bridge/vents/off",
         },
         {
+          address: "/bridge/vents/auto",
+          direction: "admin-to-pi",
+          description:
+            "Symmetric counterpart to /bridge/vents/off. Sends /vents/mode \"auto\" to every vents device — pure mode flip; manual fan/peltier overrides persist and the controller's auto loop takes over peltier control on its next tick. Safety locks (over_temp, sensor_error) still take precedence on the Pi. Drops with \"no vents devices\" if there are no vents in the store.",
+          example: "oscsend <admin-ip> 9002 /bridge/vents/auto",
+        },
+        {
           address: "/bridge/trolley/off",
           direction: "admin-to-pi",
           description:

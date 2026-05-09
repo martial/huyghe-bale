@@ -47,6 +47,17 @@ Per vents device, in order:
 
 Use this as a safe-shutdown bang from a show controller.
 
+### `/bridge/vents/auto`
+
+Args: none.
+
+Sends `/vents/mode "auto"` to every vents device. Pure mode flip — manual
+fan/peltier overrides set before the macro persist; the controller's auto loop
+takes over peltier control on the next tick. Safety locks (`over_temp`,
+`sensor_error`) still take precedence in the controller.
+
+Symmetric counterpart to `/bridge/vents/off`.
+
 ### `/bridge/trolley/off`
 
 Args: none.

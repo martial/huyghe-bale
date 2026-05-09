@@ -362,6 +362,39 @@ def test_bridge_vents_off_with_no_vents_devices_drops():
     assert bridge.get_events()[-1]["dropped"] == "no vents devices"
 
 
+def test_bridge_vents_auto_fans_out_to_vents_only():
+    """`/vents/mode auto` to every vents device — pure mode flip, no extras."""
+    bridge, sender = _make("type-match")
+    bridge._handle(("10.0.0.99", 50000), "/bridge/vents/auto")
+
+    sent = [c.args for c in sender.send.call_args_list]
+    # 2 vents (no-ip dropped), 1 message each. Trolley untouched.
+    assert len(sent) == 2
+    assert {ip for (ip, _, _, _) in sent} == {"10.0.0.1", "10.0.0.2"}
+    assert all(addr == "/vents/mode" for (_, _, addr, _) in sent)
+    assert all(val == "auto" for (_, _, _, val) in sent)
+
+    evt = bridge.get_events()[-1]
+    assert evt["address"] == "/bridge/vents/auto"
+    assert set(evt["targets"]) == {"vents-1", "vents-2"}
+    assert "dropped" not in evt
+    assert len(evt["expanded"]) == 2
+
+
+def test_bridge_vents_auto_with_no_vents_devices_drops():
+    sender = MagicMock()
+    bridge = OscBridge(
+        port=0, routing="type-match", osc_sender=sender,
+        device_provider=lambda: [
+            {"id": "trolley-only", "ip_address": "10.0.0.3",
+             "osc_port": 9000, "type": "trolley"},
+        ],
+    )
+    bridge._handle(("1.1.1.1", 1000), "/bridge/vents/auto")
+    sender.send.assert_not_called()
+    assert bridge.get_events()[-1]["dropped"] == "no vents devices"
+
+
 def test_bridge_trolley_off_stops_trolleys_only():
     bridge, sender = _make("type-match")
     bridge._handle(("10.0.0.99", 50000), "/bridge/trolley/off")
