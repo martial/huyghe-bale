@@ -41,7 +41,6 @@ function deriveRailLengthSteps(
 }
 
 export default function TrolleyTestPanel({ device }: { device: Device }) {
-  const [enabled, setEnabled] = useState(false);
   const [direction, setDirection] = useState<0 | 1>(1);
   const [speed, setSpeed] = useState(0.2);
   const [steps, setSteps] = useState(1000);
@@ -116,7 +115,9 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
   }
 
   async function handleEnable(next: boolean) {
-    setEnabled(next);
+    // Don't optimistically flip local state — the checkbox is driven from
+    // status.enabled so it always reflects the live ENA pin. Worst case the
+    // user sees a ≤500ms delay until the next poll catches up.
     await send("enable", next ? 1 : 0);
   }
 
@@ -177,8 +178,9 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
   const livePosition = status?.position ?? 0;
   const alarm = status?.alarm ?? 0;
   const alarmLocked = (status?.alarm_locked ?? 0) === 1;
+  const enabled = (status?.enabled ?? 0) === 1;
   const isHoming = state === "homing";
-  const positionAvailable = homed === 1 && calibrated === 1 && !alarmLocked;
+  const positionAvailable = homed === 1 && calibrated === 1 && !alarmLocked && enabled;
   // When the firmware has latched the alarm, every motion control is locked
   // out. Operator must clear the underlying CL86Y fault first, then click
   // Reset alarm. Reset itself only succeeds when alarm pin reads LOW.
@@ -313,16 +315,28 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
         <div className="flex gap-2">
           <button
             onClick={() => send("home", "reverse")}
-            disabled={busy || !online || isHoming || motionLocked}
-            title={motionLocked ? "Alarm latched — reset first" : "Drive toward home limit switch"}
+            disabled={busy || !online || isHoming || motionLocked || !enabled}
+            title={
+              motionLocked
+                ? "Alarm latched — reset first"
+                : !enabled
+                ? "Enable driver first"
+                : "Drive toward home limit switch"
+            }
             className="flex-1 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 rounded text-[11px] font-medium text-zinc-300 transition-all"
           >
             ◄ Home reverse
           </button>
           <button
             onClick={() => send("home", "forward")}
-            disabled={busy || !online || isHoming || motionLocked}
-            title={motionLocked ? "Alarm latched — reset first" : "Drive toward far limit switch"}
+            disabled={busy || !online || isHoming || motionLocked || !enabled}
+            title={
+              motionLocked
+                ? "Alarm latched — reset first"
+                : !enabled
+                ? "Enable driver first"
+                : "Drive toward far limit switch"
+            }
             className="flex-1 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 rounded text-[11px] font-medium text-zinc-300 transition-all"
           >
             Home forward ►
@@ -370,6 +384,8 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
           title={
             motionLocked
               ? "Alarm latched — reset first"
+              : !enabled
+              ? "Enable driver first"
               : !positionAvailable
               ? "Configure rail + home first"
               : undefined

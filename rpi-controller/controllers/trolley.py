@@ -1,5 +1,11 @@
 """Trolley controller: stepper (DIR/PUL/ENA) on a rail with two limit switches.
 
+ENA contract: enable is *always* explicit. /trolley/home, /trolley/position,
+and /trolley/step never flip ENA on their own. Caller (admin / bridge / test
+panel) is responsible for sending /trolley/enable 1 before motion and
+/trolley/enable 0 to release. The one exception is the boot-time auto-home
+guarded by TROLLEY_AUTO_HOME_ON_BOOT, which is opt-in and disabled by default.
+
 OSC protocol:
 
     Raw — for the admin test panel:
@@ -730,7 +736,6 @@ def handle_home(address, *args):
         return
     direction = _parse_direction(args[0] if args else None, default=DIR_REVERSE)
     logger.info("OSC %s: home %s", address, "forward" if direction == DIR_FORWARD else "reverse")
-    _set_enable(True)
     _enqueue(("home", direction))
 
 
@@ -763,7 +768,6 @@ def handle_position(address, *args):
     target = int(round(value * ceiling))
     logger.info("OSC %s: %.3f → target %d / %d (rail=%d)",
                 address, value, target, ceiling, _rail_length_steps())
-    _set_enable(True)
     _enqueue(("follow", target, _current_speed_hz or TROLLEY_DEFAULT_SPEED_HZ))
 
 
@@ -980,10 +984,11 @@ def get_status():
 
 def get_status_osc_args():
     """OSC argument list for /trolley/status:
-    [position, limit, homed, state, calibrated, alarm, alarm_locked].
+    [position, limit, homed, state, calibrated, alarm, alarm_locked, enabled].
 
-    Older admin receivers ignore the trailing alarm fields; new ones decode
-    them."""
+    Older admin receivers ignore trailing fields; new ones decode them. The
+    `enabled` flag reflects the live ENA state so the admin checkbox can sync
+    after a page reload."""
     s = get_status()
     return [
         float(s["position"]),
@@ -993,4 +998,5 @@ def get_status_osc_args():
         int(s["calibrated"]),
         int(s["alarm"]),
         int(s["alarm_locked"]),
+        int(s["enabled"]),
     ]

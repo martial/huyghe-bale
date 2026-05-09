@@ -125,7 +125,7 @@ def test_status_reads_receiver(ctx):
     r = OscReceiver(port=9001)
     r.trolley_status["192.168.1.77"] = {
         "position": 0.42, "limit": 0, "homed": 1,
-        "state": "idle", "calibrated": 1, "timestamp": 123.0,
+        "state": "idle", "calibrated": 1, "enabled": 1, "timestamp": 123.0,
     }
     r.last_seen["192.168.1.77"] = 1e12  # pretend "just now"
 
@@ -136,6 +136,7 @@ def test_status_reads_receiver(ctx):
     assert body["homed"] == 1
     assert body["calibrated"] == 1
     assert body["state"] == "idle"
+    assert body["enabled"] == 1
     assert body["online"] is True
 
 

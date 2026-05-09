@@ -851,16 +851,18 @@ class TestDescribeAndStatus:
         _reset()
         trolley.position_steps = CALIBRATED_RAIL // 4
         trolley.homed = True
+        trolley._enabled = True
         with patch.object(trolley, "GPIO", _make_gpio()):
             args = trolley.get_status_osc_args()
-        # [position, limit, homed, state, calibrated, alarm, alarm_locked]
-        assert len(args) == 7
+        # [position, limit, homed, state, calibrated, alarm, alarm_locked, enabled]
+        assert len(args) == 8
         assert isinstance(args[0], float)
         assert isinstance(args[3], str)
         assert args[3] == trolley.STATE_IDLE
         assert args[4] == 1
         assert args[5] == 0  # no alarm pin asserted
         assert args[6] == 0  # not latched
+        assert args[7] == 1  # enabled
 
     def test_status_unconfigured_falls_back_to_max_steps(self):
         _reset(calibrated=False)

@@ -82,6 +82,9 @@ export interface TrolleyStatus {
   alarm?: number;
   /** 1 = the firmware has latched the alarm lock and is refusing motion. */
   alarm_locked?: number;
+  /** 1 = ENA is asserted (driver energized). Sourced from the Pi's status
+   *  broadcast so the admin reflects the live driver state, not a local cache. */
+  enabled?: number;
   timestamp?: number;
   online: boolean;
 }

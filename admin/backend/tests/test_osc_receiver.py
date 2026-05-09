@@ -136,6 +136,16 @@ class TestHandleTrolleyStatus:
         s = r.get_trolley_status("10.0.0.12")
         assert s["alarm"] == 0
         assert s["alarm_locked"] == 0
+        assert s["enabled"] == 0  # missing → defaults to disabled
+
+    def test_eight_arg_payload_with_enabled(self):
+        r = _fresh_receiver()
+        r._handle_trolley_status(
+            ("10.0.0.13", 5000), "/trolley/status",
+            0.0, 0, 1, "idle", 1, 0, 0, 1,
+        )
+        s = r.get_trolley_status("10.0.0.13")
+        assert s["enabled"] == 1
 
 
 class TestHandleVentsStatus:

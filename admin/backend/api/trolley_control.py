@@ -163,7 +163,7 @@ def get_status(device_id):
         return jsonify({"error": "Device not found"}), 404
     ip = device.get("ip_address")
     if not ip:
-        return jsonify({"position": 0.0, "limit": 0, "homed": 0, "online": False})
+        return jsonify({"position": 0.0, "limit": 0, "homed": 0, "enabled": 0, "online": False})
 
     # The trolleys page doesn't open the /devices SSE stream, so nobody is
     # broadcasting /sys/ping. Send one on each status poll so the Pi's last_seen
@@ -185,6 +185,7 @@ def get_status(device_id):
         "state": status.get("state", "idle"),
         "alarm": status.get("alarm", 0),
         "alarm_locked": status.get("alarm_locked", 0),
+        "enabled": status.get("enabled", 0),
         "timestamp": status.get("timestamp"),
         "online": online,
     })
