@@ -39,9 +39,9 @@ _BRIDGE_VENTS_AUTO = "/bridge/vents/auto"
 _BRIDGE_TROLLEY_OFF = "/bridge/trolley/off"
 _BRIDGE_POSITION_PREFIX = "/bridge/position"  # exact or "/bridge/position/<id>"
 
-# Position-mapping window: external 0..1 → trolley 0.1..0.9.
-_POSITION_MIN = 0.1
-_POSITION_SPAN = 0.8
+# Position-mapping window: external 0..1 → trolley 0.05..0.95.
+_POSITION_MIN = 0.05
+_POSITION_SPAN = 0.9
 
 
 def _address_matches_type(address: str, device_type: str) -> bool:
@@ -438,7 +438,7 @@ class OscBridge:
 
     def _bridge_position(self, args: tuple, devices: list,
                          identifier: Optional[str]) -> dict:
-        """Map external 0..1 → trolley 0.1..0.9, then send /trolley/position."""
+        """Map external 0..1 → trolley 0.05..0.95, then send /trolley/position."""
         if not args:
             return {"targets": [], "dropped": "missing or invalid position"}
         try:

@@ -427,13 +427,13 @@ def test_bridge_trolley_off_with_no_trolleys_drops():
 
 
 @pytest.mark.parametrize("incoming,expected", [
-    (0.0, 0.1),
-    (1.0, 0.9),
+    (0.0, 0.05),
+    (1.0, 0.95),
     (0.5, 0.5),
-    (0.25, 0.3),
+    (0.25, 0.275),
     # clamping
-    (1.5, 0.9),
-    (-0.2, 0.1),
+    (1.5, 0.95),
+    (-0.2, 0.05),
 ])
 def test_bridge_position_maps_value(incoming, expected):
     bridge, sender = _make("type-match")
@@ -472,11 +472,11 @@ def test_bridge_position_targeted_to_trolley_by_id():
 def test_bridge_position_targeted_by_name_or_hardware_id():
     bridge, sender = _make("type-match")
     bridge._handle(("10.0.0.99", 50000), "/bridge/position/screenclub.home", 1.0)
-    assert sender.send.call_args.args[3] == pytest.approx(0.9)
+    assert sender.send.call_args.args[3] == pytest.approx(0.95)
 
     sender.reset_mock()
     bridge._handle(("10.0.0.99", 50000), "/bridge/position/trolley_cccc", 0.0)
-    assert sender.send.call_args.args[3] == pytest.approx(0.1)
+    assert sender.send.call_args.args[3] == pytest.approx(0.05)
 
 
 def test_bridge_position_targeted_at_vents_drops():
