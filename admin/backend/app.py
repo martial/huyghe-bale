@@ -115,12 +115,12 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
         ]
 
     webhooks.set_extra_hooks(_build_runtime_hooks(_initial_settings))
+    _stats_interval_s = [int(_initial_settings.get("stats_webhook_interval_s", 60))]
     if start_osc:
         webhooks.start_status_watcher(receiver, _device_store)
-        from api.settings import _read as read_settings_now
         webhooks.start_stats_watcher(
             receiver, _device_store,
-            get_interval_s=lambda: read_settings_now().get("stats_webhook_interval_s", 60),
+            get_interval_s=lambda: _stats_interval_s[0],
         )
 
     def _refresh_runtime_hooks(*_):
@@ -132,6 +132,10 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
     on_settings_change("stats_webhook_enabled", _refresh_runtime_hooks)
     on_settings_change("stats_webhook_url", _refresh_runtime_hooks)
     on_settings_change("stats_webhook_token", _refresh_runtime_hooks)
+    on_settings_change(
+        "stats_webhook_interval_s",
+        lambda _old, new: _stats_interval_s.__setitem__(0, int(new)),
+    )
 
     # SPA fallback — serve frontend dist if it exists
     if dist_dir is None:

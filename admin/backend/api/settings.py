@@ -262,7 +262,8 @@ def update_settings():
 
     for key in ("bridge_enabled", "bridge_port", "bridge_routing",
                 "webhook_url", "webhook_token",
-                "stats_webhook_enabled", "stats_webhook_url", "stats_webhook_token"):
+                "stats_webhook_enabled", "stats_webhook_url",
+                "stats_webhook_token", "stats_webhook_interval_s"):
         if before.get(key) != current.get(key):
             _fire(key, before.get(key), current.get(key))
 

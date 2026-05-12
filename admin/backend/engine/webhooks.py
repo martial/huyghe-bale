@@ -228,7 +228,9 @@ class WebhookNotifier:
         for stale in set(prev) - current_ids:
             prev.pop(stale, None)
 
-    def _status_change_payload(self, device: dict, status: str, previous: str, receiver) -> dict:
+    def _device_snapshot(self, device: dict, receiver) -> tuple[dict, dict]:
+        """Return (device_dict, controller_status) for one device — shared by
+        status-change and periodic-snapshot payload builders."""
         ip = device.get("ip_address")
         controller_status: dict = {}
         device_type = (device.get("type") or "").strip().lower()
@@ -236,8 +238,8 @@ class WebhookNotifier:
             controller_status = receiver.get_vents_status(ip)
         elif device_type == "trolley" and hasattr(receiver, "get_trolley_status"):
             controller_status = receiver.get_trolley_status(ip)
-        return {
-            "device": {
+        return (
+            {
                 "id": device.get("id"),
                 "name": device.get("name"),
                 "ip_address": ip,
@@ -245,6 +247,13 @@ class WebhookNotifier:
                 "type": device.get("type"),
                 "hardware_id": device.get("hardware_id"),
             },
+            controller_status,
+        )
+
+    def _status_change_payload(self, device: dict, status: str, previous: str, receiver) -> dict:
+        device_dict, controller_status = self._device_snapshot(device, receiver)
+        return {
+            "device": device_dict,
             "status": status,
             "previous": previous,
             "controller_status": controller_status,
@@ -297,23 +306,10 @@ class WebhookNotifier:
             ip = device.get("ip_address")
             if not ip:
                 continue
-            device_type = (device.get("type") or "").strip().lower()
-            status = "online" if receiver.get_status(ip, timeout=timeout_s) else "offline"
-            controller_status: dict = {}
-            if device_type == "vents" and hasattr(receiver, "get_vents_status"):
-                controller_status = receiver.get_vents_status(ip)
-            elif device_type == "trolley" and hasattr(receiver, "get_trolley_status"):
-                controller_status = receiver.get_trolley_status(ip)
+            device_dict, controller_status = self._device_snapshot(device, receiver)
             devices.append({
-                "device": {
-                    "id": device.get("id"),
-                    "name": device.get("name"),
-                    "ip_address": ip,
-                    "osc_port": device.get("osc_port"),
-                    "type": device.get("type"),
-                    "hardware_id": device.get("hardware_id"),
-                },
-                "status": status,
+                "device": device_dict,
+                "status": "online" if receiver.get_status(ip, timeout=timeout_s) else "offline",
                 "controller_status": controller_status,
             })
         return {"devices": devices, "timestamp": time.time()}
