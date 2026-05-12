@@ -21,6 +21,14 @@ export interface Settings {
   webhook_url: string;
   /** Optional bearer token sent in Authorization header on every webhook POST. */
   webhook_token: string;
+  /** When true, post a device_snapshot event every stats_webhook_interval_s seconds. */
+  stats_webhook_enabled: boolean;
+  /** Separate URL for periodic device-snapshot POSTs. Empty disables. */
+  stats_webhook_url: string;
+  /** Optional bearer token for snapshot POSTs. */
+  stats_webhook_token: string;
+  /** Snapshot interval in seconds (10–3600). */
+  stats_webhook_interval_s: number;
 }
 
 export function getSettings() {

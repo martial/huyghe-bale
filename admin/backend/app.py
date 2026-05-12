@@ -104,19 +104,34 @@ def create_app(dist_dir=None, data_dir=None, start_osc=True):
         else os.path.join(os.path.dirname(__file__), "data")
     )
     webhooks = WebhookNotifier(_resolved_data_dir)
-    from api.settings import settings_to_webhook_entry
-    _settings_hook = settings_to_webhook_entry(_initial_settings)
-    webhooks.set_extra_hooks([_settings_hook] if _settings_hook else [])
+    from api.settings import settings_to_webhook_entry, settings_to_stats_webhook_entry
+
+    def _build_runtime_hooks(settings: dict) -> list:
+        return [
+            h for h in (
+                settings_to_webhook_entry(settings),
+                settings_to_stats_webhook_entry(settings),
+            ) if h
+        ]
+
+    webhooks.set_extra_hooks(_build_runtime_hooks(_initial_settings))
     if start_osc:
         webhooks.start_status_watcher(receiver, _device_store)
-
-    def _refresh_settings_webhook(*_):
         from api.settings import _read as read_settings_now
-        entry = settings_to_webhook_entry(read_settings_now())
-        webhooks.set_extra_hooks([entry] if entry else [])
+        webhooks.start_stats_watcher(
+            receiver, _device_store,
+            get_interval_s=lambda: read_settings_now().get("stats_webhook_interval_s", 60),
+        )
 
-    on_settings_change("webhook_url", _refresh_settings_webhook)
-    on_settings_change("webhook_token", _refresh_settings_webhook)
+    def _refresh_runtime_hooks(*_):
+        from api.settings import _read as read_settings_now
+        webhooks.set_extra_hooks(_build_runtime_hooks(read_settings_now()))
+
+    on_settings_change("webhook_url", _refresh_runtime_hooks)
+    on_settings_change("webhook_token", _refresh_runtime_hooks)
+    on_settings_change("stats_webhook_enabled", _refresh_runtime_hooks)
+    on_settings_change("stats_webhook_url", _refresh_runtime_hooks)
+    on_settings_change("stats_webhook_token", _refresh_runtime_hooks)
 
     # SPA fallback — serve frontend dist if it exists
     if dist_dir is None:

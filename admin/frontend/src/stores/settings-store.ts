@@ -22,6 +22,10 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     vents_over_temp_fan_pct: 100,
     webhook_url: "",
     webhook_token: "",
+    stats_webhook_enabled: false,
+    stats_webhook_url: "",
+    stats_webhook_token: "",
+    stats_webhook_interval_s: 60,
   },
   loading: false,
 

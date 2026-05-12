@@ -2,7 +2,9 @@
 
 Mirrors `rpi-controller/webhooks.py`: file-based config, single daemon
 worker, non-blocking `fire()`. Plus a status-change watcher that polls the
-OscReceiver and fires `status_change` events on online/offline transitions.
+OscReceiver and fires `status_change` events on online/offline transitions,
+and a periodic snapshot watcher that fires `device_snapshot` on a configurable
+interval for downstream stats collection.
 
 Config file: `<DATA_DIR>/webhooks.json` (gitignored). Schema:
 
@@ -21,6 +23,17 @@ When a device transitions online <-> offline the notifier POSTs:
       "status": "online" | "offline",
       "previous": "online" | "offline",
       "controller_status": <last receiver snapshot, may be {}>,
+      "timestamp": <unix seconds>
+    }
+
+On each snapshot tick the notifier POSTs:
+
+    {
+      "event": "device_snapshot",
+      "devices": [
+        {"device": {...}, "status": "online"|"offline", "controller_status": {...}},
+        ...
+      ],
       "timestamp": <unix seconds>
     }
 """
@@ -57,6 +70,8 @@ class WebhookNotifier:
         ).start()
         self._watcher_started = False
         self._watcher_stop = threading.Event()
+        self._stats_watcher_started = False
+        self._stats_watcher_stop = threading.Event()
 
     @property
     def config_path(self) -> str:
@@ -235,3 +250,70 @@ class WebhookNotifier:
             "controller_status": controller_status,
             "timestamp": time.time(),
         }
+
+    # --- periodic snapshot watcher ----------------------------------------
+
+    def start_stats_watcher(self, receiver, device_store, *,
+                            get_interval_s, timeout_s: float = 6.0):
+        """Spawn a daemon thread that fires `device_snapshot` webhooks every
+        `get_interval_s()` seconds. The interval is read on each tick so
+        live changes via the settings API take effect on the next loop.
+
+        Idempotent — calling twice is a no-op.
+        """
+        if self._stats_watcher_started:
+            return
+        self._stats_watcher_started = True
+        self._stats_watcher_stop.clear()
+
+        def _run():
+            while not self._stats_watcher_stop.is_set():
+                try:
+                    payload = self._device_snapshot_payload(
+                        device_store, receiver, timeout_s,
+                    )
+                    self.fire("device_snapshot", payload)
+                except Exception as e:
+                    logger.debug("stats watcher tick error: %s", e)
+                try:
+                    interval = int(get_interval_s())
+                except Exception:
+                    interval = 60
+                interval = max(10, min(3600, interval))
+                self._stats_watcher_stop.wait(interval)
+
+        threading.Thread(
+            target=_run, name="webhooks-stats-watcher", daemon=True
+        ).start()
+        logger.info("Admin webhooks: stats watcher started")
+
+    def stop_stats_watcher(self):
+        self._stats_watcher_stop.set()
+        self._stats_watcher_started = False
+
+    def _device_snapshot_payload(self, device_store, receiver, timeout_s: float) -> dict:
+        devices = []
+        for device in device_store.list_all():
+            ip = device.get("ip_address")
+            if not ip:
+                continue
+            device_type = (device.get("type") or "").strip().lower()
+            status = "online" if receiver.get_status(ip, timeout=timeout_s) else "offline"
+            controller_status: dict = {}
+            if device_type == "vents" and hasattr(receiver, "get_vents_status"):
+                controller_status = receiver.get_vents_status(ip)
+            elif device_type == "trolley" and hasattr(receiver, "get_trolley_status"):
+                controller_status = receiver.get_trolley_status(ip)
+            devices.append({
+                "device": {
+                    "id": device.get("id"),
+                    "name": device.get("name"),
+                    "ip_address": ip,
+                    "osc_port": device.get("osc_port"),
+                    "type": device.get("type"),
+                    "hardware_id": device.get("hardware_id"),
+                },
+                "status": status,
+                "controller_status": controller_status,
+            })
+        return {"devices": devices, "timestamp": time.time()}

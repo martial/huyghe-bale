@@ -45,6 +45,12 @@ DEFAULTS = {
     # multi-target or per-event configurations — both sources are merged.
     "webhook_url": "",
     "webhook_token": "",
+    # Periodic device-snapshot webhook — separate endpoint so alerting and
+    # analytics can diverge. Disabled by default. Interval clamped 10–3600s.
+    "stats_webhook_enabled": False,
+    "stats_webhook_url": "",
+    "stats_webhook_token": "",
+    "stats_webhook_interval_s": 60,
 }
 
 # Listeners notified when specific settings change. Keys: setting name.
@@ -200,6 +206,36 @@ def update_settings():
         else:
             return jsonify({"error": "webhook_token must be a string"}), 400
 
+    if "stats_webhook_enabled" in body:
+        current["stats_webhook_enabled"] = bool(body["stats_webhook_enabled"])
+
+    if "stats_webhook_url" in body:
+        val = body["stats_webhook_url"]
+        if val is None:
+            current["stats_webhook_url"] = ""
+        elif isinstance(val, str):
+            v = val.strip()
+            if v and not (v.startswith("http://") or v.startswith("https://")):
+                return jsonify({"error": "stats_webhook_url must be empty or start with http:// or https://"}), 400
+            current["stats_webhook_url"] = v
+        else:
+            return jsonify({"error": "stats_webhook_url must be a string"}), 400
+
+    if "stats_webhook_token" in body:
+        val = body["stats_webhook_token"]
+        if val is None:
+            current["stats_webhook_token"] = ""
+        elif isinstance(val, str):
+            current["stats_webhook_token"] = val.strip()
+        else:
+            return jsonify({"error": "stats_webhook_token must be a string"}), 400
+
+    if "stats_webhook_interval_s" in body:
+        val = body["stats_webhook_interval_s"]
+        if not isinstance(val, (int, float)) or val < 10 or val > 3600:
+            return jsonify({"error": "stats_webhook_interval_s must be between 10 and 3600 seconds"}), 400
+        current["stats_webhook_interval_s"] = int(val)
+
     for key, lo, hi, cast, unit in _VENTS_NUMERIC_SETTINGS:
         if key not in body:
             continue
@@ -225,7 +261,8 @@ def update_settings():
             logger.warning("Could not propagate vents_min_rpm_alarm to receiver: %s", e)
 
     for key in ("bridge_enabled", "bridge_port", "bridge_routing",
-                "webhook_url", "webhook_token"):
+                "webhook_url", "webhook_token",
+                "stats_webhook_enabled", "stats_webhook_url", "stats_webhook_token"):
         if before.get(key) != current.get(key):
             _fire(key, before.get(key), current.get(key))
 
@@ -240,6 +277,21 @@ def settings_to_webhook_entry(settings: dict) -> dict | None:
         return None
     entry = {"url": url, "events": ["status_change"]}
     token = (settings.get("webhook_token") or "").strip()
+    if token:
+        entry["token"] = token
+    return entry
+
+
+def settings_to_stats_webhook_entry(settings: dict) -> dict | None:
+    """Build a webhook entry for periodic device snapshots. Returns None when
+    disabled or URL is empty. Subscribes to `device_snapshot`."""
+    if not settings.get("stats_webhook_enabled"):
+        return None
+    url = (settings.get("stats_webhook_url") or "").strip()
+    if not url:
+        return None
+    entry = {"url": url, "events": ["device_snapshot"]}
+    token = (settings.get("stats_webhook_token") or "").strip()
     if token:
         entry["token"] = token
     return entry

@@ -146,6 +146,10 @@ export default function SettingsPage() {
   const [ventsOverTempFanPct, setVentsOverTempFanPct] = useState(100);
   const [webhookUrl, setWebhookUrl] = useState("");
   const [webhookToken, setWebhookToken] = useState("");
+  const [statsWebhookEnabled, setStatsWebhookEnabled] = useState(false);
+  const [statsWebhookUrl, setStatsWebhookUrl] = useState("");
+  const [statsWebhookToken, setStatsWebhookToken] = useState("");
+  const [statsWebhookIntervalS, setStatsWebhookIntervalS] = useState(60);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => { fetchSettings(); }, [fetchSettings]);
@@ -162,11 +166,17 @@ export default function SettingsPage() {
     setVentsOverTempFanPct(settings.vents_over_temp_fan_pct ?? 100);
     setWebhookUrl(settings.webhook_url ?? "");
     setWebhookToken(settings.webhook_token ?? "");
+    setStatsWebhookEnabled(settings.stats_webhook_enabled ?? false);
+    setStatsWebhookUrl(settings.stats_webhook_url ?? "");
+    setStatsWebhookToken(settings.stats_webhook_token ?? "");
+    setStatsWebhookIntervalS(settings.stats_webhook_interval_s ?? 60);
   }, [
     settings.bridge_enabled, settings.bridge_port, settings.bridge_routing,
     settings.vents_max_temp_c, settings.vents_min_fan_pct, settings.vents_max_fan_pct,
     settings.vents_min_rpm_alarm, settings.vents_over_temp_fan_pct,
     settings.webhook_url, settings.webhook_token,
+    settings.stats_webhook_enabled, settings.stats_webhook_url,
+    settings.stats_webhook_token, settings.stats_webhook_interval_s,
   ]);
 
   const draft: Partial<Settings> = useMemo(() => ({
@@ -181,10 +191,15 @@ export default function SettingsPage() {
     vents_over_temp_fan_pct: ventsOverTempFanPct,
     webhook_url: webhookUrl,
     webhook_token: webhookToken,
+    stats_webhook_enabled: statsWebhookEnabled,
+    stats_webhook_url: statsWebhookUrl,
+    stats_webhook_token: statsWebhookToken,
+    stats_webhook_interval_s: statsWebhookIntervalS,
   }), [
     frequency, bridgeEnabled, bridgePort, bridgeRouting,
     ventsMaxTemp, ventsMinFanPct, ventsMaxFanPct, ventsMinRpmAlarm, ventsOverTempFanPct,
     webhookUrl, webhookToken,
+    statsWebhookEnabled, statsWebhookUrl, statsWebhookToken, statsWebhookIntervalS,
   ]);
 
   const dirty = useMemo(
@@ -214,6 +229,10 @@ export default function SettingsPage() {
     setVentsOverTempFanPct(settings.vents_over_temp_fan_pct ?? 100);
     setWebhookUrl(settings.webhook_url ?? "");
     setWebhookToken(settings.webhook_token ?? "");
+    setStatsWebhookEnabled(settings.stats_webhook_enabled ?? false);
+    setStatsWebhookUrl(settings.stats_webhook_url ?? "");
+    setStatsWebhookToken(settings.stats_webhook_token ?? "");
+    setStatsWebhookIntervalS(settings.stats_webhook_interval_s ?? 60);
   }
 
   if (loading) return null;
@@ -380,6 +399,72 @@ export default function SettingsPage() {
                     placeholder="(optional)"
                     type="password"
                     accent="sky"
+                  />
+                </Field>
+              </div>
+            </Section>
+
+            {/* ── Stats snapshot webhook ───────────────────────── */}
+            <Section>
+              <SectionHeader
+                icon={IconWebhook}
+                title="Stats snapshot webhook"
+                subtitle="Periodically POST the full status of every device for later analytics."
+              />
+              <div className="space-y-2">
+                <Field
+                  label="Send periodic snapshots"
+                  hint={
+                    <>
+                      When enabled, posts a <span className="font-mono">device_snapshot</span> event
+                      every interval containing all devices' online/offline state and
+                      controller telemetry (vents temps/PWM, trolley position, etc.).
+                    </>
+                  }
+                  accent="sky"
+                >
+                  <Toggle checked={statsWebhookEnabled} onChange={setStatsWebhookEnabled} />
+                </Field>
+                <Field
+                  label="Snapshot URL"
+                  hint="POST target for the snapshot event. Separate from the status-change URL above."
+                  accent="sky"
+                >
+                  <TextInput
+                    value={statsWebhookUrl}
+                    onChange={setStatsWebhookUrl}
+                    placeholder="https://your-stats-endpoint.example/snapshot"
+                    type="url"
+                    accent="sky"
+                  />
+                </Field>
+                <Field
+                  label="Bearer token"
+                  hint="Optional — sent as Authorization: Bearer <token>."
+                  accent="sky"
+                >
+                  <TextInput
+                    value={statsWebhookToken}
+                    onChange={setStatsWebhookToken}
+                    placeholder="(optional)"
+                    type="password"
+                    accent="sky"
+                  />
+                </Field>
+                <Field
+                  label="Interval"
+                  hint="How often the snapshot is posted. Range 10–3600 seconds."
+                  accent="sky"
+                >
+                  <NumInput
+                    value={statsWebhookIntervalS}
+                    onChange={setStatsWebhookIntervalS}
+                    min={10}
+                    max={3600}
+                    step={10}
+                    width="w-28"
+                    accent="sky"
+                    suffix="s"
                   />
                 </Field>
               </div>
