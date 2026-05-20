@@ -2,15 +2,14 @@ export type VentsMode = "raw" | "auto";
 export type VentsState =
   | "idle"
   | "heating"
-  | "cooling"
   | "holding"
   | "sensor_error"
   | "probe_unassigned"
   | "over_temp"
   /** Unique-peltier auto sub-mode: regulator wants to drive on, but every
    *  cell is still inside its minimum-OFF cooldown — nothing can be driven
-   *  until at least one cell becomes eligible. Distinct from "cooling"
-   *  (regulator chose to drive off) and "holding" (deadband). */
+   *  until at least one cell becomes eligible. Distinct from "holding"
+   *  (deadband, mask unchanged). */
   | "rest_wait";
 
 export type VentsCommand =

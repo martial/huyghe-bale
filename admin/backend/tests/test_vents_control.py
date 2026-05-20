@@ -278,7 +278,7 @@ def test_status_reads_receiver(ctx):
         "fan1": 0.5, "fan2": 0.8,
         "peltier_mask": 0b101, "peltier": [True, False, True],
         "rpm1A": 1200, "rpm1B": 1150, "rpm2A": 1400, "rpm2B": 1380,
-        "target_c": 20.0, "mode": "auto", "state": "cooling",
+        "target_c": 20.0, "mode": "auto", "state": "heating",
         "timestamp": 1e12,
     }
     r.last_seen["192.168.1.50"] = 1e12
@@ -289,7 +289,7 @@ def test_status_reads_receiver(ctx):
     body = resp.get_json()
     assert body["temp1_c"] == pytest.approx(22.1)
     assert body["mode"] == "auto"
-    assert body["state"] == "cooling"
+    assert body["state"] == "heating"
     assert body["online"] is True
 
 

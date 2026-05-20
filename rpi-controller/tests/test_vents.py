@@ -38,7 +38,7 @@ def _reset():
     vents.mode = "raw"
     vents.state = "idle"
     vents.unique_peltier = False
-    vents.peltier_rest_s = float(vents.VENTS_PELTIER_REST_DEFAULT_S)
+    vents.peltier_rest_s = vents.VENTS_PELTIER_REST_DEFAULT_S
     vents.peltier_last_off_monotonic[:] = [0.0, 0.0, 0.0]
     vents.active_peltier_index = None
     vents.last_osc_time = 0.0
@@ -377,7 +377,7 @@ def _tick_auto():
                 vents._apply_peltier_mask(0b111)
                 vents.active_peltier_index = None
         elif need_off:
-            vents.state = "cooling"
+            vents.state = "heating"
             vents._apply_peltier_mask(0)
             vents.active_peltier_index = None
         else:
@@ -981,7 +981,7 @@ class TestActiveTargetAuto:
         _populate_probes({HOT_ID: 26.0, COLD_ID: 22.0})
         vents.peltier_state[:] = [1, 1, 1]
         _tick_auto()
-        assert vents.state == "cooling"
+        assert vents.state == "heating"
         assert vents.peltier_state == [0, 0, 0]
 
     def test_active_hot_in_deadband_holds_previous_mask(self):
@@ -1003,7 +1003,7 @@ class TestActiveTargetAuto:
         _tick_auto()
         # Old OR rule would have stayed in heating (cold too warm). New rule:
         # hot above setpoint+H ⇒ cooling.
-        assert vents.state == "cooling"
+        assert vents.state == "heating"
         assert vents.peltier_state == [0, 0, 0]
 
     # ── active = cold ────────────────────────────────────────────────────
@@ -1023,7 +1023,7 @@ class TestActiveTargetAuto:
         _populate_probes({HOT_ID: 22.0, COLD_ID: 17.0})  # hot ignored
         vents.peltier_state[:] = [1, 1, 1]
         _tick_auto()
-        assert vents.state == "cooling"
+        assert vents.state == "heating"
         assert vents.peltier_state == [0, 0, 0]
 
     def test_active_cold_in_deadband_holds_previous_mask(self):
@@ -1043,7 +1043,7 @@ class TestActiveTargetAuto:
         _tick_auto()
         # Old OR rule: hot below setpoint−H ⇒ would stay heating. New rule:
         # cold below setpoint−H ⇒ cooling.
-        assert vents.state == "cooling"
+        assert vents.state == "heating"
         assert vents.peltier_state == [0, 0, 0]
 
 
@@ -1346,7 +1346,7 @@ class TestUniquePeltierAuto:
         _populate_probes({HOT_ID: 26.0, COLD_ID: 18.0})
         with self._set_monotonic(1001.0):
             _tick_auto()
-        assert vents.state == "cooling"
+        assert vents.state == "heating"
         assert vents.peltier_state == [0, 0, 0]
         assert vents.peltier_last_off_monotonic[0] == 1001.0
         # Back to heating; P1 still has rest (default 600 s), so P2 wins.

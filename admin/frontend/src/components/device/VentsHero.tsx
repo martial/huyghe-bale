@@ -3,13 +3,12 @@ import type { VentsActiveTarget, VentsStatus, VentsState } from "../../types/ven
 const STATE_COLOR: Record<VentsState, { text: string; bg: string; label: string }> = {
   idle:             { text: "text-zinc-300",   bg: "from-zinc-800/40 to-zinc-900/60",     label: "idle" },
   heating:          { text: "text-amber-300",  bg: "from-amber-500/20 to-amber-900/20",   label: "heating" },
-  cooling:          { text: "text-sky-300",    bg: "from-sky-500/20 to-sky-900/20",       label: "cooling" },
   holding:          { text: "text-emerald-300", bg: "from-emerald-500/20 to-emerald-900/20", label: "holding" },
   sensor_error:     { text: "text-red-300",    bg: "from-red-500/20 to-red-900/20",       label: "no sensors" },
   probe_unassigned: { text: "text-amber-300",  bg: "from-amber-500/15 to-amber-950/30",   label: "needs probes" },
   over_temp:        { text: "text-orange-300", bg: "from-orange-500/25 to-orange-950/30", label: "over temp" },
   // Unique-peltier-only state: regulator wants to drive on but every cell is
-  // still inside its cooldown. Distinct from "cooling"/"holding".
+  // still inside its cooldown. Distinct from "holding" (deadband, mask preserved).
   rest_wait:        { text: "text-violet-300", bg: "from-violet-500/20 to-violet-950/30", label: "rest wait" },
 };
 
@@ -160,14 +159,10 @@ export default function VentsHero({ status, stale, lastPushAgeS }: Props) {
   );
 }
 
-/** Per-cell badge row for unique-peltier mode. Each cell renders one of:
- *    P1 active          (currently driven; violet)
- *    P1 rest 4m 12s     (off, in cooldown; muted with countdown)
- *    P1 idle            (off, eligible; dim)
- *  Independent timers — the user's blindspot point: while one cell is
- *  "active", the others may be "resting" with their own countdowns. The
- *  top-level state ("heating" / "cooling" / "rest_wait" / …) reflects the
- *  regulator's decision; the per-cell badges reflect the actuators. */
+/** Per-cell badge row for unique-peltier mode. Each cell renders independently:
+ *  one may be "active" while the other two have their own rest countdowns.
+ *  Top-level `state` ("heating" / "holding" / "rest_wait" / …) reflects the
+ *  regulator's decision; these badges reflect the actuators. */
 function PeltierCellsUnique({ status }: { status: VentsStatus }) {
   const peltier = status.peltier ?? [false, false, false];
   const remaining = status.peltier_rest_remaining;
@@ -178,11 +173,7 @@ function PeltierCellsUnique({ status }: { status: VentsStatus }) {
         const on = peltier[i];
         const rest = remaining && remaining[i] > 0 ? remaining[i] : 0;
         if (on) {
-          return (
-            <span key={i} className="text-violet-300">
-              P{i + 1} <span className="font-semibold">active</span>
-            </span>
-          );
+          return <span key={i} className="text-violet-300 font-semibold">P{i + 1} active</span>;
         }
         if (rest > 0) {
           return (
@@ -191,11 +182,7 @@ function PeltierCellsUnique({ status }: { status: VentsStatus }) {
             </span>
           );
         }
-        return (
-          <span key={i} className="text-zinc-500/70">
-            P{i + 1} <span>idle</span>
-          </span>
-        );
+        return <span key={i} className="text-zinc-500/70">P{i + 1} idle</span>;
       })}
     </span>
   );

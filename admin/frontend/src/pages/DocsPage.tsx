@@ -179,7 +179,7 @@ const VENTS: Section = {
           args:
             "float temp1_c, float temp2_c, float fan1, float fan2, int peltier_mask, int rpm1A, int rpm1B, int rpm2A, int rpm2B, float target_c, string mode, string state, float max_temp_c, float min_fan_pct, float over_temp_fan_pct, float max_fan_pct, float temp_hot_c, float temp_cold_c, float hot_target_c, float cold_target_c",
           description:
-            "20 args, broadcast at 5 Hz to the last admin that pinged. Missing temps (temp1, temp2, temp_hot_c, temp_cold_c) encode as -1.0. state ∈ {idle, heating, cooling, holding, sensor_error, probe_unassigned, over_temp}. target_c at position 9 mirrors hot_target_c for back-compat. Old firmware sends fewer args (12-16); the admin parses positions 12-19 as optional. probes[] (the discovered ROM ids + per-probe live temps) doesn't fit on this broadcast — admin fetches it via the HTTP snapshot command. GET /api/v1/health lists vents in over_temp and probe_unassigned for the banner.",
+            "20 args, broadcast at 5 Hz to the last admin that pinged. Missing temps (temp1, temp2, temp_hot_c, temp_cold_c) encode as -1.0. state ∈ {idle, heating, holding, sensor_error, probe_unassigned, over_temp, rest_wait}. target_c at position 9 mirrors hot_target_c for back-compat. Old firmware sends fewer args (12-16); the admin parses positions 12-19 as optional. probes[] (the discovered ROM ids + per-probe live temps) doesn't fit on this broadcast — admin fetches it via the HTTP snapshot command. GET /api/v1/health lists vents in over_temp and probe_unassigned for the banner.",
         },
       ],
     },
