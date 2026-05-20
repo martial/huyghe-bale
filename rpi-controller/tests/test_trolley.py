@@ -963,6 +963,7 @@ class TestDescribeAndStatus:
         assert args[8] == pytest.approx(0.3, abs=1e-3)
         assert args[9] == int(trolley.DIR_FORWARD)
         assert args[10] == pytest.approx(0.5)
+        assert args[11] == pytest.approx(0.25)
         assert args[12] == 1                       # far_limit tripped
         assert args[11] == pytest.approx(0.25)
 
