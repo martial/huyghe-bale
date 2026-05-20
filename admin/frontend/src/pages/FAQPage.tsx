@@ -60,6 +60,12 @@ const faqItems: FAQItem[] = [
   },
   {
     category: "Vents devices",
+    question: "What does the \"unique peltier\" toggle do?",
+    answer:
+      "Optional sub-mode of auto. When enabled, the Pi drives only one of the three Peltier cells at a time instead of all three together (the default). After a cell switches off it must rest at least the configured minimum-OFF (default 10 min; configurable from Admin → Settings → Vents safety, range 0–3600 s) before it can run again. Each cell's timer is independent — turning off cell P1 makes only P1 ineligible; P2 and P3 are unaffected. Cell selection is fair: when the regulator needs to drive on, it picks the eligible cell that has rested the longest. While the regulator wants to drive but every cell is still inside its cooldown, state becomes rest_wait. The hero panel shows per-cell badges: 'P1 active' for the currently driven cell, 'P2 rest 4m 12s' with countdowns for resting cells, and 'P3 idle' for eligible-but-not-driven cells. Manual control in raw mode bypasses the rest constraint (operator escape hatch) but still records each on→off transition so auto honors the timer afterward. Toggle per-device from the device panel; the Settings page provides a fleet-wide default that's pushed on Save.",
+  },
+  {
+    category: "Vents devices",
     question: "How do I assign a probe to the hot or cold face?",
     answer:
       "Open the device card and find the Probe assignment panel. Touch one of the DS18B20 probes physically with a finger — its row's live temperature will rise visibly within a couple of seconds. Click 'Assign as hot' on the row that just rose. Repeat for the other probe with 'Assign as cold'. Per-Pi: each install pins its own pair of ROM ids (28-xxxxxxxxxxxx) into vents_prefs.json on the device. The pinning survives reboots and 1-Wire enumeration order changes.",

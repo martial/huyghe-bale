@@ -8,7 +8,23 @@ const STATE_COLOR: Record<VentsState, { text: string; bg: string; label: string 
   sensor_error:     { text: "text-red-300",    bg: "from-red-500/20 to-red-900/20",       label: "no sensors" },
   probe_unassigned: { text: "text-amber-300",  bg: "from-amber-500/15 to-amber-950/30",   label: "needs probes" },
   over_temp:        { text: "text-orange-300", bg: "from-orange-500/25 to-orange-950/30", label: "over temp" },
+  // Unique-peltier-only state: regulator wants to drive on but every cell is
+  // still inside its cooldown. Distinct from "cooling"/"holding".
+  rest_wait:        { text: "text-violet-300", bg: "from-violet-500/20 to-violet-950/30", label: "rest wait" },
 };
+
+// Compact "N min Ns" formatter for the per-cell rest countdown. Operators
+// glance at this; precision below 1 s is meaningless given the 5 Hz status
+// broadcast.
+function fmtRestSeconds(s: number): string {
+  const sec = Math.max(0, Math.ceil(s));
+  if (sec >= 60) {
+    const m = Math.floor(sec / 60);
+    const r = sec % 60;
+    return r === 0 ? `${m}m` : `${m}m ${r}s`;
+  }
+  return `${sec}s`;
+}
 
 interface Props {
   status: VentsStatus | null;
@@ -128,15 +144,60 @@ export default function VentsHero({ status, stale, lastPushAgeS }: Props) {
             {status ? `${Math.round(status.fan1 * 100)}/${Math.round(status.fan2 * 100)}%` : "—"}
           </span>
         </span>
-        <span>
-          peltier <span className="text-zinc-300">
-            {status?.peltier
-              ? status.peltier.map((on, i) => (on ? i + 1 : "·")).join("")
-              : "—"}
+        {status?.unique_peltier && status.peltier ? (
+          <PeltierCellsUnique status={status} />
+        ) : (
+          <span>
+            peltier <span className="text-zinc-300">
+              {status?.peltier
+                ? status.peltier.map((on, i) => (on ? i + 1 : "·")).join("")
+                : "—"}
+            </span>
           </span>
-        </span>
+        )}
       </div>
     </div>
+  );
+}
+
+/** Per-cell badge row for unique-peltier mode. Each cell renders one of:
+ *    P1 active          (currently driven; violet)
+ *    P1 rest 4m 12s     (off, in cooldown; muted with countdown)
+ *    P1 idle            (off, eligible; dim)
+ *  Independent timers — the user's blindspot point: while one cell is
+ *  "active", the others may be "resting" with their own countdowns. The
+ *  top-level state ("heating" / "cooling" / "rest_wait" / …) reflects the
+ *  regulator's decision; the per-cell badges reflect the actuators. */
+function PeltierCellsUnique({ status }: { status: VentsStatus }) {
+  const peltier = status.peltier ?? [false, false, false];
+  const remaining = status.peltier_rest_remaining;
+  return (
+    <span className="flex items-center gap-x-2 flex-wrap">
+      <span className="text-zinc-500">peltier</span>
+      {[0, 1, 2].map((i) => {
+        const on = peltier[i];
+        const rest = remaining && remaining[i] > 0 ? remaining[i] : 0;
+        if (on) {
+          return (
+            <span key={i} className="text-violet-300">
+              P{i + 1} <span className="font-semibold">active</span>
+            </span>
+          );
+        }
+        if (rest > 0) {
+          return (
+            <span key={i} className="text-zinc-400">
+              P{i + 1} <span className="text-zinc-500">rest {fmtRestSeconds(rest)}</span>
+            </span>
+          );
+        }
+        return (
+          <span key={i} className="text-zinc-500/70">
+            P{i + 1} <span>idle</span>
+          </span>
+        );
+      })}
+    </span>
   );
 }
 

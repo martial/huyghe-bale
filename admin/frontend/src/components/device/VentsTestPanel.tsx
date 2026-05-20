@@ -8,6 +8,7 @@ import {
   setVentsHotTarget,
   setVentsColdTarget,
   setVentsActiveTarget,
+  setVentsUniquePeltier,
   sendVentsCommand,
 } from "../../api/vents";
 
@@ -100,6 +101,29 @@ export default function VentsTestPanel({ device, status }: Props) {
         >
           auto
         </button>
+      </div>
+
+      {/* Unique-peltier sub-mode toggle. Active only in auto; when enabled,
+          the Pi drives one cell at a time. The current shared rest threshold
+          is shown alongside as a non-editable hint (operator changes it via
+          the Settings page, which pushes the new value to every Pi). */}
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] text-zinc-500 uppercase tracking-wider w-14">Unique</span>
+        <button
+          disabled={!online || busy}
+          onClick={() => wrap(() => setVentsUniquePeltier(device.id, !status?.unique_peltier))}
+          className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
+            status?.unique_peltier ? "bg-violet-600 text-white" : "bg-zinc-800/60 hover:bg-zinc-700 text-zinc-400"
+          } disabled:opacity-30`}
+          title="When enabled, only one Peltier cell is driven at a time in auto. Each cell has its own minimum-OFF cooldown."
+        >
+          {status?.unique_peltier ? "on" : "off"}
+        </button>
+        {status?.unique_peltier && typeof status.peltier_rest_s === "number" && (
+          <span className="text-[10px] text-zinc-500 font-mono">
+            rest {status.peltier_rest_s}s
+          </span>
+        )}
       </div>
 
       {/* Hot target slider — orange accent. Greyed when not the active side.

@@ -40,6 +40,14 @@ DEFAULTS = {
     # Fan PWM (%) the Pi forces both fans to whenever any sensor exceeds
     # max_temp_c. Pushed to each Pi on save and persisted there.
     "vents_over_temp_fan_pct": 100.0,
+    # Per-cell minimum-OFF cooldown (s) used by the "unique peltier" auto
+    # sub-mode. Shared threshold; each cell tracks its own elapsed-off time
+    # against it. Pushed to each Pi on save.
+    "vents_peltier_rest_s": 600,
+    # Default value the Pi adopts on save for the "unique peltier" sub-mode.
+    # Operators can still override per-device via the test panel — this is
+    # only the value the admin pushes to every vents Pi on Save.
+    "vents_unique_peltier_default": False,
     # Outbound webhook for admin events (status_change, ...). Empty disables.
     # Power users can also hand-edit admin/backend/data/webhooks.json for
     # multi-target or per-event configurations — both sources are merged.
@@ -138,6 +146,7 @@ _VENTS_NUMERIC_SETTINGS = (
     ("vents_max_fan_pct",         0,   100,   _round2, ""),
     ("vents_min_rpm_alarm",       0, 10000,   int,     "RPM"),
     ("vents_over_temp_fan_pct",   0,   100,   _round2, ""),
+    ("vents_peltier_rest_s",      0,  3600,   int,     "s"),
 )
 
 # Setting key → Pi /gpio/test command. Missing keys are admin-side only.
@@ -146,6 +155,10 @@ _VENTS_PUSHED_SETTINGS = {
     "vents_min_fan_pct": "min_fan_pct",
     "vents_max_fan_pct": "max_fan_pct",
     "vents_over_temp_fan_pct": "over_temp_fan_pct",
+    "vents_peltier_rest_s": "peltier_rest_s",
+    # `unique_peltier_default` is a bool; the Pi's handle_http_test casts via
+    # int(bool(value)) so JSON true/false serialize cleanly.
+    "vents_unique_peltier_default": "unique_peltier",
 }
 
 
@@ -235,6 +248,9 @@ def update_settings():
         if not isinstance(val, (int, float)) or val < 10 or val > 3600:
             return jsonify({"error": "stats_webhook_interval_s must be between 10 and 3600 seconds"}), 400
         current["stats_webhook_interval_s"] = int(val)
+
+    if "vents_unique_peltier_default" in body:
+        current["vents_unique_peltier_default"] = bool(body["vents_unique_peltier_default"])
 
     for key, lo, hi, cast, unit in _VENTS_NUMERIC_SETTINGS:
         if key not in body:

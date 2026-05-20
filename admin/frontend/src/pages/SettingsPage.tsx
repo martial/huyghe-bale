@@ -144,6 +144,8 @@ export default function SettingsPage() {
   const [ventsMaxFanPct, setVentsMaxFanPct] = useState(100);
   const [ventsMinRpmAlarm, setVentsMinRpmAlarm] = useState(500);
   const [ventsOverTempFanPct, setVentsOverTempFanPct] = useState(100);
+  const [ventsPeltierRestS, setVentsPeltierRestS] = useState(600);
+  const [ventsUniquePeltierDefault, setVentsUniquePeltierDefault] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState("");
   const [webhookToken, setWebhookToken] = useState("");
   const [statsWebhookEnabled, setStatsWebhookEnabled] = useState(false);
@@ -164,6 +166,8 @@ export default function SettingsPage() {
     setVentsMaxFanPct(settings.vents_max_fan_pct ?? 100);
     setVentsMinRpmAlarm(settings.vents_min_rpm_alarm ?? 500);
     setVentsOverTempFanPct(settings.vents_over_temp_fan_pct ?? 100);
+    setVentsPeltierRestS(settings.vents_peltier_rest_s ?? 600);
+    setVentsUniquePeltierDefault(settings.vents_unique_peltier_default ?? false);
     setWebhookUrl(settings.webhook_url ?? "");
     setWebhookToken(settings.webhook_token ?? "");
     setStatsWebhookEnabled(settings.stats_webhook_enabled ?? false);
@@ -174,6 +178,7 @@ export default function SettingsPage() {
     settings.bridge_enabled, settings.bridge_port, settings.bridge_routing,
     settings.vents_max_temp_c, settings.vents_min_fan_pct, settings.vents_max_fan_pct,
     settings.vents_min_rpm_alarm, settings.vents_over_temp_fan_pct,
+    settings.vents_peltier_rest_s, settings.vents_unique_peltier_default,
     settings.webhook_url, settings.webhook_token,
     settings.stats_webhook_enabled, settings.stats_webhook_url,
     settings.stats_webhook_token, settings.stats_webhook_interval_s,
@@ -189,6 +194,8 @@ export default function SettingsPage() {
     vents_max_fan_pct: ventsMaxFanPct,
     vents_min_rpm_alarm: ventsMinRpmAlarm,
     vents_over_temp_fan_pct: ventsOverTempFanPct,
+    vents_peltier_rest_s: ventsPeltierRestS,
+    vents_unique_peltier_default: ventsUniquePeltierDefault,
     webhook_url: webhookUrl,
     webhook_token: webhookToken,
     stats_webhook_enabled: statsWebhookEnabled,
@@ -198,6 +205,7 @@ export default function SettingsPage() {
   }), [
     frequency, bridgeEnabled, bridgePort, bridgeRouting,
     ventsMaxTemp, ventsMinFanPct, ventsMaxFanPct, ventsMinRpmAlarm, ventsOverTempFanPct,
+    ventsPeltierRestS, ventsUniquePeltierDefault,
     webhookUrl, webhookToken,
     statsWebhookEnabled, statsWebhookUrl, statsWebhookToken, statsWebhookIntervalS,
   ]);
@@ -227,6 +235,8 @@ export default function SettingsPage() {
     setVentsMaxFanPct(settings.vents_max_fan_pct ?? 100);
     setVentsMinRpmAlarm(settings.vents_min_rpm_alarm ?? 500);
     setVentsOverTempFanPct(settings.vents_over_temp_fan_pct ?? 100);
+    setVentsPeltierRestS(settings.vents_peltier_rest_s ?? 600);
+    setVentsUniquePeltierDefault(settings.vents_unique_peltier_default ?? false);
     setWebhookUrl(settings.webhook_url ?? "");
     setWebhookToken(settings.webhook_token ?? "");
     setStatsWebhookEnabled(settings.stats_webhook_enabled ?? false);
@@ -314,6 +324,31 @@ export default function SettingsPage() {
                   hint="Admin watches each fan tach at 5 Hz. Below this for ≥ 3 s while commanded > 0% raises an alarm badge. 0 disables."
                 >
                   <NumInput value={ventsMinRpmAlarm} onChange={setVentsMinRpmAlarm} min={0} max={10000} step={50} width="w-24" suffix="RPM" />
+                </Field>
+                <Field
+                  label="Unique peltier (default)"
+                  hint={
+                    <>
+                      When enabled, vents Pis drive only <strong>one Peltier cell at a time</strong> in auto mode.
+                      Each cell has its own minimum-OFF cooldown — when one cell switches off, only that
+                      cell becomes ineligible for the next rest period; the other two are unaffected.
+                      Pushed to every vents Pi on Save; operators can still override per-device on the test panel.
+                    </>
+                  }
+                >
+                  <Toggle checked={ventsUniquePeltierDefault} onChange={setVentsUniquePeltierDefault} />
+                </Field>
+                <Field
+                  label="Peltier minimum OFF"
+                  hint={
+                    <>
+                      Per-cell minimum-OFF cooldown (in seconds) used by unique-peltier mode.
+                      A cell that was just switched off must rest at least this long before it can be re-activated.
+                      Tracked independently per cell against this shared threshold. 0–3600 s.
+                    </>
+                  }
+                >
+                  <NumInput value={ventsPeltierRestS} onChange={setVentsPeltierRestS} min={0} max={3600} step={30} width="w-24" suffix="s" />
                 </Field>
               </div>
             </Section>

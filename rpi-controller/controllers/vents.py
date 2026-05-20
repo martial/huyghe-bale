@@ -56,6 +56,8 @@ OSC protocol:
     /vents/target/cold  float °C — cold setpoint (also flips active=cold)
     /vents/target/active string "hot"|"cold" — flip active side, no value change
     /vents/max_temp   float safety max °C (stored in ~/.config/gpio-osc/vents_prefs.json)
+    /vents/unique_peltier  int 0|1 — drive one cell at a time in auto (persisted)
+    /vents/peltier_rest_s  int seconds — per-cell minimum-OFF cooldown (0..3600, persisted)
     /vents/probe/assign_hot   string rom_id (28-xxxxxxxxxxxx) — pin probe to hot role
     /vents/probe/assign_cold  string rom_id — pin probe to cold role
     /vents/probe/clear        string "hot"|"cold"|"both" — clear assignment(s)
@@ -75,22 +77,36 @@ OSC protocol:
                   rpm1A, rpm1B, rpm2A, rpm2B, target_c, mode, state,
                   max_temp_c, min_fan_pct, over_temp_fan_pct, max_fan_pct,
                   temp_hot_c, temp_cold_c, hot_target_c, cold_target_c,
-                  active_target
+                  active_target,
+                  unique_peltier, peltier_rest_s, active_peltier_index
     target_c at position 9 mirrors hot_target_c (back-compat). Position 20
     (active_target) is forward-compat — older admins stop reading at 19 and
-    fall back to displaying both setpoints as if both were active.
+    fall back to displaying both setpoints as if both were active. Positions
+    21/22/23 carry unique_peltier (0|1), peltier_rest_s (int s) and the
+    currently-active cell index in unique mode (0..2; -1 when none). Older
+    admins simply stop reading at 20.
     Missing temps (incl. temp_hot_c / temp_cold_c) are encoded as -1.0.
+    Per-cell rest-remaining (peltier_rest_remaining[3]) is HTTP-snapshot only.
 
 Auto loop branches (first match wins):
   ANY discovered probe > max_temp_c → over_temp (Peltiers off, fans → over_temp_fan_pct).
   mode != "auto"        → idle.
   either probe id null/missing → probe_unassigned (Peltiers off, fans off).
   assigned probe reads None         → sensor_error (Peltiers off, fans pinned).
-  active=hot:  t_hot < hot_target − H   → heating (mask 0b111).
+  active=hot:  t_hot < hot_target − H   → drive-on  (mask 0b111, or one cell in unique mode).
                t_hot ≥ hot_target + H   → cooling (mask 0).
-  active=cold: t_cold > cold_target + H → heating (mask 0b111).
+  active=cold: t_cold > cold_target + H → drive-on  (mask 0b111, or one cell in unique mode).
                t_cold ≤ cold_target − H → cooling (mask 0).
   else → holding (deadband; mask unchanged).
+
+When `unique_peltier` is True and the branch decides to drive on, only one cell
+is energized — the eligible cell whose last on→off transition is oldest (ties
+broken by lowest index). A cell is eligible when `now − last_off ≥
+peltier_rest_s` (or it has never run). If no cell is eligible the state is
+"rest_wait" and the mask stays 0 until one becomes eligible. Cells are timed
+independently; the rest threshold is shared. Manual /vents/peltier/* writes in
+raw mode bypass the rest constraint but still stamp last_off on on→off so the
+auto loop honors the timer afterward.
 """
 
 import glob
@@ -116,6 +132,7 @@ from config import (
     VENTS_AUTO_LOOP_HZ,
     VENTS_TEMP_POLL_HZ, VENTS_TACHO_MIN_DT_S,
     VENTS_STATUS_HZ,
+    VENTS_PELTIER_REST_DEFAULT_S, VENTS_PELTIER_REST_MAX_S,
 )
 
 logger = logging.getLogger(__name__)
@@ -171,6 +188,16 @@ cold_target_c = float(VENTS_DEFAULT_TARGET_C)
 active_target = "hot"  # "hot" | "cold". Persisted. Last setpoint write wins.
 max_temp_c = float(VENTS_DEFAULT_MAX_TEMP_C)  # over-temp threshold; persisted in _PREFS_PATH
 
+# "Unique peltier" sub-mode of auto. When True the auto loop drives only one
+# cell at a time; each cell tracks its own minimum-OFF cooldown against the
+# shared `peltier_rest_s` threshold. Timers (peltier_last_off_monotonic[3])
+# are in-memory only — after a reboot every cell is "never run" and eligible
+# immediately. Persisted: unique_peltier (bool), peltier_rest_s (int seconds).
+unique_peltier = False
+peltier_rest_s = float(VENTS_PELTIER_REST_DEFAULT_S)
+peltier_last_off_monotonic = [0.0, 0.0, 0.0]  # time.monotonic() of last on→off
+active_peltier_index = None  # Optional[int] — currently driven cell in unique mode
+
 _ROM_ID_RE = re.compile(r"^28-[0-9a-fA-F]{12}$")
 # PWM floor enforced inside _set_fan whenever a non-zero duty is requested.
 # Editable from admin Settings; persisted in _PREFS_PATH.
@@ -183,7 +210,7 @@ max_fan_pct = 100.0
 # Editable from admin Settings; persisted in _PREFS_PATH.
 over_temp_fan_pct = 100.0
 mode = "raw"          # "raw" or "auto"
-state = "idle"        # idle|heating|cooling|holding|sensor_error|probe_unassigned|over_temp
+state = "idle"        # idle|heating|cooling|holding|sensor_error|probe_unassigned|over_temp|rest_wait
 
 last_osc_time = 0.0
 _webhooks = None
@@ -240,12 +267,13 @@ _PREFS_RANGES = {
     "over_temp_fan_pct": (0.0, 100.0),
     "hot_target_c": (_TARGET_MIN_C, 125.0),
     "cold_target_c": (_TARGET_MIN_C, 125.0),
+    "peltier_rest_s": (0.0, float(VENTS_PELTIER_REST_MAX_S)),
 }
 
 
 def _load_prefs():
     """Load persisted vents preferences from disk (called from setup)."""
-    global probe_hot_id, probe_cold_id, active_target
+    global probe_hot_id, probe_cold_id, active_target, unique_peltier
     try:
         data = json.loads(_PREFS_PATH.read_text())
     except FileNotFoundError:
@@ -293,6 +321,12 @@ def _load_prefs():
     elif saved_active is not None:
         logger.warning("Bad active_target in prefs, defaulting to 'hot': %r", saved_active)
 
+    if "unique_peltier" in data:
+        try:
+            unique_peltier = bool(int(data["unique_peltier"]))
+        except (TypeError, ValueError):
+            logger.warning("Bad unique_peltier in prefs, ignoring: %r", data["unique_peltier"])
+
     _clamp_setpoints()
 
 
@@ -311,6 +345,8 @@ def _save_prefs():
             "active_target": active_target,
             "probe_hot_id": probe_hot_id,
             "probe_cold_id": probe_cold_id,
+            "unique_peltier": int(unique_peltier),
+            "peltier_rest_s": int(peltier_rest_s),
         }, indent=2) + "\n"
         tmp.write_text(payload)
         tmp.replace(_PREFS_PATH)
@@ -352,10 +388,18 @@ def _set_max_fan_pct(value):
 
 
 def _set_peltier(index, on):
-    """index is 0..2 (pin 26/25/24)."""
+    """index is 0..2 (pin 26/25/24).
+
+    Every on→off transition stamps `peltier_last_off_monotonic[index]` so the
+    unique-peltier rest timer reflects reality across all paths — auto, raw,
+    mask handler, safety lock and cleanup all funnel through here.
+    """
     pin = PELTIER_PINS[index]
+    was_on = peltier_state[index]
     GPIO.output(pin, GPIO.HIGH if on else GPIO.LOW)
     peltier_state[index] = 1 if on else 0
+    if was_on and not on:
+        peltier_last_off_monotonic[index] = time.monotonic()
 
 
 def _set_fan(index, duty_0_1):
@@ -508,6 +552,50 @@ def _safety_lock_state():
     return None
 
 
+def _peltier_rest_remaining_s():
+    """[r0, r1, r2] — seconds until each cell is eligible to be re-driven in
+    unique-peltier mode. 0.0 means eligible now (incl. never-run cells, which
+    have last_off == 0.0)."""
+    now = time.monotonic()
+    out = []
+    for last in peltier_last_off_monotonic:
+        if last == 0.0:
+            out.append(0.0)
+        else:
+            out.append(max(0.0, peltier_rest_s - (now - last)))
+    return out
+
+
+def _pick_unique_peltier_index():
+    """Choose which cell to drive in unique mode.
+
+    Returns:
+      - `active_peltier_index` if it's currently set AND that cell is on
+        (keep driving it across ticks);
+      - else the eligible cell whose `last_off` is oldest (longest rested);
+        ties broken by lowest index. Never-run cells (last_off == 0.0) sort
+        before any with a non-zero stamp, which is the desired tie-break on
+        fresh boot.
+      - None if no cell is eligible (every cell is still resting).
+
+    A cell is eligible when `now − last_off ≥ peltier_rest_s` OR `last_off
+    == 0.0` (the never-run sentinel).
+    """
+    if active_peltier_index is not None and peltier_state[active_peltier_index]:
+        return active_peltier_index
+    now = time.monotonic()
+    eligible = []
+    for i in range(3):
+        last = peltier_last_off_monotonic[i]
+        if last == 0.0 or (now - last) >= peltier_rest_s:
+            # Sort key: (last_off, index). 0.0 sorts first → never-run preferred.
+            eligible.append((last, i))
+    if not eligible:
+        return None
+    eligible.sort()
+    return eligible[0][1]
+
+
 def _auto_loop():
     """Single-active-side bang-bang regulator with role-pinned probes.
 
@@ -527,17 +615,28 @@ def _auto_loop():
                                      probes still required for uniform safety.
       4. sensor_error              → an assigned probe currently reads None.
                                      Peltiers off, fans pinned to safety fallback.
-      5. heating  (need_on)        → active=hot:  t_hot < hot_target_c − H
+      5. drive-on  (need_on)       → active=hot:  t_hot < hot_target_c − H
                                      active=cold: t_cold > cold_target_c + H
-                                     Peltiers all on (mask 0b111).
+                                     Standard mode: state="heating", mask 0b111.
+                                     Unique mode: pick one eligible cell →
+                                       state="heating" with single-bit mask,
+                                       or state="rest_wait" mask 0 if none
+                                       eligible.
       6. cooling  (need_off)       → active=hot:  t_hot ≥ hot_target_c + H
                                      active=cold: t_cold ≤ cold_target_c − H
-                                     Peltiers all off.
+                                     Peltiers all off. _set_peltier stamps
+                                     last_off for whichever cell was on.
       7. holding                   → deadband — leave Peltier mask unchanged.
                                      Fans not touched in any heating/cooling/
                                      holding branch (auto doesn't drive fans).
+
+    Mid-flight collapse: if `unique_peltier` flips True while more than one
+    cell is currently driven (e.g. the previous tick used the standard mask
+    0b111, or the operator was driving multiple cells in raw before flipping
+    to auto+unique), the next tick collapses to the lowest-index cell that
+    is on; the others go off (and stamp their last_off).
     """
-    global state
+    global state, active_peltier_index
     period = 1.0 / max(1, VENTS_AUTO_LOOP_HZ)
     H = VENTS_HYSTERESIS_C
     while not _shutdown_event.is_set():
@@ -546,6 +645,7 @@ def _auto_loop():
         if lock_state is not None:
             state = lock_state
             _apply_peltier_mask(0)
+            active_peltier_index = None
             fallback_0_1 = over_temp_fan_pct / 100.0
             _set_fan(0, fallback_0_1)
             _set_fan(1, fallback_0_1)
@@ -559,6 +659,16 @@ def _auto_loop():
             _shutdown_event.wait(period)
             continue
 
+        # Mid-flight collapse: a multi-cell mask is illegal in unique mode.
+        # Keep the lowest-index cell currently on; the others go off and
+        # _set_peltier stamps their last_off.
+        if unique_peltier and bin(_peltier_mask()).count("1") > 1:
+            keep = next((i for i in range(3) if peltier_state[i]), None)
+            for i in range(3):
+                if i != keep:
+                    _set_peltier(i, False)
+            active_peltier_index = keep
+
         hot_present = probe_hot_id is not None and probe_hot_id in _probes
         cold_present = probe_cold_id is not None and probe_cold_id in _probes
         if not hot_present or not cold_present:
@@ -569,6 +679,7 @@ def _auto_loop():
                 )
             state = "probe_unassigned"
             _apply_peltier_mask(0)
+            active_peltier_index = None
             _set_fan(0, 0.0)
             _set_fan(1, 0.0)
             _tacho_decay_tick()
@@ -585,6 +696,7 @@ def _auto_loop():
                 )
             state = "sensor_error"
             _apply_peltier_mask(0)
+            active_peltier_index = None
             fallback_0_1 = over_temp_fan_pct / 100.0
             _set_fan(0, fallback_0_1)
             _set_fan(1, fallback_0_1)
@@ -602,13 +714,26 @@ def _auto_loop():
             need_on = t_hot < hot_target_c - H     # too cool → pump heat in
             need_off = t_hot >= hot_target_c + H
         if need_on:
-            state = "heating"        # name preserved for admin enum compat
-            _apply_peltier_mask(0b111)
+            if unique_peltier:
+                idx = _pick_unique_peltier_index()
+                if idx is None:
+                    state = "rest_wait"
+                    _apply_peltier_mask(0)
+                    active_peltier_index = None
+                else:
+                    state = "heating"
+                    _apply_peltier_mask(1 << idx)
+                    active_peltier_index = idx
+            else:
+                state = "heating"            # name preserved for admin enum compat
+                _apply_peltier_mask(0b111)
+                active_peltier_index = None
         elif need_off:
             state = "cooling"
-            _apply_peltier_mask(0)
+            _apply_peltier_mask(0)           # _set_peltier stamps last_off
+            active_peltier_index = None
         else:
-            state = "holding"        # deadband — preserve previous mask
+            state = "holding"                # deadband — preserve previous mask
         _tacho_decay_tick()
         _shutdown_event.wait(period)
 
@@ -942,6 +1067,32 @@ def handle_max_fan_pct(address, *args):
     _set_max_fan_pct(args[0])
 
 
+@_safe("unique_peltier")
+def handle_unique_peltier(address, *args):
+    """Toggle the 'one cell at a time' sub-mode of auto. Persisted.
+    Does not by itself reshape the current peltier mask — the next /auto tick
+    collapses any multi-cell drive when this flag is True."""
+    global unique_peltier
+    if not args:
+        return
+    unique_peltier = bool(int(args[0]))
+    _save_prefs()
+    logger.info("Vents unique_peltier → %s (saved)", unique_peltier)
+
+
+@_safe("peltier_rest_s")
+def handle_peltier_rest_s(address, *args):
+    """Set the per-cell minimum-OFF cooldown (seconds) used by unique-peltier
+    auto mode. Shared threshold; timers are tracked per cell. Clamped to
+    [0, VENTS_PELTIER_REST_MAX_S]. Persisted."""
+    global peltier_rest_s
+    if not args:
+        return
+    peltier_rest_s = float(_clamp(int(args[0]), 0, VENTS_PELTIER_REST_MAX_S))
+    _save_prefs()
+    logger.info("Vents peltier_rest_s → %d s (saved)", int(peltier_rest_s))
+
+
 def register_osc(dispatcher):
     dispatcher.map("/vents/peltier/1", handle_peltier_1)
     dispatcher.map("/vents/peltier/2", handle_peltier_2)
@@ -961,6 +1112,8 @@ def register_osc(dispatcher):
     dispatcher.map("/vents/config/min_fan_pct", handle_min_fan_pct)
     dispatcher.map("/vents/config/max_fan_pct", handle_max_fan_pct)
     dispatcher.map("/vents/config/over_temp_fan_pct", handle_over_temp_fan_pct)
+    dispatcher.map("/vents/unique_peltier", handle_unique_peltier)
+    dispatcher.map("/vents/peltier_rest_s", handle_peltier_rest_s)
 
 
 # ── HTTP test surface ─────────────────────────────────────────────────────
@@ -1017,6 +1170,10 @@ def handle_http_test(body):
             handle_max_fan_pct("/http", float(value))
         elif cmd == "over_temp_fan_pct":
             handle_over_temp_fan_pct("/http", float(value))
+        elif cmd == "unique_peltier":
+            handle_unique_peltier("/http", int(bool(value)))
+        elif cmd == "peltier_rest_s":
+            handle_peltier_rest_s("/http", int(value))
         elif cmd == "snapshot":
             pass  # no-op: returns get_status() below
         else:
@@ -1069,6 +1226,12 @@ def get_status():
         "over_temp_fan_pct": over_temp_fan_pct,
         "mode": mode,
         "state": state,
+        "unique_peltier": int(unique_peltier),
+        "peltier_rest_s": int(peltier_rest_s),
+        # -1 sentinel keeps the field int-typed (OSC has no None / unknown).
+        "active_peltier_index": active_peltier_index if active_peltier_index is not None else -1,
+        # Per-cell countdown rides HTTP snapshot only (not the 5 Hz OSC tail).
+        "peltier_rest_remaining": _peltier_rest_remaining_s(),
         "sensors_ok": any(t is not None for t in temp_c),
     }
 
@@ -1077,11 +1240,13 @@ def get_status_osc_args():
     """OSC argument list matching the documented /vents/status contract.
     Missing temperatures are encoded as -1.0 (python-osc rejects None).
     Backend `_handle_vents_status` parses arg 13 onward optionally so older
-    firmware (12 args, no max_temp_c) through current (21 args) all decode.
+    firmware (12 args, no max_temp_c) through current (24 args) all decode.
 
     Positions 16-19 are the dual-setpoint tail (temp_hot_c, temp_cold_c,
-    hot_target_c, cold_target_c). Position 20 is `active_target` — admin
-    builds older than this firmware simply stop reading earlier."""
+    hot_target_c, cold_target_c). Position 20 is `active_target`. Positions
+    21/22/23 are the unique-peltier tail (unique_peltier, peltier_rest_s,
+    active_peltier_index). Admin builds older than this firmware simply stop
+    reading earlier; `peltier_rest_remaining[3]` is HTTP-snapshot only."""
     s = get_status()
     return [
         float(s["temp1_c"]) if s["temp1_c"] is not None else -1.0,
@@ -1105,6 +1270,9 @@ def get_status_osc_args():
         float(s["hot_target_c"]),
         float(s["cold_target_c"]),
         str(s["active_target"]),
+        int(s["unique_peltier"]),
+        int(s["peltier_rest_s"]),
+        int(s["active_peltier_index"]),
     ]
 
 

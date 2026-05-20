@@ -28,13 +28,16 @@ def _vents_args(*, fan1=0.5, fan2=0.5, rpms=(800, 800, 800, 800),
                 max_temp=80.0, min_fan_pct=20.0, over_temp_fan_pct=100.0,
                 max_fan_pct=100.0,
                 temp_hot=None, temp_cold=None,
-                hot_target=None, cold_target=None, active_target=None):
+                hot_target=None, cold_target=None, active_target=None,
+                unique_peltier=None, peltier_rest_s=None, active_peltier_index=None):
     """Helper: assemble a /vents/status arg tuple matching the Pi's contract.
 
     The dual-setpoint tail (temp_hot, temp_cold, hot_target, cold_target) is
     appended only when at least one of the four is provided. `active_target`
-    (string at position 20) appends only when explicitly provided — keeps
-    the short- and middle-form variants available for legacy-firmware tests."""
+    (string at position 20) appends only when explicitly provided. The
+    unique-peltier tail (positions 21/22/23 — unique_peltier, peltier_rest_s,
+    active_peltier_index) is appended when any of those three is provided AND
+    active_target is set (the broadcast always includes 20 before 21+)."""
     head = (
         float(temp1), float(temp2), float(fan1), float(fan2), 0,
         int(rpms[0]), int(rpms[1]), int(rpms[2]), int(rpms[3]),
@@ -42,9 +45,11 @@ def _vents_args(*, fan1=0.5, fan2=0.5, rpms=(800, 800, 800, 800),
         float(max_temp), float(min_fan_pct), float(over_temp_fan_pct),
         float(max_fan_pct),
     )
+    unique_tail = (unique_peltier, peltier_rest_s, active_peltier_index)
     needs_dual = any(v is not None for v in
                      (temp_hot, temp_cold, hot_target, cold_target, active_target))
-    if not needs_dual:
+    needs_unique = any(v is not None for v in unique_tail)
+    if not needs_dual and not needs_unique:
         return head
     body = head + (
         float(temp_hot if temp_hot is not None else -1.0),
@@ -52,8 +57,17 @@ def _vents_args(*, fan1=0.5, fan2=0.5, rpms=(800, 800, 800, 800),
         float(hot_target if hot_target is not None else target),
         float(cold_target if cold_target is not None else (target - 5.0)),
     )
-    if active_target is not None:
-        body = body + (str(active_target),)
+    if active_target is not None or needs_unique:
+        # Unique tail requires active_target to be present (positions are
+        # gap-free in the Pi broadcast); default it to "hot" so legacy callers
+        # that only care about the unique tail still work.
+        body = body + (str(active_target if active_target is not None else "hot"),)
+    if needs_unique:
+        body = body + (
+            int(unique_peltier if unique_peltier is not None else 0),
+            int(peltier_rest_s if peltier_rest_s is not None else 600),
+            int(active_peltier_index if active_peltier_index is not None else -1),
+        )
     return body
 
 
@@ -288,6 +302,52 @@ class TestHandleVentsStatus:
         assert s["temp_cold_c"] is None
         assert s["hot_target_c"] == 25.0
         assert s["cold_target_c"] == 18.0
+
+    def test_unique_peltier_tail_decodes(self):
+        # Positions 21/22/23: unique_peltier, peltier_rest_s, active_peltier_index.
+        r = _fresh_receiver()
+        r._handle_vents_status(
+            ("10.1.0.10", 5000), "/vents/status",
+            *_vents_args(
+                hot_target=22.0, cold_target=18.0, active_target="hot",
+                unique_peltier=1, peltier_rest_s=300, active_peltier_index=2,
+            ),
+        )
+        s = r.vents_status["10.1.0.10"]
+        # Numeric optional fields are stored as floats by the loop.
+        assert s["unique_peltier"] == 1.0
+        assert s["peltier_rest_s"] == 300.0
+        assert s["active_peltier_index"] == 2.0
+
+    def test_unique_peltier_tail_absent_on_legacy_firmware(self):
+        # Old firmware stops at position 20 (active_target). Decoder must
+        # silently leave the unique-peltier keys absent.
+        r = _fresh_receiver()
+        r._handle_vents_status(
+            ("10.1.0.11", 5000), "/vents/status",
+            *_vents_args(
+                hot_target=22.0, cold_target=18.0, active_target="hot",
+            ),
+        )
+        s = r.vents_status["10.1.0.11"]
+        assert "unique_peltier" not in s
+        assert "peltier_rest_s" not in s
+        assert "active_peltier_index" not in s
+
+    def test_unique_peltier_neg1_active_index_passes_through(self):
+        # -1 is the "no cell currently driven" sentinel — decoder just passes
+        # the numeric value; the frontend treats it as "none".
+        r = _fresh_receiver()
+        r._handle_vents_status(
+            ("10.1.0.12", 5000), "/vents/status",
+            *_vents_args(
+                hot_target=22.0, cold_target=18.0, active_target="hot",
+                unique_peltier=0, peltier_rest_s=600, active_peltier_index=-1,
+            ),
+        )
+        s = r.vents_status["10.1.0.12"]
+        assert s["unique_peltier"] == 0.0
+        assert s["active_peltier_index"] == -1.0
 
 
 class TestRpmAlarmDetection:

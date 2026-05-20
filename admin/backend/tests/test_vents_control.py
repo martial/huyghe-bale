@@ -336,6 +336,90 @@ def test_status_merges_snapshot_probe_fields(ctx):
     assert body["probes"][0]["id"] == "28-aaaaaaaaaaaa"
 
 
+def test_unique_peltier_on_dispatches_int_1(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc") as mock_osc:
+        client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "unique_peltier", "value": True}),
+            content_type="application/json",
+        )
+        args = mock_osc.send.call_args[0]
+        assert args[2] == "/vents/unique_peltier"
+        assert args[3] == 1
+
+
+def test_unique_peltier_off_dispatches_int_0(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc") as mock_osc:
+        client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "unique_peltier", "value": False}),
+            content_type="application/json",
+        )
+        args = mock_osc.send.call_args[0]
+        assert args[2] == "/vents/unique_peltier"
+        assert args[3] == 0
+
+
+def test_peltier_rest_s_dispatches_seconds(ctx):
+    client, dev = ctx
+    with patch("api.vents_control._osc") as mock_osc:
+        client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "peltier_rest_s", "value": 300}),
+            content_type="application/json",
+        )
+        args = mock_osc.send.call_args[0]
+        assert args[2] == "/vents/peltier_rest_s"
+        assert args[3] == 300
+
+
+@pytest.mark.parametrize("value", [-1, 3601, 999999])
+def test_peltier_rest_s_rejects_out_of_range(ctx, value):
+    client, dev = ctx
+    with patch("api.vents_control._osc"):
+        resp = client.post(
+            f"/api/v1/vents-control/{dev['id']}/command",
+            data=json.dumps({"command": "peltier_rest_s", "value": value}),
+            content_type="application/json",
+        )
+    assert resp.status_code == 400
+
+
+def test_status_merges_unique_peltier_snapshot_fields(ctx):
+    """When the Pi's HTTP snapshot carries the unique-peltier fields, they
+    flow through to /status — including the per-cell rest_remaining array
+    which the OSC broadcast does not carry."""
+    client, dev = ctx
+    from engine.osc_receiver import OscReceiver
+    r = OscReceiver(port=9001)
+    r.vents_status["192.168.1.50"] = {
+        "temp1_c": 22.1, "temp2_c": 18.3,
+        "fan1": 0.0, "fan2": 0.0,
+        "peltier_mask": 1, "peltier": [True, False, False],
+        "rpm1A": 0, "rpm1B": 0, "rpm2A": 0, "rpm2B": 0,
+        "target_c": 22.0, "mode": "auto", "state": "heating",
+        "timestamp": 1e12,
+    }
+    r.last_seen["192.168.1.50"] = 1e12
+    snapshot = {
+        "ok": True,
+        "unique_peltier": 1,
+        "peltier_rest_s": 600,
+        "active_peltier_index": 0,
+        "peltier_rest_remaining": [0.0, 540.0, 540.0],
+    }
+    with patch("api.vents_control._osc"), \
+         patch("api.vents_control._fetch_snapshot", return_value=snapshot):
+        resp = client.get(f"/api/v1/vents-control/{dev['id']}/status")
+    body = resp.get_json()
+    assert body["unique_peltier"] == 1
+    assert body["peltier_rest_s"] == 600
+    assert body["active_peltier_index"] == 0
+    assert body["peltier_rest_remaining"] == [0.0, 540.0, 540.0]
+
+
 def test_status_skips_snapshot_fetch_when_offline(ctx):
     """If the device is offline (no OSC pong within timeout) we skip the
     HTTP call — there's no Pi to talk to and connect-timeout would slow

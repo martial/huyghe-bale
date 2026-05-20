@@ -45,6 +45,7 @@ _VALID_COMMANDS = (
     "peltier", "peltier_mask", "fan", "mode",
     "target", "target_hot", "target_cold", "target_active", "max_temp",
     "probe_assign_hot", "probe_assign_cold", "probe_clear",
+    "unique_peltier", "peltier_rest_s",
 )
 
 import re as _re
@@ -96,6 +97,14 @@ def _route(command, body):
         if v not in _PROBE_CLEAR_VALUES:
             raise ValueError("probe_clear must be 'hot', 'cold' or 'both'")
         return "/vents/probe/clear", v
+    if command == "unique_peltier":
+        # Accept any truthy/falsy value; the Pi handler does bool(int()).
+        return "/vents/unique_peltier", int(bool(value))
+    if command == "peltier_rest_s":
+        v = int(value)
+        if v < 0 or v > 3600:
+            raise ValueError("peltier_rest_s must be between 0 and 3600 seconds")
+        return "/vents/peltier_rest_s", v
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -181,6 +190,10 @@ _PROBE_FIELDS = (
     "probes", "probe_hot_id", "probe_cold_id",
     "temp_hot_c", "temp_cold_c",
     "hot_target_c", "cold_target_c", "active_target",
+    # Unique-peltier tail (also on the OSC broadcast, but the snapshot is
+    # authoritative — `peltier_rest_remaining[3]` rides only here).
+    "unique_peltier", "peltier_rest_s",
+    "active_peltier_index", "peltier_rest_remaining",
 )
 
 

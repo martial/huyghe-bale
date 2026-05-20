@@ -106,6 +106,20 @@ const VENTS: Section = {
                 "Safety ceiling (°C): independent of target. If average temp exceeds this value, over_temp — all Peltiers off; auto does not change fan PWM. Persisted at ~/.config/gpio-osc/vents_prefs.json; must stay above the regulation band (Pi may bump the value). Also set from Admin → Settings.",
             },
             {
+              address: "/vents/unique_peltier",
+              direction: "admin-to-pi",
+              args: "int 0|1",
+              description:
+                "Toggle the 'unique peltier' sub-mode of auto. When 1, the Pi drives only ONE Peltier cell at a time; after a cell switches off, only that cell must rest at least peltier_rest_s seconds before it can be re-activated — the other two cells are unaffected (each cell tracks its own timer). Cell selection is fair: oldest-rested first, with lowest-index tiebreak. Persisted on the Pi. Manual /vents/peltier/* writes in raw mode still bypass the rest constraint.",
+            },
+            {
+              address: "/vents/peltier_rest_s",
+              direction: "admin-to-pi",
+              args: "int seconds (0..3600)",
+              description:
+                "Per-cell minimum-OFF cooldown used by unique-peltier mode. Shared threshold; the three cells track their elapsed-off time independently against it. Default 600 s (10 min). Persisted on the Pi. Normally set from Admin → Settings, which pushes the value to every vents Pi on Save.",
+            },
+            {
               address: "/vents/mode",
           direction: "admin-to-pi",
           args: "string raw|auto",

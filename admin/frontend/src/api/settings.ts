@@ -17,6 +17,13 @@ export interface Settings {
   vents_min_rpm_alarm: number;
   /** Fan PWM (%) the Pi forces both fans to whenever any sensor exceeds max */
   vents_over_temp_fan_pct: number;
+  /** Per-cell minimum-OFF cooldown (s) used by unique-peltier auto sub-mode.
+   *  Shared threshold; the cells track their own timers independently. */
+  vents_peltier_rest_s: number;
+  /** Default value the Pi adopts on Save for the unique-peltier toggle.
+   *  Per-device overrides via the test panel are not affected — this only
+   *  pushes the default. */
+  vents_unique_peltier_default: boolean;
   /** Outbound webhook URL — empty disables. Receives status_change events. */
   webhook_url: string;
   /** Optional bearer token sent in Authorization header on every webhook POST. */

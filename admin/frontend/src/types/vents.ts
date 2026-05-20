@@ -6,7 +6,12 @@ export type VentsState =
   | "holding"
   | "sensor_error"
   | "probe_unassigned"
-  | "over_temp";
+  | "over_temp"
+  /** Unique-peltier auto sub-mode: regulator wants to drive on, but every
+   *  cell is still inside its minimum-OFF cooldown — nothing can be driven
+   *  until at least one cell becomes eligible. Distinct from "cooling"
+   *  (regulator chose to drive off) and "holding" (deadband). */
+  | "rest_wait";
 
 export type VentsCommand =
   | "peltier"
@@ -20,7 +25,9 @@ export type VentsCommand =
   | "max_temp"
   | "probe_assign_hot"
   | "probe_assign_cold"
-  | "probe_clear";
+  | "probe_clear"
+  | "unique_peltier"
+  | "peltier_rest_s";
 
 /** Which side currently regulates in auto mode. The other setpoint is stored
  *  but inactive (greyed out in the UI). Set by the most recent setpoint write
@@ -86,6 +93,18 @@ export interface VentsStatus {
   max_fan_pct?: number | null;
   /** Fan PWM (%) the Pi forces on both fans during the over-temp interlock. */
   over_temp_fan_pct?: number | null;
+  /** Unique-peltier auto sub-mode flag (0|1). Absent on pre-unique firmware. */
+  unique_peltier?: number;
+  /** Per-cell minimum-OFF cooldown in seconds (shared threshold; the cells'
+   *  timers are tracked independently). Absent on pre-unique firmware. */
+  peltier_rest_s?: number;
+  /** Index of the cell currently being driven in unique mode (0..2). -1 when
+   *  no cell is driven (rest_wait, cooling, holding-off, or unique mode off). */
+  active_peltier_index?: number;
+  /** Per-cell remaining seconds before each cell becomes eligible in unique
+   *  mode. Always length 3 when present. 0 means eligible now (or never-run).
+   *  HTTP-snapshot only — not in the 5 Hz OSC broadcast. */
+  peltier_rest_remaining?: number[];
   mode: VentsMode;
   state: VentsState;
   timestamp?: number;

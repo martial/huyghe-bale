@@ -45,6 +45,9 @@ def test_get_settings_returns_new_defaults(client):
     assert body["vents_min_fan_pct"] == 20.0
     assert body["vents_min_rpm_alarm"] == 500
     assert body["vents_over_temp_fan_pct"] == 100.0
+    # Unique-peltier defaults.
+    assert body["vents_peltier_rest_s"] == 600
+    assert body["vents_unique_peltier_default"] is False
 
 
 def test_put_min_fan_pct_pushes_to_vents_devices_only(monkeypatch, client):
@@ -215,6 +218,61 @@ class _MockResp:
     def read(self): return b"{}"
     def __enter__(self): return self
     def __exit__(self, *a): return False
+
+
+def test_put_peltier_rest_s_pushes_to_vents_devices(monkeypatch, client):
+    c, _, _ = client
+    pushed = []
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=None: pushed.append({
+            "url": req.full_url,
+            "body": json.loads(req.data.decode("utf-8")),
+        }) or _MockResp(),
+    )
+    r = c.put(
+        "/api/v1/settings",
+        data=json.dumps({"vents_peltier_rest_s": 300}),
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    assert r.get_json()["vents_peltier_rest_s"] == 300
+    # 2 vents devices, no trolleys → exactly two pushes.
+    assert len(pushed) == 2
+    assert all(p["body"] == {"command": "peltier_rest_s", "value": 300} for p in pushed)
+
+
+def test_put_unique_peltier_default_pushes_bool(monkeypatch, client):
+    c, _, _ = client
+    pushed = []
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=None: pushed.append({
+            "url": req.full_url,
+            "body": json.loads(req.data.decode("utf-8")),
+        }) or _MockResp(),
+    )
+    r = c.put(
+        "/api/v1/settings",
+        data=json.dumps({"vents_unique_peltier_default": True}),
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    assert r.get_json()["vents_unique_peltier_default"] is True
+    assert len(pushed) == 2
+    assert all(p["body"] == {"command": "unique_peltier", "value": True} for p in pushed)
+
+
+def test_put_peltier_rest_s_rejects_out_of_range(client):
+    c, _, _ = client
+    for v in (-1, 3601):
+        r = c.put(
+            "/api/v1/settings",
+            data=json.dumps({"vents_peltier_rest_s": v}),
+            content_type="application/json",
+        )
+        assert r.status_code == 400, f"expected 400 for {v}"
+        assert "vents_peltier_rest_s" in r.get_json()["error"]
 
 
 # ── webhook URL/token ────────────────────────────────────────────────────

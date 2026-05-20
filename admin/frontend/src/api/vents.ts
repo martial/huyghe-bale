@@ -72,6 +72,21 @@ export function clearVentsProbe(deviceId: string, role: "hot" | "cold" | "both")
   return sendVentsCommand(deviceId, { command: "probe_clear", value: role });
 }
 
+/** Toggle the per-device "unique peltier" sub-mode of auto. When true, the
+ *  Pi drives one cell at a time, with a per-cell minimum-OFF cooldown using
+ *  the global `peltier_rest_s` threshold. */
+export function setVentsUniquePeltier(deviceId: string, enabled: boolean) {
+  return sendVentsCommand(deviceId, { command: "unique_peltier", value: enabled ? 1 : 0 });
+}
+
+/** Set the shared minimum-OFF threshold (seconds) used by unique-peltier
+ *  auto mode. Range 0–3600. Per-cell timers tick independently against this
+ *  value. Normally pushed from the Settings page; this helper lets the
+ *  device panel override on a single device. */
+export function setVentsPeltierRestSeconds(deviceId: string, seconds: number) {
+  return sendVentsCommand(deviceId, { command: "peltier_rest_s", value: seconds });
+}
+
 export function fetchVentsStatus(deviceId: string) {
   return get<VentsStatus>(`/vents-control/${deviceId}/status`);
 }

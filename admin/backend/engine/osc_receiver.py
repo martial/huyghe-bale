@@ -20,12 +20,14 @@ _RECENT_ALARMS_CAP = 50
 # /vents/status optional trailing args. Firmware iterations have appended
 # fields over time without renumbering; each entry here is read out of
 # `args[idx]` only when present, so old firmware (12 args, no max_temp_c)
-# through new firmware (21 args, dual setpoints + active_target) all decode.
+# through new firmware (24 args, unique-peltier tail) all decode.
 #
 # Positions 16-19 are the dual-setpoint tail. temp_hot_c / temp_cold_c
 # nullable (encoded -1.0 → None). target_c at position 9 is the back-compat
 # alias and equals hot_target_c. Position 20 (active_target) is a string,
-# unlike all earlier numeric tail fields.
+# unlike all earlier numeric tail fields. Positions 21-23 are the
+# unique-peltier tail: unique_peltier (0|1), peltier_rest_s (int seconds),
+# active_peltier_index (0..2; -1 when no cell is currently driven).
 _VENTS_OPTIONAL_STATUS_FIELDS = (
     (12, "max_temp_c"),
     (13, "min_fan_pct"),
@@ -35,6 +37,9 @@ _VENTS_OPTIONAL_STATUS_FIELDS = (
     (17, "temp_cold_c"),
     (18, "hot_target_c"),
     (19, "cold_target_c"),
+    (21, "unique_peltier"),
+    (22, "peltier_rest_s"),
+    (23, "active_peltier_index"),
 )
 # Subset of the above that are nullable (-1.0 sentinel → None).
 _VENTS_NULLABLE_STATUS_FIELDS = frozenset({"temp_hot_c", "temp_cold_c"})
@@ -162,7 +167,8 @@ class OscReceiver:
         Missing temperatures (temp1, temp2, temp_hot_c, temp_cold_c) arrive
         encoded as -1.0 and are exposed as None.
         Firmware iterations: 12 args (legacy, no max_temp_c) → 13 (min_fan)
-        → 15 (over_temp_fan_pct) → 16 (max_fan_pct) → 20 (dual setpoints).
+        → 15 (over_temp_fan_pct) → 16 (max_fan_pct) → 20 (dual setpoints)
+        → 21 (active_target string) → 24 (unique_peltier tail).
         """
         ip = client_address[0]
         now = time.time()

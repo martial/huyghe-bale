@@ -37,6 +37,10 @@ def _reset():
     vents.over_temp_fan_pct = 100.0
     vents.mode = "raw"
     vents.state = "idle"
+    vents.unique_peltier = False
+    vents.peltier_rest_s = float(vents.VENTS_PELTIER_REST_DEFAULT_S)
+    vents.peltier_last_off_monotonic[:] = [0.0, 0.0, 0.0]
+    vents.active_peltier_index = None
     vents.last_osc_time = 0.0
     vents._shutdown_event.clear()
 
@@ -306,28 +310,39 @@ class TestOverTempFanFallback:
 
 def _tick_auto():
     """Run one /auto loop tick without spinning the thread. Mirrors the
-    branches in controllers/vents.py:_auto_loop."""
+    branches in controllers/vents.py:_auto_loop, including the unique-peltier
+    sub-mode (mid-flight collapse, per-cell rest, rest_wait)."""
     with patch.object(vents, "GPIO", _make_gpio()):
         if vents._probe_safety_fault():
             vents.state = "sensor_error"
             vents._apply_peltier_mask(0)
+            vents.active_peltier_index = None
             fb = vents.over_temp_fan_pct / 100.0
             vents._set_fan(0, fb); vents._set_fan(1, fb)
             return
         if any(t is not None and t > vents.max_temp_c for t in vents._probe_temps.values()):
             vents.state = "over_temp"
             vents._apply_peltier_mask(0)
+            vents.active_peltier_index = None
             fb = vents.over_temp_fan_pct / 100.0
             vents._set_fan(0, fb); vents._set_fan(1, fb)
             return
         if vents.mode != "auto":
             vents.state = "idle"
             return
+        # Mid-flight collapse when unique mode is on with a multi-cell mask.
+        if vents.unique_peltier and bin(vents._peltier_mask()).count("1") > 1:
+            keep = next((i for i in range(3) if vents.peltier_state[i]), None)
+            for i in range(3):
+                if i != keep:
+                    vents._set_peltier(i, False)
+            vents.active_peltier_index = keep
         hot_present = vents.probe_hot_id is not None and vents.probe_hot_id in vents._probes
         cold_present = vents.probe_cold_id is not None and vents.probe_cold_id in vents._probes
         if not hot_present or not cold_present:
             vents.state = "probe_unassigned"
             vents._apply_peltier_mask(0)
+            vents.active_peltier_index = None
             vents._set_fan(0, 0.0); vents._set_fan(1, 0.0)
             return
         t_hot = vents._probe_temps.get(vents.probe_hot_id)
@@ -335,6 +350,7 @@ def _tick_auto():
         if t_hot is None or t_cold is None:
             vents.state = "sensor_error"
             vents._apply_peltier_mask(0)
+            vents.active_peltier_index = None
             fb = vents.over_temp_fan_pct / 100.0
             vents._set_fan(0, fb); vents._set_fan(1, fb)
             return
@@ -346,11 +362,24 @@ def _tick_auto():
             need_on = t_hot < vents.hot_target_c - H
             need_off = t_hot >= vents.hot_target_c + H
         if need_on:
-            vents.state = "heating"
-            vents._apply_peltier_mask(0b111)
+            if vents.unique_peltier:
+                idx = vents._pick_unique_peltier_index()
+                if idx is None:
+                    vents.state = "rest_wait"
+                    vents._apply_peltier_mask(0)
+                    vents.active_peltier_index = None
+                else:
+                    vents.state = "heating"
+                    vents._apply_peltier_mask(1 << idx)
+                    vents.active_peltier_index = idx
+            else:
+                vents.state = "heating"
+                vents._apply_peltier_mask(0b111)
+                vents.active_peltier_index = None
         elif need_off:
             vents.state = "cooling"
             vents._apply_peltier_mask(0)
+            vents.active_peltier_index = None
         else:
             vents.state = "holding"
 
@@ -688,8 +717,11 @@ class TestStatus:
         vents.min_fan_pct = 35.0
         vents.over_temp_fan_pct = 75.0
         vents.max_fan_pct = 60.0
+        vents.unique_peltier = True
+        vents.peltier_rest_s = 300
+        vents.active_peltier_index = 2
         args = vents.get_status_osc_args()
-        assert len(args) == 21
+        assert len(args) == 24
         assert args[10] == "raw"             # mode
         assert args[11] == "idle"            # state
         assert args[12] == 80.0              # max_temp_c
@@ -699,6 +731,16 @@ class TestStatus:
         assert args[18] == 25.0              # hot_target_c
         assert args[19] == 18.0              # cold_target_c
         assert args[20] == "cold"            # active_target
+        assert args[21] == 1                 # unique_peltier
+        assert args[22] == 300               # peltier_rest_s
+        assert args[23] == 2                 # active_peltier_index
+
+    def test_osc_args_encode_no_active_cell_as_neg1(self):
+        # active_peltier_index=None must serialize as -1 (OSC has no None).
+        vents.unique_peltier = False
+        vents.active_peltier_index = None
+        args = vents.get_status_osc_args()
+        assert args[23] == -1
 
     def test_osc_args_encode_present_temp(self):
         # Populate via the canonical path: _probes + _probe_temps. The
@@ -1233,3 +1275,333 @@ class TestPrefsMigrationAndRoundTrip:
             vents._load_prefs()
         assert vents.probe_hot_id is None
         assert vents.probe_cold_id is None
+
+
+# ── unique-peltier sub-mode ─────────────────────────────────────────────
+
+
+class TestUniquePeltierAuto:
+    """Unique-peltier sub-mode of auto: drive one cell at a time with
+    per-cell minimum-OFF cooldowns. The auto-loop branches are mirrored in
+    `_tick_auto` so we can drive a single tick deterministically.
+
+    `time.monotonic` is patched to make rest-eligibility checks predictable
+    without sleeping.
+    """
+
+    def setup_method(self):
+        _reset()
+        vents.pwm_fan_1 = MagicMock()
+        vents.pwm_fan_2 = MagicMock()
+        vents.mode = "auto"
+        _assign_both()
+        vents.hot_target_c = 25.0
+        vents.cold_target_c = 18.0
+        vents.active_target = "hot"
+        # Drive-on condition for active=hot: t_hot < hot_target - H.
+        _populate_probes({HOT_ID: 22.0, COLD_ID: 30.0})
+
+    def _set_monotonic(self, value):
+        return patch.object(vents.time, "monotonic", return_value=value)
+
+    # ── regression: standard mode unchanged ──
+
+    def test_standard_mode_drives_all_three(self):
+        vents.unique_peltier = False
+        _tick_auto()
+        assert vents.state == "heating"
+        assert vents.peltier_state == [1, 1, 1]
+        assert vents.active_peltier_index is None
+
+    # ── unique mode: pick / rotate ──
+
+    def test_unique_on_fresh_boot_picks_cell_zero(self):
+        # Never-run cells (last_off == 0.0) all tied for "oldest"; lowest-index
+        # tiebreak picks P1 (index 0).
+        vents.unique_peltier = True
+        with self._set_monotonic(1000.0):
+            _tick_auto()
+        assert vents.state == "heating"
+        assert vents.peltier_state == [1, 0, 0]
+        assert vents.active_peltier_index == 0
+
+    def test_unique_on_keeps_active_across_ticks(self):
+        # If the chosen cell is still on, _pick_unique_peltier_index keeps it.
+        vents.unique_peltier = True
+        with self._set_monotonic(1000.0):
+            _tick_auto()
+        with self._set_monotonic(1001.0):
+            _tick_auto()
+        assert vents.peltier_state == [1, 0, 0]
+
+    def test_unique_on_rotates_after_cooling(self):
+        # P1 drove; then a cooling tick (peltiers off, stamps last_off[0]).
+        # Next drive-on picks the next oldest-rested: P2 (last_off[1] = 0.0
+        # → ties P3 at 0.0, lowest-index wins).
+        vents.unique_peltier = True
+        with self._set_monotonic(1000.0):
+            _tick_auto()
+        assert vents.peltier_state == [1, 0, 0]
+        # Force cooling by lifting hot above target+H so need_off fires.
+        _populate_probes({HOT_ID: 26.0, COLD_ID: 18.0})
+        with self._set_monotonic(1001.0):
+            _tick_auto()
+        assert vents.state == "cooling"
+        assert vents.peltier_state == [0, 0, 0]
+        assert vents.peltier_last_off_monotonic[0] == 1001.0
+        # Back to heating; P1 still has rest (default 600 s), so P2 wins.
+        _populate_probes({HOT_ID: 22.0, COLD_ID: 18.0})
+        with self._set_monotonic(1002.0):
+            _tick_auto()
+        assert vents.state == "heating"
+        assert vents.peltier_state == [0, 1, 0]
+        assert vents.active_peltier_index == 1
+
+    def test_unique_on_all_resting_emits_rest_wait(self):
+        # Every cell still in cooldown → no eligible cell → rest_wait, mask 0.
+        vents.unique_peltier = True
+        vents.peltier_rest_s = 600.0
+        # Pretend all three were recently turned off.
+        vents.peltier_last_off_monotonic[:] = [1000.0, 1001.0, 1002.0]
+        with self._set_monotonic(1100.0):  # 100s < 600s rest for all
+            _tick_auto()
+        assert vents.state == "rest_wait"
+        assert vents.peltier_state == [0, 0, 0]
+        assert vents.active_peltier_index is None
+
+    def test_unique_on_oldest_rested_wins(self):
+        # P1 rested longest (last_off oldest) → eligible and chosen.
+        vents.unique_peltier = True
+        vents.peltier_rest_s = 60.0
+        vents.peltier_last_off_monotonic[:] = [1000.0, 1050.0, 1055.0]
+        with self._set_monotonic(1070.0):
+            # P1 elapsed 70s > 60s → eligible.
+            # P2 elapsed 20s → not eligible.
+            # P3 elapsed 15s → not eligible.
+            _tick_auto()
+        assert vents.peltier_state == [1, 0, 0]
+        assert vents.active_peltier_index == 0
+
+    # ── mid-flight collapse ──
+
+    def test_mid_flight_collapse_keeps_lowest_index(self):
+        # Mask is multi-cell (e.g. raw mode left all three on). On the next
+        # auto tick with unique_peltier=True we collapse to P1.
+        vents.unique_peltier = True
+        vents.peltier_state[:] = [1, 1, 1]
+        with self._set_monotonic(1000.0):
+            _tick_auto()
+        # P1 stays on; P2 and P3 go off → their last_off stamps to now.
+        assert vents.peltier_state == [1, 0, 0]
+        assert vents.peltier_last_off_monotonic[1] == 1000.0
+        assert vents.peltier_last_off_monotonic[2] == 1000.0
+        # P1's last_off untouched (it was never turned off).
+        assert vents.peltier_last_off_monotonic[0] == 0.0
+        assert vents.active_peltier_index == 0
+
+    # ── holding preserves active ──
+
+    def test_holding_preserves_active_index_and_mask(self):
+        # Move into deadband — neither need_on nor need_off — mask preserved.
+        vents.unique_peltier = True
+        with self._set_monotonic(1000.0):
+            _tick_auto()
+        assert vents.peltier_state == [1, 0, 0]
+        _populate_probes({HOT_ID: 24.8, COLD_ID: 18.0})   # in deadband
+        with self._set_monotonic(1001.0):
+            _tick_auto()
+        assert vents.state == "holding"
+        assert vents.peltier_state == [1, 0, 0]
+        assert vents.active_peltier_index == 0
+
+    # ── interactions with raw mode / safety ──
+
+    def test_raw_manual_write_bypasses_rest_constraint(self):
+        # Auto-mode unique mode pushed P1 into rest. Operator switches to raw
+        # and turns P1 back on within the cooldown — that must be honored.
+        vents.unique_peltier = True
+        vents.peltier_rest_s = 600.0
+        vents.peltier_last_off_monotonic[:] = [950.0, 0.0, 0.0]
+        vents.mode = "raw"
+        with self._set_monotonic(1000.0), patch.object(vents, "GPIO", _make_gpio()):
+            # P1 was off → on; rest of 600s has not elapsed (only 50s).
+            vents.handle_peltier_1("/vents/peltier/1", 1)
+        assert vents.peltier_state[0] == 1
+
+    def test_raw_on_off_transition_stamps_last_off(self):
+        # Even in raw mode, on→off goes through _set_peltier and stamps the
+        # timer, so future auto-mode runs honor it.
+        with self._set_monotonic(1000.0), patch.object(vents, "GPIO", _make_gpio()):
+            vents.handle_peltier_2("/vents/peltier/2", 1)
+        # P2 is on.
+        assert vents.peltier_state[1] == 1
+        with self._set_monotonic(1010.0), patch.object(vents, "GPIO", _make_gpio()):
+            vents.handle_peltier_2("/vents/peltier/2", 0)
+        assert vents.peltier_state[1] == 0
+        assert vents.peltier_last_off_monotonic[1] == 1010.0
+
+    def test_safety_lock_clears_active_index(self):
+        # Lock the system (sensor error) while P1 is the unique-mode active
+        # cell. The next tick must clear active_peltier_index and zero the mask.
+        vents.unique_peltier = True
+        vents.active_peltier_index = 0
+        vents.peltier_state[:] = [1, 0, 0]
+        _populate_probes({HOT_ID: None, COLD_ID: 22.0})
+        with self._set_monotonic(1000.0):
+            _tick_auto()
+        assert vents.state == "sensor_error"
+        assert vents.peltier_state == [0, 0, 0]
+        assert vents.active_peltier_index is None
+        # And P1's transition was stamped.
+        assert vents.peltier_last_off_monotonic[0] == 1000.0
+
+    def test_rest_seconds_zero_makes_all_eligible(self):
+        # With rest=0, all cells are perpetually eligible. Tiebreak gives P1.
+        vents.unique_peltier = True
+        vents.peltier_rest_s = 0.0
+        vents.peltier_last_off_monotonic[:] = [1000.0, 1000.0, 1000.0]
+        with self._set_monotonic(1000.0):
+            _tick_auto()
+        assert vents.peltier_state == [1, 0, 0]
+
+
+class TestUniquePeltierHandlers:
+    """OSC + HTTP surface for the two new config knobs."""
+
+    def setup_method(self):
+        _reset()
+
+    def test_unique_peltier_osc_toggles_and_persists(self):
+        with patch.object(vents, "_save_prefs") as save:
+            vents.handle_unique_peltier("/vents/unique_peltier", 1)
+        assert vents.unique_peltier is True
+        save.assert_called_once()
+
+    def test_unique_peltier_osc_off(self):
+        vents.unique_peltier = True
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_unique_peltier("/vents/unique_peltier", 0)
+        assert vents.unique_peltier is False
+
+    def test_peltier_rest_s_osc_clamps_to_max(self):
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_peltier_rest_s("/vents/peltier_rest_s", 999999)
+        assert vents.peltier_rest_s == float(vents.VENTS_PELTIER_REST_MAX_S)
+
+    def test_peltier_rest_s_osc_clamps_to_zero(self):
+        with patch.object(vents, "_save_prefs"):
+            vents.handle_peltier_rest_s("/vents/peltier_rest_s", -42)
+        assert vents.peltier_rest_s == 0.0
+
+    def test_peltier_rest_s_osc_normal_value(self):
+        with patch.object(vents, "_save_prefs") as save:
+            vents.handle_peltier_rest_s("/vents/peltier_rest_s", 300)
+        assert vents.peltier_rest_s == 300.0
+        save.assert_called_once()
+
+    def test_unique_peltier_via_http(self):
+        with patch.object(vents, "_save_prefs"):
+            r = vents.handle_http_test({"command": "unique_peltier", "value": 1})
+        assert r["ok"] is True
+        assert r["unique_peltier"] == 1
+
+    def test_peltier_rest_s_via_http(self):
+        with patch.object(vents, "_save_prefs"):
+            r = vents.handle_http_test({"command": "peltier_rest_s", "value": 120})
+        assert r["ok"] is True
+        assert r["peltier_rest_s"] == 120
+
+    def test_register_osc_maps_unique_peltier_addresses(self):
+        d = MagicMock()
+        vents.register_osc(d)
+        mapped = {c.args[0] for c in d.map.call_args_list}
+        assert "/vents/unique_peltier" in mapped
+        assert "/vents/peltier_rest_s" in mapped
+
+
+class TestUniquePeltierStatus:
+    """Status broadcast and snapshot include the four new fields."""
+
+    def setup_method(self):
+        _reset()
+
+    def test_status_includes_new_keys(self):
+        s = vents.get_status()
+        for k in ("unique_peltier", "peltier_rest_s",
+                  "active_peltier_index", "peltier_rest_remaining"):
+            assert k in s
+
+    def test_active_peltier_index_none_serializes_to_neg1(self):
+        vents.active_peltier_index = None
+        s = vents.get_status()
+        assert s["active_peltier_index"] == -1
+
+    def test_active_peltier_index_passes_through(self):
+        vents.active_peltier_index = 2
+        s = vents.get_status()
+        assert s["active_peltier_index"] == 2
+
+    def test_rest_remaining_zero_for_never_run(self):
+        # Default state — all cells last_off=0.0 → all eligible → 0 remaining.
+        s = vents.get_status()
+        assert s["peltier_rest_remaining"] == [0.0, 0.0, 0.0]
+
+    def test_rest_remaining_counts_down(self):
+        vents.peltier_rest_s = 600.0
+        vents.peltier_last_off_monotonic[:] = [0.0, 100.0, 500.0]
+        with patch.object(vents.time, "monotonic", return_value=200.0):
+            s = vents.get_status()
+        # P1: never-run → 0
+        # P2: elapsed 100s of 600s → 500s remaining
+        # P3: not yet reached (last_off=500 > now=200) → 0 (max guard)
+        #     (We never expect this in practice, but the clamp keeps it safe.)
+        assert s["peltier_rest_remaining"][0] == 0.0
+        assert s["peltier_rest_remaining"][1] == 500.0
+        # The clamp keeps negative deltas at 0 (cell looks more rested than possible).
+        assert s["peltier_rest_remaining"][2] >= 0.0
+
+
+class TestUniquePeltierPrefs:
+    """Round-trip persistence of the two new keys."""
+
+    def setup_method(self):
+        _reset()
+
+    def test_save_includes_unique_and_rest(self, tmp_path):
+        vents.unique_peltier = True
+        vents.peltier_rest_s = 420.0
+        path = tmp_path / "prefs.json"
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._save_prefs()
+        import json as _json
+        data = _json.loads(path.read_text())
+        assert data["unique_peltier"] == 1
+        assert data["peltier_rest_s"] == 420
+
+    def test_load_restores_unique_and_rest(self, tmp_path):
+        path = tmp_path / "prefs.json"
+        path.write_text(
+            '{"max_temp_c": 80, "unique_peltier": 1, "peltier_rest_s": 180}'
+        )
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._load_prefs()
+        assert vents.unique_peltier is True
+        assert vents.peltier_rest_s == 180.0
+
+    def test_load_missing_keys_keeps_defaults(self, tmp_path):
+        path = tmp_path / "prefs.json"
+        path.write_text('{"max_temp_c": 80}')
+        vents.unique_peltier = False
+        vents.peltier_rest_s = 600.0
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._load_prefs()
+        # Missing → in-memory defaults preserved.
+        assert vents.unique_peltier is False
+        assert vents.peltier_rest_s == 600.0
+
+    def test_load_clamps_rest_above_max(self, tmp_path):
+        path = tmp_path / "prefs.json"
+        path.write_text('{"max_temp_c": 80, "peltier_rest_s": 99999}')
+        with patch.object(vents, "_PREFS_PATH", path):
+            vents._load_prefs()
+        assert vents.peltier_rest_s == float(vents.VENTS_PELTIER_REST_MAX_S)

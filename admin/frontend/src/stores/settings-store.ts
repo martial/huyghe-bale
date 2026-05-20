@@ -20,6 +20,8 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     vents_max_fan_pct: 100,
     vents_min_rpm_alarm: 500,
     vents_over_temp_fan_pct: 100,
+    vents_peltier_rest_s: 600,
+    vents_unique_peltier_default: false,
     webhook_url: "",
     webhook_token: "",
     stats_webhook_enabled: false,

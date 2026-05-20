@@ -31,6 +31,12 @@ VENTS_AUTO_FAN_LOW_PCT = 20.0  # PWM floor reference (raw/manual fans); unused b
 VENTS_AUTO_FAN_HIGH_PCT = 80.0 # PWM ceiling reference (raw/manual fans)
 VENTS_AUTO_LOOP_HZ = 4          # auto loop tick rate
 
+# "Unique peltier" sub-mode of auto: drive one cell at a time with a per-cell
+# minimum-OFF cooldown. Threshold is global (one Setting pushed to every Pi);
+# timers are tracked per cell independently.
+VENTS_PELTIER_REST_DEFAULT_S = 600     # 10 minutes
+VENTS_PELTIER_REST_MAX_S = 3600        # Settings clamp ceiling (1 hour)
+
 # Broadcast
 VENTS_STATUS_HZ = 5            # /vents/status broadcast rate (5 Hz)
 VENTS_TEMP_POLL_HZ = 1         # DS18B20 read cadence (1 Hz — reads are slow)
