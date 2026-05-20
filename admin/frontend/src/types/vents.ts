@@ -98,7 +98,8 @@ export interface VentsStatus {
    *  timers are tracked independently). Absent on pre-unique firmware. */
   peltier_rest_s?: number;
   /** Index of the cell currently being driven in unique mode (0..2). -1 when
-   *  no cell is driven (rest_wait, cooling, holding-off, or unique mode off). */
+   *  no cell is driven (rest_wait, drive-off branch of heating, holding-off,
+   *  or unique mode off). */
   active_peltier_index?: number;
   /** Per-cell remaining seconds before each cell becomes eligible in unique
    *  mode. Always length 3 when present. 0 means eligible now (or never-run).

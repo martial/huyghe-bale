@@ -561,14 +561,15 @@ def _safety_lock_state():
 def _peltier_rest_remaining_s():
     """[r0, r1, r2] — seconds until each cell is eligible to be re-driven in
     unique-peltier mode. 0.0 means eligible now (incl. never-run cells, which
-    have last_off == 0.0)."""
+    have last_off == 0.0). Only the lower bound matters: by construction
+    `peltier_rest_s - (now - last) <= peltier_rest_s` whenever last > 0."""
     now = time.monotonic()
     out = []
     for last in peltier_last_off_monotonic:
         if last == 0.0:
             out.append(0.0)
         else:
-            out.append(_clamp(peltier_rest_s - (now - last), 0.0, peltier_rest_s))
+            out.append(max(0.0, peltier_rest_s - (now - last)))
     return out
 
 
@@ -731,7 +732,7 @@ def _auto_loop():
                     _apply_peltier_mask(1 << idx)
                     active_peltier_index = idx
             else:
-                state = "heating"            # name preserved for admin enum compat
+                state = "heating"
                 _apply_peltier_mask(0b111)
                 active_peltier_index = None
         elif need_off:
