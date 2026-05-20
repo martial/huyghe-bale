@@ -196,6 +196,7 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
 
   const online = status?.online ?? false;
   const limit = status?.limit ?? 0;
+  const farLimit = status?.far_limit ?? 0;
   const homed = status?.homed ?? 0;
   const calibrated = status?.calibrated ?? 0;
   const state = status?.state ?? "idle";
@@ -252,7 +253,20 @@ export default function TrolleyTestPanel({ device }: { device: Device }) {
           {state}
         </span>
         {limit === 1 && (
-          <span className="px-2 py-0.5 rounded bg-yellow-900/40 text-yellow-300">⚠ limit</span>
+          <span
+            className="px-2 py-0.5 rounded bg-yellow-900/40 text-yellow-300"
+            title="Home-end limit switch tripped"
+          >
+            ⚠ home
+          </span>
+        )}
+        {farLimit === 1 && (
+          <span
+            className="px-2 py-0.5 rounded bg-yellow-900/40 text-yellow-300"
+            title="Far-end limit switch tripped"
+          >
+            ⚠ far
+          </span>
         )}
         {alarmLocked && (
           <span className="px-2 py-0.5 rounded bg-red-950 text-red-200 font-semibold tracking-wide">

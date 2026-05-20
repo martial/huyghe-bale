@@ -55,16 +55,17 @@ VENTS_TACHO_MIN_DT_S = 0.005   # debounce gap for tacho edge → RPM
 #   BCM 7  (PEND_1)  is SPI0 CE1 — fine as plain GPIO when SPI is disabled in
 #                    /boot/firmware/config.txt (it is on these Pis).
 #
-# NOTE: only PIN_LIM_SWITCH (home end) is read by controllers/trolley.py today.
-# The far-end + alarm + PEND constants are present so the bench script and any
-# future ISR refactor can reference the canonical pin numbers in one place.
+# Both limit switches are read by controllers/trolley.py — each has its own
+# ISR and motion-abort guard (reverse aborts on home, forward aborts on far).
+# The alarm + PEND constants are still bench-script-only; their canonical pin
+# numbers live here so any future ISR refactor has one place to reference.
 
 PIN_STEP_DIR = 23                 # DIR
 PIN_STEP_PUL = 18                 # PUL
 PIN_STEP_ENA = 14                 # ENA — active LOW
 
-PIN_LIM_SWITCH      = 20          # home end — used by the firmware (single switch it knows)
-PIN_LIM_SWITCH_FAR  = 21          # far end — read by scripts/test_trolley.py only (for now)
+PIN_LIM_SWITCH      = 20          # home end — ISR in controllers/trolley.py
+PIN_LIM_SWITCH_FAR  = 21          # far end  — ISR in controllers/trolley.py
 
 PIN_ALARM_1 = 1                   # driver fault output channel 1 (input to Pi)
 PIN_ALARM_2 = 16                  # driver fault output channel 2

@@ -11,6 +11,7 @@ export default function TrolleyHero({ status, stale, lastPushAgeS }: Props) {
   const position = status?.position ?? 0;
   const homed = status?.homed ?? 0;
   const limit = status?.limit ?? 0;
+  const farLimit = status?.far_limit ?? 0;
   const online = status?.online ?? false;
   const gradient = homed
     ? "from-sky-500/20 to-sky-900/20"
@@ -35,8 +36,19 @@ export default function TrolleyHero({ status, stale, lastPushAgeS }: Props) {
             </span>
           )}
           {limit === 1 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-yellow-500/10 text-yellow-300 border-yellow-500/30">
-              ⚠ limit
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded border bg-yellow-500/10 text-yellow-300 border-yellow-500/30"
+              title="Home-end limit switch tripped"
+            >
+              ⚠ home
+            </span>
+          )}
+          {farLimit === 1 && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded border bg-yellow-500/10 text-yellow-300 border-yellow-500/30"
+              title="Far-end limit switch tripped"
+            >
+              ⚠ far
             </span>
           )}
           {stale && (

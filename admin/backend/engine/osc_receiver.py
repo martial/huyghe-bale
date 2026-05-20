@@ -121,8 +121,12 @@ class OscReceiver:
               [, alarm_int, alarm_locked_int
               [, enabled_int
               [, speed_pct_float
-              [, dir_int, accel_s_float, decel_s_float]]]]]).
+              [, dir_int, accel_s_float, decel_s_float
+              [, far_limit_int]]]]]]).
         Older firmware sends shorter prefixes; treat trailing fields as optional.
+        `far_limit` (position 12) is the far-end limit switch — pre-extension
+        firmware omits it, in which case the field is absent from the row
+        and the frontend hides the far badge.
         """
         ip = client_address[0]
         self.last_seen[ip] = time.time()
@@ -141,7 +145,7 @@ class OscReceiver:
             decel_time_s = float(args[11]) if len(args) > 11 else None
         except (TypeError, ValueError):
             return
-        self.trolley_status[ip] = {
+        row = {
             "position": position,
             "limit": limit,
             "homed": homed,
@@ -156,6 +160,14 @@ class OscReceiver:
             "decel_time_s": decel_time_s,
             "timestamp": time.time(),
         }
+        # Optional tail — only set the key when the field is actually carried
+        # so older-firmware admins don't see a phantom "0" for the far switch.
+        if len(args) > 12:
+            try:
+                row["far_limit"] = int(args[12])
+            except (TypeError, ValueError):
+                pass
+        self.trolley_status[ip] = row
 
     def _handle_vents_status(self, client_address, addr, *args):
         """Pi-pushed status for vents controllers. Arg layout matches

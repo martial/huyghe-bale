@@ -180,6 +180,7 @@ def get_status(device_id):
     return jsonify({
         "position": status.get("position", 0.0),
         "limit": status.get("limit", 0),
+        "far_limit": status.get("far_limit", 0),
         "homed": status.get("homed", 0),
         "calibrated": status.get("calibrated", 0),
         "state": status.get("state", "idle"),

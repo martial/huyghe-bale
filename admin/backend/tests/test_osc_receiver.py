@@ -187,6 +187,31 @@ class TestHandleTrolleyStatus:
         assert s["accel_time_s"] == pytest.approx(0.5)
         assert s["decel_time_s"] == pytest.approx(0.25)
 
+    def test_far_limit_decodes_when_present(self):
+        # 13-arg payload (new firmware) — far_limit at position 12 lands in the row.
+        r = _fresh_receiver()
+        r._handle_trolley_status(
+            ("10.0.0.15", 5000), "/trolley/status",
+            0.9, 0, 1, "idle", 1, 0, 0, 1,
+            0.0, 1, 0.5, 0.25, 1,
+        )
+        s = r.get_trolley_status("10.0.0.15")
+        assert s["far_limit"] == 1
+        # Home limit untouched.
+        assert s["limit"] == 0
+
+    def test_far_limit_absent_on_old_firmware(self):
+        # 12-arg payload (pre-extension firmware) — `far_limit` must NOT appear
+        # in the row, so the frontend can hide the far badge cleanly.
+        r = _fresh_receiver()
+        r._handle_trolley_status(
+            ("10.0.0.16", 5000), "/trolley/status",
+            0.0, 0, 1, "idle", 1, 0, 0, 1,
+            0.3, 1, 0.5, 0.25,
+        )
+        s = r.get_trolley_status("10.0.0.16")
+        assert "far_limit" not in s
+
 
 class TestHandleVentsStatus:
     def test_parses_full_payload(self):

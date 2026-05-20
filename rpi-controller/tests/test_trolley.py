@@ -945,13 +945,14 @@ class TestDescribeAndStatus:
         trolley._current_dir = trolley.DIR_FORWARD
         trolley._accel_time_s = 0.5
         trolley._decel_time_s = 0.25
+        trolley.far_limit_error = 1
         max_hz = 1.0 / (2.0 * trolley.TROLLEY_MIN_PULSE_DELAY_S)
         trolley._current_speed_hz = 0.3 * max_hz
         with patch.object(trolley, "GPIO", _make_gpio()):
             args = trolley.get_status_osc_args()
         # [position, limit, homed, state, calibrated, alarm, alarm_locked,
-        #  enabled, speed_pct, dir, accel_time_s, decel_time_s]
-        assert len(args) == 12
+        #  enabled, speed_pct, dir, accel_time_s, decel_time_s, far_limit]
+        assert len(args) == 13
         assert isinstance(args[0], float)
         assert isinstance(args[3], str)
         assert args[3] == trolley.STATE_IDLE
@@ -962,6 +963,7 @@ class TestDescribeAndStatus:
         assert args[8] == pytest.approx(0.3, abs=1e-3)
         assert args[9] == int(trolley.DIR_FORWARD)
         assert args[10] == pytest.approx(0.5)
+        assert args[12] == 1                       # far_limit tripped
         assert args[11] == pytest.approx(0.25)
 
     def test_status_includes_speed_pct_dir_accel_decel(self):

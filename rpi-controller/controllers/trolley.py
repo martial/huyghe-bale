@@ -1049,12 +1049,14 @@ def get_status():
 def get_status_osc_args():
     """OSC argument list for /trolley/status:
     [position, limit, homed, state, calibrated, alarm, alarm_locked, enabled,
-     speed_pct, dir, accel_time_s, decel_time_s].
+     speed_pct, dir, accel_time_s, decel_time_s, far_limit].
 
     Older admin receivers ignore trailing fields; new ones decode them. The
     `enabled` flag reflects the live ENA state so the admin checkbox can sync
     after a page reload. `speed_pct`, `dir`, `accel_time_s`, `decel_time_s`
-    let the admin echo live driver state next to its editable controls."""
+    let the admin echo live driver state next to its editable controls.
+    `far_limit` (position 12, forward-compat append) is the far-end limit
+    switch state — older admins stop reading at 12 and never see it."""
     s = get_status()
     return [
         float(s["position"]),
@@ -1069,4 +1071,5 @@ def get_status_osc_args():
         int(s["dir"]),
         float(s["accel_time_s"]),
         float(s["decel_time_s"]),
+        int(s["far_limit"]),
     ]

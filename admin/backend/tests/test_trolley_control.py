@@ -124,7 +124,7 @@ def test_status_reads_receiver(ctx):
     from engine.osc_receiver import OscReceiver
     r = OscReceiver(port=9001)
     r.trolley_status["192.168.1.77"] = {
-        "position": 0.42, "limit": 0, "homed": 1,
+        "position": 0.42, "limit": 0, "far_limit": 1, "homed": 1,
         "state": "idle", "calibrated": 1, "enabled": 1,
         "speed_pct": 0.3, "dir": 1, "accel_time_s": 0.5, "decel_time_s": 0.25,
         "timestamp": 123.0,
@@ -135,6 +135,8 @@ def test_status_reads_receiver(ctx):
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["position"] == pytest.approx(0.42)
+    assert body["limit"] == 0
+    assert body["far_limit"] == 1
     assert body["homed"] == 1
     assert body["calibrated"] == 1
     assert body["state"] == "idle"
@@ -165,6 +167,8 @@ def test_status_endpoint_passes_through_none_for_legacy_firmware(ctx):
     assert body["dir"] is None
     assert body["accel_time_s"] is None
     assert body["decel_time_s"] is None
+    # `far_limit` absent in the receiver row → endpoint defaults it to 0.
+    assert body["far_limit"] == 0
 
 
 def test_home_with_direction_sends_string(ctx):

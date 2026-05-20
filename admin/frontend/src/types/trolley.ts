@@ -73,7 +73,11 @@ export interface TrolleyTimelineSummary {
 
 export interface TrolleyStatus {
   position: number;
+  /** Home-end limit switch state (0|1). */
   limit: number;
+  /** Far-end limit switch state (0|1). Optional — pre-extension firmware
+   *  omits it; the UI hides the far badge when undefined or 0. */
+  far_limit?: number;
   homed: number;
   /** 1 = rail length and wheel radius are set on the Pi; 0 = needs config. */
   calibrated: number;
