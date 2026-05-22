@@ -51,10 +51,11 @@ def get_health():
     except Exception as e:
         playback_state["last_error"] = f"playback introspection failed: {e}"
 
+    all_devices = device_store.list_all()
     vents_over_temp = []
     vents_probe_unassigned = []
     try:
-        for dev in device_store.list_all():
+        for dev in all_devices:
             if dev.get("type") != "vents":
                 continue
             ip = dev.get("ip_address")
@@ -103,7 +104,7 @@ def get_health():
         # Read live from config so a late-override is reflected, not the
         # value captured at module-import time.
         "data_dir": config.DATA_DIR,
-        "device_count": len(device_store.list_all()),
+        "device_count": len(all_devices),
     }
     payload["ok"] = (
         payload["osc_receiver"]["error"] is None
