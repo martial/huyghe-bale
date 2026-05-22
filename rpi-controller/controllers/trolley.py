@@ -808,21 +808,18 @@ def handle_position(address, *args):
         return
     if not args:
         return
-    permissive = bool(_settings.get("permissive_mode", True))
+    if not homed:
+        logger.warning("OSC %s: refused — trolley not homed", address)
+        return
+    permissive = bool(_settings.get("permissive_mode", False))
     calibrated = _is_calibrated()
-    if not permissive:
-        if not homed:
-            logger.warning("OSC %s: refused — trolley not homed "
-                           "(set permissive_mode=true to override)", address)
-            return
-        if not calibrated:
+    if not calibrated:
+        if not permissive:
             logger.warning("OSC %s: refused — trolley not configured "
                            "(set permissive_mode=true to override)", address)
             return
-    elif not (homed and calibrated):
-        logger.warning("OSC %s: PERMISSIVE — homed=%d configured=%d, "
-                       "using fallback rail=%d steps",
-                       address, int(homed), int(calibrated), _rail_length_steps())
+        logger.warning("OSC %s: PERMISSIVE — not configured, "
+                       "using fallback rail=%d steps", address, _rail_length_steps())
     value = _clamp(float(args[0]), 0.0, 1.0)
     # When unconfigured, _soft_limit_steps() is 0 — fall back to the
     # _rail_length_steps() (which uses TROLLEY_MAX_STEPS in that case)

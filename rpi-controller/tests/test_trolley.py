@@ -536,7 +536,9 @@ class TestFollow:
 
 class TestPositionGuards:
     def test_refuses_when_unhomed(self, running_trolley):
-        trolley._settings["permissive_mode"] = False
+        # Homing is mandatory for a position move — permissive_mode does not
+        # override it (it only relaxes the calibration check).
+        trolley._settings["permissive_mode"] = True
         trolley.homed = False
         trolley.handle_position("/trolley/position", 0.5)
         assert _wait_idle(timeout=1.0)
@@ -557,14 +559,14 @@ class TestPositionGuards:
             finally:
                 trolley.cleanup()
 
-    def test_permissive_position_runs_without_homed_or_configured(self, running_trolley):
-        """With permissive_mode=True (the default), /trolley/position must
-        enqueue a follow even on an unhomed/unconfigured rig. Required for
-        bench testing without limit switches wired."""
+    def test_permissive_position_runs_homed_but_unconfigured(self, running_trolley):
+        """With permissive_mode=True, a homed-but-unconfigured rig still runs
+        a position move on the fallback rail length — bench testing without
+        calibration. Homing itself stays mandatory (test_refuses_when_unhomed)."""
         trolley._settings["permissive_mode"] = True
         trolley._settings["rail_length_mm"] = None  # unconfigured
         trolley._settings["wheel_radius_mm"] = None
-        trolley.homed = False
+        trolley.homed = True
         while not trolley._command_queue.empty():
             try:
                 trolley._command_queue.get_nowait()

@@ -69,7 +69,8 @@ DEFAULTS = {
     "soft_limit_pct": 0.98,
     # When True, /trolley/position runs even on an unconfigured rig
     # (uses TROLLEY_MAX_STEPS as the rail length). For bench testing.
-    "permissive_mode": True,
+    # Homing is always required — this flag only relaxes the calibration check.
+    "permissive_mode": False,
     # Trapezoidal ramp times applied to /trolley/step and /trolley/position.
     # 0 = no ramp (constant speed, identical to legacy behaviour).
     "accel_time_s": 0.0,
