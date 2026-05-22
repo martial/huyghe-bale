@@ -157,6 +157,16 @@ class TestSetup:
             assert trolley._motion_thread is not None
             assert trolley._motion_thread.is_alive()
 
+    def test_resets_permissive_mode_on_startup(self):
+        # A persisted permissive_mode=True must not survive a restart.
+        trolley._settings["permissive_mode"] = True
+        trolley._settings_pending["permissive_mode"] = True
+        with patch.object(trolley, "GPIO", _make_gpio()), \
+             patch.object(trolley, "trolley_settings", _settings_mock_with_real_helpers()):
+            trolley.setup(MagicMock())
+            assert trolley._settings["permissive_mode"] is False
+            assert trolley._settings_pending["permissive_mode"] is False
+
 
 class TestCleanup:
     def setup_method(self):

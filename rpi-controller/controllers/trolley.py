@@ -553,6 +553,11 @@ def setup(webhooks):
     global alarm_locked, _current_pulse_hz
     _webhooks = webhooks
     _reload_settings()
+    # permissive_mode is a session flag — a persisted value must not survive a
+    # restart. Force the live and staged copies false so it boots safe and a
+    # later config/save can't carry the stale device.json value back in.
+    _settings["permissive_mode"] = False
+    _settings_pending["permissive_mode"] = False
 
     position_steps = 0
     homed = False

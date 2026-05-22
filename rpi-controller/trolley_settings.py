@@ -70,6 +70,7 @@ DEFAULTS = {
     # When True, /trolley/position runs even on an unconfigured rig
     # (uses TROLLEY_MAX_STEPS as the rail length). For bench testing.
     # Homing is always required — this flag only relaxes the calibration check.
+    # Reset to false on every service restart (controllers/trolley.setup).
     "permissive_mode": False,
     # Trapezoidal ramp times applied to /trolley/step and /trolley/position.
     # 0 = no ramp (constant speed, identical to legacy behaviour).
