@@ -235,6 +235,20 @@ class TestHandleDir:
             mock_gpio.output.assert_called_with(trolley.PIN_STEP_DIR, 0)
             assert trolley._current_dir == trolley.DIR_REVERSE
 
+    def test_dir_locked_during_motion(self):
+        # While the motion thread is busy, /trolley/dir must not flip the DIR
+        # pin — an in-flight reversal would drive a running stepper backwards.
+        trolley._current_dir = trolley.DIR_FORWARD
+        with patch.object(trolley, "GPIO", _make_gpio()) as mock_gpio:
+            trolley._idle_event.clear()
+            trolley.handle_dir("/trolley/dir", 0)
+            assert trolley._current_dir == trolley.DIR_FORWARD
+            mock_gpio.output.assert_not_called()
+            # Once idle again, the same command is honoured.
+            trolley._idle_event.set()
+            trolley.handle_dir("/trolley/dir", 0)
+            assert trolley._current_dir == trolley.DIR_REVERSE
+
 
 class TestHandleSpeed:
     def setup_method(self):
@@ -637,6 +651,84 @@ class TestFarLimitSwitch:
         assert trolley._current_pulse_hz == 0.0
 
 
+class TestLimitGuardScenarios:
+    """The direction-paired limit guard across the scenarios the audit found
+    untested: escaping a held switch, both switches held, a limit hit during
+    a ramped burst, and a switch already held at boot."""
+
+    def test_escape_forward_from_held_home_limit(self, running_trolley):
+        # Home switch held: commanding forward (away from home) must still
+        # move — the operator has to be able to drive off a tripped switch.
+        trolley.limit_error = 1
+        trolley.position_steps = 0
+        trolley.handle_dir("/trolley/dir", 1)
+        trolley.handle_step("/trolley/step", 50)
+        assert _wait_idle()
+        assert trolley.position_steps == 50
+
+    def test_escape_reverse_from_held_far_limit(self, running_trolley):
+        # Symmetric: far switch held, reverse (toward home) must still move.
+        trolley.far_limit_error = 1
+        trolley.position_steps = 500
+        trolley.handle_dir("/trolley/dir", 0)
+        trolley.handle_step("/trolley/step", 50)
+        assert _wait_idle()
+        assert trolley.position_steps == 450
+
+    def test_both_limits_block_forward(self, running_trolley):
+        trolley.limit_error = 1
+        trolley.far_limit_error = 1
+        trolley.position_steps = 100
+        trolley.handle_dir("/trolley/dir", 1)
+        trolley.handle_step("/trolley/step", 50)
+        assert _wait_idle()
+        assert trolley.position_steps == 100
+
+    def test_both_limits_block_reverse(self, running_trolley):
+        trolley.limit_error = 1
+        trolley.far_limit_error = 1
+        trolley.position_steps = 100
+        trolley.handle_dir("/trolley/dir", 0)
+        trolley.handle_step("/trolley/step", 50)
+        assert _wait_idle()
+        assert trolley.position_steps == 100
+
+    def test_limit_aborts_ramped_burst(self, running_trolley):
+        # A limit tripped mid-flight aborts the ramped pulse train — the
+        # decel ramp does not "finish" into the end-stop.
+        trolley._accel_time_s = 0.05
+        trolley._decel_time_s = 0.2
+        trolley._current_speed_hz = 200.0
+        trolley.position_steps = 0
+        trolley.handle_dir("/trolley/dir", 1)
+
+        import threading
+
+        def trip_far_mid_burst():
+            time.sleep(0.05)
+            trolley.far_limit_error = 1
+
+        t = threading.Thread(target=trip_far_mid_burst, daemon=True)
+        t.start()
+        trolley.handle_step("/trolley/step", 100000)
+        assert _wait_idle(timeout=5.0)
+        t.join(timeout=1.0)
+        assert trolley.far_limit_error == 1
+        assert trolley.position_steps < 100000
+
+    def test_boot_with_home_limit_held_blocks_reverse(self, running_trolley):
+        # Switch already pressed at startup: once the ISR fires, the first
+        # reverse command must abort immediately.
+        running_trolley.input.return_value = running_trolley.HIGH
+        trolley._current_dir = trolley.DIR_REVERSE
+        trolley._limit_switch_isr(trolley.PIN_LIM_SWITCH)
+        assert trolley.limit_error == 1
+        trolley.position_steps = 0
+        trolley.handle_step("/trolley/step", 100)
+        assert _wait_idle()
+        assert trolley.position_steps == 0
+
+
 class TestAlarmLock:
     def setup_method(self):
         _reset()
@@ -822,6 +914,30 @@ class TestHome:
         assert trolley.position_steps == CALIBRATED_RAIL
         assert trolley.state == trolley.STATE_IDLE
 
+    def test_dir_change_refused_during_homing(self, running_trolley):
+        """A /trolley/dir sent mid-homing is refused, so a 'home reverse'
+        cannot be flipped in flight to drive toward the far end."""
+        trolley.position_steps = 200
+        trolley.homed = False
+
+        import threading
+
+        def attempt_dir_then_trip():
+            time.sleep(0.05)
+            trolley.handle_dir("/trolley/dir", 1)  # refused — homing in progress
+            trolley.limit_error = 1
+            trolley.position_steps = 0
+            trolley.homed = True
+
+        t = threading.Thread(target=attempt_dir_then_trip, daemon=True)
+        t.start()
+        trolley.handle_home("/trolley/home", "reverse")
+        assert _wait_idle(timeout=5.0)
+        t.join(timeout=1.0)
+        assert trolley._current_dir == trolley.DIR_REVERSE
+        assert trolley.position_steps == 0
+        assert trolley.homed is True
+
 
 # ── settings ────────────────────────────────────────────────────────────────
 
@@ -910,6 +1026,19 @@ class TestHttpTest:
         with patch.object(trolley, "GPIO", _make_gpio()):
             r = trolley.handle_http_test({"command": "calibrate_start", "value": "forward"})
         assert r["ok"] is False
+
+    def test_dir_via_http_refused_during_motion(self):
+        # The HTTP dir probe routes through handle_dir, so it honours the
+        # same in-motion direction lock as the OSC path.
+        trolley._current_dir = trolley.DIR_FORWARD
+        trolley._idle_event.clear()
+        try:
+            with patch.object(trolley, "GPIO", _make_gpio()):
+                r = trolley.handle_http_test({"command": "dir", "value": 0})
+            assert r["ok"] is True
+            assert trolley._current_dir == trolley.DIR_FORWARD
+        finally:
+            trolley._idle_event.set()
 
 
 # ── describe / get_status ───────────────────────────────────────────────────

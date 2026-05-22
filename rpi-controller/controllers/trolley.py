@@ -697,6 +697,9 @@ def handle_dir(address, *args):
         return
     if not args:
         return
+    if not _idle_event.is_set():
+        logger.warning("OSC %s: refused — motion in progress, direction is locked", address)
+        return
     _set_dir(int(args[0]))
     logger.info("OSC %s: %s", address, "forward" if _current_dir == DIR_FORWARD else "reverse")
 
@@ -926,7 +929,7 @@ def handle_http_test(body):
         if command == "enable":
             _set_enable(bool(int(value)))
         elif command == "dir":
-            _set_dir(int(value))
+            handle_dir("/http", int(value))
         elif command == "speed":
             handle_speed("/http", float(value))
         elif command == "accel":
