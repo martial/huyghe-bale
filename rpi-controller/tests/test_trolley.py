@@ -544,6 +544,38 @@ class TestFollow:
         assert _wait_idle(timeout=5.0)
         assert trolley.position_steps == 0
 
+    def test_ramped_position_lands_exactly_on_target(self, running_trolley):
+        # A position follow with accel/decel must land position_steps exactly
+        # on the commanded target — the ramp changes pulse timing, not count.
+        trolley._accel_time_s = 0.05
+        trolley._decel_time_s = 0.05
+        trolley.handle_position("/trolley/position", 0.3)
+        assert _wait_idle(timeout=5.0)
+        assert trolley.position_steps == int(round(0.3 * CALIBRATED_RAIL))
+
+    def test_ramped_retarget_mid_move_lands_on_new_target(self, running_trolley):
+        # A second position command arriving mid-ramp must land exactly on the
+        # new target — _run_follow recomputes delta from the live position.
+        trolley._accel_time_s = 0.1
+        trolley._decel_time_s = 0.1
+        trolley.handle_position("/trolley/position", 0.8)
+        time.sleep(0.1)
+        trolley.handle_position("/trolley/position", 0.2)
+        assert _wait_idle(timeout=5.0)
+        assert trolley.position_steps == int(round(0.2 * CALIBRATED_RAIL))
+
+    def test_ramped_round_trip_returns_to_zero(self, running_trolley):
+        # Out-and-back with ramps on both legs must land position_steps back
+        # at exactly 0 — no cumulative ramp drift.
+        trolley._accel_time_s = 0.05
+        trolley._decel_time_s = 0.05
+        trolley.handle_position("/trolley/position", 0.5)
+        assert _wait_idle(timeout=5.0)
+        assert trolley.position_steps == int(round(0.5 * CALIBRATED_RAIL))
+        trolley.handle_position("/trolley/position", 0.0)
+        assert _wait_idle(timeout=5.0)
+        assert trolley.position_steps == 0
+
 
 class TestPositionGuards:
     def test_refuses_when_unhomed(self, running_trolley):
@@ -774,6 +806,20 @@ class TestLimitGuardScenarios:
         trolley.handle_step("/trolley/step", 50)
         assert _wait_idle()
         assert trolley.position_steps == 100
+
+    def test_ramped_move_limit_hit_pins_position_exactly(self, running_trolley):
+        # A far-limit hit during a ramped move must leave position_steps at the
+        # exact ISR-pinned end value (rail), not a ramp-truncated count.
+        trolley._accel_time_s = 0.05
+        trolley._decel_time_s = 0.2
+        trolley.handle_dir("/trolley/dir", 1)
+        trolley.handle_step("/trolley/step", 100000)
+        time.sleep(0.05)  # let the ramp get underway
+        running_trolley.input.return_value = running_trolley.HIGH  # far switch closes
+        assert _wait_idle(timeout=5.0)  # _pulse_once's live-pin read aborts the move
+        # Motion is now idle; fire the ISR with no concurrent writer of position_steps.
+        trolley._far_limit_switch_isr(trolley.PIN_LIM_SWITCH_FAR)
+        assert trolley.position_steps == CALIBRATED_RAIL
 
 
 class TestAlarmLock:
