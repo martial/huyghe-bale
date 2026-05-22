@@ -492,6 +492,7 @@ def running_trolley():
          patch.object(trolley, "trolley_settings", _settings_mock_with_real_helpers()):
         trolley.setup(MagicMock())
         trolley.homed = True  # most tests assume already homed
+        trolley._enabled = True  # and the driver enabled — motion needs it
         trolley._current_speed_hz = 1.0 / (2.0 * trolley.TROLLEY_MIN_PULSE_DELAY_S)
         yield gpio
         trolley.cleanup()
@@ -666,7 +667,8 @@ class TestFarLimitSwitch:
 class TestLimitGuardScenarios:
     """The direction-paired limit guard across the scenarios the audit found
     untested: escaping a held switch, both switches held, a limit hit during
-    a ramped burst, and a switch already held at boot."""
+    a ramped burst, a switch already held at boot, a disabled driver halting
+    motion, and the live-pin fallback when the ISR flag is stale."""
 
     def test_escape_forward_from_held_home_limit(self, running_trolley):
         # Home switch held: commanding forward (away from home) must still
@@ -739,6 +741,39 @@ class TestLimitGuardScenarios:
         trolley.handle_step("/trolley/step", 100)
         assert _wait_idle()
         assert trolley.position_steps == 0
+
+    def test_disable_driver_aborts_homing(self, running_trolley):
+        # Disabling the driver mid-homing must stop the pulse loop. _run_home
+        # has no step ceiling, so without this it spins forever — no limit
+        # switch will ever trip while the motor is electrically dead.
+        trolley.handle_home("/trolley/home", "reverse")
+        time.sleep(0.05)
+        trolley.handle_enable("/trolley/enable", 0)
+        assert _wait_idle(timeout=3.0)
+        assert trolley._enabled is False
+
+    def test_live_pin_read_aborts_reverse_without_isr_flag(self, running_trolley):
+        # Limit safety must not hinge on the ISR flag alone: limit_error stays
+        # 0 (a missed/stale interrupt) but the home pin reads HIGH, so the live
+        # GPIO read in _pulse_once must still abort a reverse move.
+        trolley.limit_error = 0
+        running_trolley.input.return_value = running_trolley.HIGH
+        trolley.position_steps = 100
+        trolley.handle_dir("/trolley/dir", 0)
+        trolley.handle_step("/trolley/step", 50)
+        assert _wait_idle()
+        assert trolley.position_steps == 100
+
+    def test_live_pin_read_aborts_forward_without_isr_flag(self, running_trolley):
+        # Symmetric: far_limit_error 0 but the far pin reads HIGH → a forward
+        # move aborts on the live read alone.
+        trolley.far_limit_error = 0
+        running_trolley.input.return_value = running_trolley.HIGH
+        trolley.position_steps = 100
+        trolley.handle_dir("/trolley/dir", 1)
+        trolley.handle_step("/trolley/step", 50)
+        assert _wait_idle()
+        assert trolley.position_steps == 100
 
 
 class TestAlarmLock:

@@ -209,12 +209,16 @@ def _set_enable(on):
 
 
 def _pulse_once(delay_s):
-    """One PUL high-low cycle. Returns False if aborted (limit hit or stop)."""
+    """One PUL high-low cycle. Returns False without pulsing when motion must
+    stop: aborted, driver disabled, or the current direction's limit held —
+    checked via ISR flag or live pin, so a missed interrupt can't be fatal."""
     if _abort_event.is_set():
         return False
-    if limit_error and _current_dir == DIR_REVERSE:
+    if not _enabled:
         return False
-    if far_limit_error and _current_dir == DIR_FORWARD:
+    if _current_dir == DIR_REVERSE and (limit_error or GPIO.input(_home_pin()) == GPIO.HIGH):
+        return False
+    if _current_dir == DIR_FORWARD and (far_limit_error or GPIO.input(_far_pin()) == GPIO.HIGH):
         return False
     GPIO.output(PIN_STEP_PUL, GPIO.HIGH)
     time.sleep(delay_s)
