@@ -23,7 +23,13 @@ case "${1:-patch}" in
     major)  VERSION="v$((MAJOR + 1)).0.0" ;;
     minor)  VERSION="v${MAJOR}.$((MINOR + 1)).0" ;;
     patch)  VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
-    v*)     VERSION="$1" ;;
+    v*)
+            if [[ ! "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "ERROR: Invalid version '$1' — must match vX.Y.Z (e.g., v1.0.0)"
+                exit 1
+            fi
+            VERSION="$1"
+            ;;
     *)      echo "Usage: $0 [major|minor|patch|vX.Y.Z]"; exit 1 ;;
 esac
 
